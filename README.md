@@ -48,8 +48,9 @@ las que salen de un formulario y las que arma la misma página.
      1. Abre `chrome://extensions` (en Edge, `edge://extensions`).
      2. Activa el **Modo de desarrollador**.
      3. Pulsa **Cargar descomprimida** y elige la carpeta `extension\chrome` que viene dentro del .zip.
-   - **Firefox:** la extensión necesita la firma de Mozilla, que está en trámite. Mientras tanto, usa el clic
-     derecho → «Descargar con Atarraya» desde Chrome o Edge, o pega los enlaces en Atarraya.
+   - **Firefox:** la extensión necesita la firma de Mozilla, que todavía no tiene (la carpeta
+     `extension\firefox` ya está lista para enviarla). Mientras tanto, pega los enlaces en Atarraya con
+     **Agregar enlace**.
 3. Listo. Lo que bajes en el navegador se pasa a Atarraya. También puedes hacer clic derecho en un enlace y
    elegir **Descargar con Atarraya**.
 
