@@ -298,6 +298,7 @@ public:
         m_linea3->SetLabel(L"Dirección: " + wxString::FromUTF8(d.url));
         m_linea4->SetLabel(L"Carpeta: " + wxString(d.carpeta.empty() ? std::wstring(L"(se decide al empezar)") : d.carpeta));
         m_error->SetLabel(d.estado == Estado::Error ? wxString::FromUTF8(d.error) : wxString());
+        m_error->Wrap(-1);   // wx no vuelve a partir el texto si se le pide el mismo ancho que la vez anterior
         m_error->Wrap(std::max(200, GetClientSize().x - FromDIP(20)));
     }
 
