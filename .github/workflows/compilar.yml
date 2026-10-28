@@ -69,7 +69,7 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
           $notas = @"
-          Atarraya $version: gestor de descargas gratis, sin publicidad y sin recoger datos.
+          Atarraya ${version}: gestor de descargas gratis, sin publicidad y sin recoger datos.
 
           1. Baja ``Atarraya-$version-x64.zip``, descomprímelo y abre ``Atarraya.exe``.
           2. Si Windows dice «Windows protegió su PC», pulsa «Más información» y luego «Ejecutar de todas formas»

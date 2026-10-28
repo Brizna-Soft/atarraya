@@ -217,7 +217,7 @@ DialogoNavegadores::DialogoNavegadores(wxWindow* padre)
         L"2. Instala la extensión «Atarraya» en tu navegador. Mientras no esté en las tiendas: en Chrome, Edge o "
         L"Brave abre la página de extensiones, activa el «Modo de desarrollador», pulsa «Cargar descomprimida» y elige "
         L"la carpeta «extension\\chrome» que viene con el programa.\n\n"
-        L"3. Listo: los archivos de más de 1 MB que bajes en el navegador se pasan a Atarraya. También puedes hacer "
+        L"3. Listo: lo que bajes en el navegador se pasa a Atarraya, de cualquier sitio. También puedes hacer "
         L"clic derecho en un enlace y elegir «Descargar con Atarraya».");
     pasos->Wrap(ancho);
     caja->Add(pasos, 0, wxLEFT | wxRIGHT, borde);
@@ -234,7 +234,7 @@ DialogoNavegadores::DialogoNavegadores(wxWindow* padre)
     fila->Add(carpeta);
     caja->Add(fila, 0, wxLEFT | wxRIGHT, borde);
 
-    caja->Add(new wxHyperlinkCtrl(this, wxID_ANY, L"Instrucciones con imágenes",
+    caja->Add(new wxHyperlinkCtrl(this, wxID_ANY, L"Instrucciones paso a paso",
                                   L"https://github.com/Brizna-Soft/atarraya#conectar-con-el-navegador"),
               0, wxLEFT | wxRIGHT | wxTOP, borde);
 
