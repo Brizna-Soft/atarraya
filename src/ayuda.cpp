@@ -89,6 +89,13 @@ int ayuda::CompararVersiones(const std::string& a, const std::string& b)
     return 0;
 }
 
+int ayuda::Aviso(const wxString& texto, const wxString& titulo, long estilo, wxWindow* padre)
+{
+    wxMessageDialog d(padre, texto, titulo, estilo);
+    if (estilo & wxOK) d.SetOKLabel(L"Aceptar");
+    return d.ShowModal();
+}
+
 void ayuda::AbrirEnlace(const wxString& url)
 {
     // Solo direcciones web: nunca se abre otra cosa por aquí
@@ -121,7 +128,7 @@ void ayuda::BuscarActualizacion(wxWindow* padre)
             wxWindow* padre = ventana.get();
             if (etiqueta.empty())
             {
-                wxMessageBox(L"No pude consultar GitHub. Revisa tu conexión a internet e inténtalo de nuevo.",
+                ayuda::Aviso(L"No pude consultar GitHub. Revisa tu conexión a internet e inténtalo de nuevo.",
                              L"Buscar actualización", wxOK | wxICON_WARNING, padre);
                 return;
             }
@@ -141,7 +148,7 @@ void ayuda::BuscarActualizacion(wxWindow* padre)
             }
             else
             {
-                wxMessageBox(wxString::Format(L"Ya tienes la versión más nueva (%s).", wxString::FromUTF8(APP_VERSION)),
+                ayuda::Aviso(wxString::Format(L"Ya tienes la versión más nueva (%s).", wxString::FromUTF8(APP_VERSION)),
                              L"Buscar actualización", wxOK | wxICON_INFORMATION, padre);
             }
         });

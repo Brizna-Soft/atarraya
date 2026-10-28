@@ -110,14 +110,14 @@ void DialogoAgregar::AlAceptar(bool empezar)
     std::wstring url = m_url->GetValue().Strip(wxString::both).ToStdWstring();
     if (!sistema::EsDireccion(url))
     {
-        wxMessageBox(L"Escribe o pega una dirección que empiece por http://, https:// o ftp://", L"Nueva descarga",
+        ayuda::Aviso(L"Escribe o pega una dirección que empiece por http://, https:// o ftp://", L"Nueva descarga",
                      wxOK | wxICON_WARNING, this);
         m_url->SetFocus();
         return;
     }
     if (!ExisteCarpeta(m_carpeta->GetPath().ToStdWstring()))
     {
-        wxMessageBox(L"La carpeta elegida no existe.", L"Nueva descarga", wxOK | wxICON_WARNING, this);
+        ayuda::Aviso(L"La carpeta elegida no existe.", L"Nueva descarga", wxOK | wxICON_WARNING, this);
         return;
     }
     m_empezar = empezar;
@@ -244,7 +244,7 @@ DialogoNavegadores::DialogoNavegadores(wxWindow* padre)
 
     conectar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         std::wstring error;
-        if (!navegadores::Conectar(error)) wxMessageBox(error, L"Conectar con los navegadores", wxOK | wxICON_WARNING, this);
+        if (!navegadores::Conectar(error)) ayuda::Aviso(error, L"Conectar con los navegadores", wxOK | wxICON_WARNING, this);
         Actualizar();
     });
     quitar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {

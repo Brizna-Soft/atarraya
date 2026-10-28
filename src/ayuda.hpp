@@ -12,6 +12,9 @@ namespace ayuda
     // Crea el menú y conecta sus opciones a la ventana. «descripcion» va en «Acerca de».
     wxMenu* CrearMenu(wxFrame* ventana, const wxString& descripcion);
 
+    // Como wxMessageBox, pero con el botón en español («Aceptar»): wx lo deja en inglés
+    int Aviso(const wxString& texto, const wxString& titulo, long estilo = wxOK | wxICON_INFORMATION, wxWindow* padre = nullptr);
+
     void AbrirEnlace(const wxString& url);
     void ReportarProblema();
     void BuscarActualizacion(wxWindow* padre);

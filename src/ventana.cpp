@@ -720,7 +720,7 @@ void VentanaPrincipal::AbrirArchivo()
     std::wstring ruta = m_motor.RutaFinal(f.datos.id);
     if (!ExisteArchivo(ruta))
     {
-        wxMessageBox(L"El archivo ya no está en su carpeta (quizá se movió o se borró).", L"Abrir", wxOK | wxICON_INFORMATION, this);
+        ayuda::Aviso(L"El archivo ya no está en su carpeta (quizá se movió o se borró).", L"Abrir", wxOK | wxICON_INFORMATION, this);
         return;
     }
     if (sistema::EsEjecutable(f.datos.nombre))
@@ -755,7 +755,7 @@ void VentanaPrincipal::CambiarEnlace()
     if (f.datos.estado == Estado::Completada) return;
     if (f.datos.estado == Estado::Descargando || f.datos.estado == Estado::Iniciando)
     {
-        wxMessageBox(L"Primero pausa la descarga.", L"Cambiar el enlace", wxOK | wxICON_INFORMATION, this);
+        ayuda::Aviso(L"Primero pausa la descarga.", L"Cambiar el enlace", wxOK | wxICON_INFORMATION, this);
         return;
     }
     wxTextEntryDialog d(this, L"Si el enlace venció, pega uno nuevo del MISMO archivo. Se sigue desde donde quedó.",
@@ -766,7 +766,7 @@ void VentanaPrincipal::CambiarEnlace()
     std::wstring url = d.GetValue().Strip(wxString::both).ToStdWstring();
     if (!sistema::EsDireccion(url))
     {
-        wxMessageBox(L"Esa no es una dirección válida (http, https o ftp).", L"Cambiar el enlace", wxOK | wxICON_WARNING, this);
+        ayuda::Aviso(L"Esa no es una dirección válida (http, https o ftp).", L"Cambiar el enlace", wxOK | wxICON_WARNING, this);
         return;
     }
     if (m_motor.CambiarEnlace(f.datos.id, Utf8(url))) m_motor.Reanudar(f.datos.id);
@@ -787,7 +787,7 @@ void VentanaPrincipal::CalcularHuella()
             if (!yo) return;
             if (huella.empty())
             {
-                wxMessageBox(L"No se pudo leer el archivo.", L"Huella SHA-256", wxOK | wxICON_WARNING, yo.get());
+                ayuda::Aviso(L"No se pudo leer el archivo.", L"Huella SHA-256", wxOK | wxICON_WARNING, yo.get());
                 return;
             }
             wxMessageDialog d(yo.get(), nombre + L"\n\nSHA-256:\n" + wxString::FromUTF8(huella)
@@ -833,7 +833,7 @@ void VentanaPrincipal::AlTerminar(const Foto& f)
             if (existe) return;
             wxTheApp->CallAfter([yo, nombre]() {
                 if (!yo) return;
-                wxMessageBox(L"Windows (o tu antivirus) bloqueó o quitó «" + nombre + L"» porque podría ser peligroso.",
+                ayuda::Aviso(L"Windows (o tu antivirus) bloqueó o quitó «" + nombre + L"» porque podría ser peligroso.",
                              L"Archivo bloqueado", wxOK | wxICON_WARNING, yo.get());
             });
         });
