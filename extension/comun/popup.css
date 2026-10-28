@@ -1,0 +1,38 @@
+:root {
+  --fondo: #ffffff;
+  --texto: #1f2933;
+  --suave: #5f6b7a;
+  --bien: #1d9e75;
+  --mal: #d64545;
+  --enlace: #185fa5;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #1e2227;
+    --texto: #e6e9ee;
+    --suave: #a3acb9;
+    --enlace: #6cb6f5;
+  }
+}
+body {
+  margin: 0;
+  padding: 12px 14px;
+  width: 300px;
+  font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
+  background: var(--fondo);
+  color: var(--texto);
+}
+h1 {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+  font-size: 15px;
+}
+.estado { margin: 0 0 10px; }
+.estado.bien { color: var(--bien); }
+.estado.mal { color: var(--mal); }
+.fila { display: block; margin: 6px 0; }
+.fila input[type="number"] { width: 64px; }
+.nota { color: var(--suave); font-size: 12px; margin: 8px 0 0; }
+a { color: var(--enlace); }

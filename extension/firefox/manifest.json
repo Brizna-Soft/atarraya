@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Atarraya",
+  "description": "Pasa tus descargas a Atarraya: varias conexiones a la vez y descargas que se pueden reanudar. Gratis y sin publicidad.",
+  "version": "0.1.0",
+  "icons": {
+    "16": "iconos/icono-16.png",
+    "32": "iconos/icono-32.png",
+    "48": "iconos/icono-48.png",
+    "128": "iconos/icono-128.png"
+  },
+  "action": {
+    "default_title": "Atarraya",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "iconos/icono-16.png",
+      "32": "iconos/icono-32.png"
+    }
+  },
+  "background": {
+    "scripts": ["background.js"]
+  },
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"],
+  "host_permissions": ["<all_urls>"],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "atarraya@briznasoft",
+      "strict_min_version": "128.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
+    }
+  }
+}

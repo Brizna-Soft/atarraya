@@ -1,0 +1,22 @@
+#pragma once
+
+// Nombres de archivo: del servidor (Content-Disposition), de la dirección, limpios y sin repetirse.
+
+#include <set>
+#include <string>
+
+namespace hnd
+{
+    // filename*=UTF-8''... o filename="..." (vacío si no trae nombre)
+    std::wstring NombreDeContentDisposition(const std::string& valor);
+    // Último trozo de la ruta de la dirección, decodificado
+    std::wstring NombreDeUrl(const std::string& url);
+    // Quita caracteres no permitidos en Windows, nombres reservados y largos excesivos
+    std::wstring LimpiarNombre(const std::wstring& nombre);
+    // Si el nombre no tiene extensión y el tipo MIME es conocido, le agrega una
+    std::wstring AgregarExtension(const std::wstring& nombre, const std::string& tipoMime);
+    // «archivo.zip» -> «archivo (1).zip» si ya existe en la carpeta o está ocupado por otra descarga
+    std::wstring NombreUnico(const std::wstring& carpeta, const std::wstring& nombre,
+                             const std::set<std::wstring>& ocupados);
+    std::wstring Minusculas(std::wstring s);
+}

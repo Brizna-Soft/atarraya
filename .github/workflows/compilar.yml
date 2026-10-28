@@ -1,0 +1,79 @@
+# Compila Atarraya desde este código en cada cambio. Con una etiqueta v* (por ejemplo v0.1.0) además publica
+# la versión en Releases con el .zip y su huella SHA-256: así los .zip salen de GitHub, no de una PC.
+name: Compilar
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compilar-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  compilar:
+    runs-on: windows-2022
+    permissions:
+      contents: write   # solo se usa para crear la versión cuando hay etiqueta
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vendor\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vendor\vcpkg-binarios
+      VCPKG_DISABLE_METRICS: '1'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Bajar vcpkg (versión fija)
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch 2026.10.16 https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
+
+      - name: Traer las bibliotecas ya compiladas (caché)
+        id: cache
+        uses: actions/cache/restore@v6
+        with:
+          path: vendor/vcpkg-binarios
+          key: vcpkg-2026.10.16-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+
+      - name: Compilar
+        shell: pwsh
+        run: ./compilar.ps1 -Publicacion
+
+      - name: Guardar las bibliotecas compiladas (caché)
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: vendor/vcpkg-binarios
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Empaquetar
+        shell: pwsh
+        run: ./empaquetar.ps1
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: atarraya
+          path: publicar/*.zip*
+
+      - name: Publicar la versión
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart('v')
+          $notas = @"
+          Atarraya $version: gestor de descargas gratis, sin publicidad y sin recoger datos.
+
+          1. Baja ``Atarraya-$version-x64.zip``, descomprímelo y abre ``Atarraya.exe``.
+          2. Si Windows dice «Windows protegió su PC», pulsa «Más información» y luego «Ejecutar de todas formas»
+             (el programa es nuevo y aún no tiene firma digital).
+          3. La huella SHA-256 está en el archivo ``.sha256``. Este .zip lo armó GitHub a partir de este mismo código.
+          "@
+          gh release create "${{ github.ref_name }}" (Get-ChildItem publicar -Filter 'Atarraya-*').FullName --title "Atarraya $version" --notes $notas

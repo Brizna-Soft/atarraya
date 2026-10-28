@@ -1,0 +1,50 @@
+name: Algo no funciona
+description: Cuéntanos qué falló para poder arreglarlo
+labels: ["falla"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Gracias por avisar. Atarraya es gratis y sin publicidad; tus reportes lo hacen mejor para todos.
+        No pongas contraseñas ni datos personales.
+  - type: textarea
+    id: que-paso
+    attributes:
+      label: ¿Qué pasó?
+      description: Cuéntalo con tus palabras. Si sale un mensaje de error, cópialo.
+    validations:
+      required: true
+  - type: textarea
+    id: pasos
+    attributes:
+      label: ¿Qué hiciste antes de que fallara?
+      placeholder: |
+        1. Abrí Atarraya
+        2. Pegué el enlace de...
+        3. ...
+  - type: textarea
+    id: esperabas
+    attributes:
+      label: ¿Qué esperabas que pasara?
+  - type: input
+    id: version
+    attributes:
+      label: Versión de Atarraya
+      description: Está en Ayuda → Acerca de.
+      placeholder: "0.1.0"
+  - type: input
+    id: windows
+    attributes:
+      label: Versión de Windows
+      placeholder: "Windows 11"
+  - type: input
+    id: navegador
+    attributes:
+      label: Navegador (si tiene que ver)
+      placeholder: "Chrome, Edge, Brave, Firefox..."
+  - type: textarea
+    id: registro
+    attributes:
+      label: Registro (opcional)
+      description: Pega aquí el contenido de %LOCALAPPDATA%\Atarraya\registro.txt (solo anota los sitios, no direcciones completas).
+      render: text

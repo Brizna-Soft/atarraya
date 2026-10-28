@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Atarraya",
+  "description": "Pasa tus descargas a Atarraya: varias conexiones a la vez y descargas que se pueden reanudar. Gratis y sin publicidad.",
+  "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArPAUFgIkw184WjTekqT2AJZPn/QVqkdjpZJQA6MgSuLT82A92U+WO5iFb8rpNrQCl2rMva5a4ri7RYCAkGXrq73LcihvZvJhWVRp/30T87b1+i+jJ1IbKQFdURwtCKnVCwTVca0VLMIKAIgI0JiFZ+1P0zdFvs0NgEW1rTmBkNnCy8uDk0VxdpEWYjv64QhuALGzpipSaU+hg6H5YdBDXSIxmD5GSBCOKQhY9oWfnlfrneOHV8aFIMnYdUhlPVBKzkSbOYcV2YFYL8rTHnd9vHQBZuVeCuYcjUVciVEcHIWbGL6xLa0mXBtEsf9R2mTn7S5hlmVi1XX0TD12OfMLSQIDAQAB",
+  "icons": {
+    "16": "iconos/icono-16.png",
+    "32": "iconos/icono-32.png",
+    "48": "iconos/icono-48.png",
+    "128": "iconos/icono-128.png"
+  },
+  "action": {
+    "default_title": "Atarraya",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "iconos/icono-16.png",
+      "32": "iconos/icono-32.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "permissions": ["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"],
+  "host_permissions": ["<all_urls>"],
+  "minimum_chrome_version": "116"
+}

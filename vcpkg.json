@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "atarraya",
+  "version-string": "0.1.0",
+  "dependencies": [
+    {
+      "name": "wxwidgets",
+      "default-features": false
+    },
+    {
+      "name": "curl",
+      "default-features": false,
+      "features": [ "ssl" ]
+    },
+    "nlohmann-json"
+  ]
+}
