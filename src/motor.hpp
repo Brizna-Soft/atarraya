@@ -15,7 +15,12 @@
 
 namespace hnd
 {
-    enum class Estado { EnCola, Iniciando, Descargando, Pausada, Completada, Error };
+    // «Compartiendo» solo lo usan los torrents: terminó y sigue subiendo a otras personas
+    enum class Estado { EnCola, Iniciando, Descargando, Pausada, Completada, Error, Compartiendo };
+
+    // Los torrents usan ids desde aquí; las descargas normales, desde 1
+    constexpr uint64_t BaseIdTorrent = 1ULL << 48;
+    inline bool EsIdTorrent(uint64_t id) { return id >= BaseIdTorrent; }
 
     struct Segmento
     {
@@ -54,8 +59,26 @@ namespace hnd
         DatosDescarga datos;
         int64_t hecho = 0;
         double velocidad = 0;   // bytes por segundo
-        int activas = 0;        // conexiones abiertas ahora
+        int activas = 0;        // conexiones abiertas ahora (en un torrent: pares conectados)
+
+        // Solo torrents
+        bool torrent = false;
+        double subida = 0;          // bytes por segundo
+        int semillas = 0;           // pares que ya tienen todo
+        int64_t subido = 0;         // total subido a otras personas
+        bool compartir = false;     // seguir compartiendo al terminar
+        bool eligeArchivos = false; // llegaron los datos y falta que la persona elija qué bajar
+        bool tieneDatos = false;    // ya se conocen los archivos (un magnet empieza sin ellos)
+        bool buscandoDatos = false; // magnet pidiendo los datos a otras personas
+        bool revisando = false;     // revisando lo que ya está en el disco
+        int archivos = 0;
+        std::vector<uint8_t> mapa;  // lo bajado de cada tramo del torrent (0 a 255)
     };
+
+    // Baja una página o un JSON pequeño a memoria (solo http y https). Devuelve false y un texto en español si
+    // falla. «parar» permite cancelar.
+    bool BajarTexto(const std::string& url, size_t maximo, std::string& cuerpo, std::string& urlFinal,
+                    std::string& tipo, std::string& error, const std::atomic<bool>* parar = nullptr);
 
     class Motor
     {

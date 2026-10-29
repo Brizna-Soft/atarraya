@@ -10,6 +10,9 @@ namespace hnd
         int conexiones = 8;             // conexiones por archivo
         int simultaneas = 3;            // descargas a la vez
         int limiteKB = 0;               // KB/s en total; 0 = sin límite
+        int limiteSubidaKB = 0;         // KB/s que los torrents suben a otras personas; 0 = sin límite
+        bool compartirTorrents = false; // la última elección de «Seguir compartiendo cuando termine»
+        bool elegirArchivosMagnet = true; // la última elección de «Elegir los archivos cuando lleguen los datos»
         bool preguntarNavegador = true; // mostrar la ventana «Nueva descarga» para lo que llega del navegador
         bool bandejaAlCerrar = true;    // la X deja el programa junto al reloj
         bool avisarAlTerminar = true;

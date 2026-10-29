@@ -44,7 +44,9 @@ bool hnd::sistema::MandarAPapelera(const std::wstring& ruta)
     SHFILEOPSTRUCTW op = {};
     op.wFunc = FO_DELETE;
     op.pFrom = doble.c_str();
-    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+    // FOF_WANTNUKEWARNING: si el disco no tiene Papelera (por ejemplo, algunas memorias USB), Windows pregunta antes
+    // de borrar para siempre, en vez de borrar sin avisar
+    op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING;
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
 }
 
@@ -97,11 +99,59 @@ std::wstring hnd::sistema::TextoDelPortapapeles()
     return r.substr(i);
 }
 
+std::wstring hnd::sistema::TodoElPortapapeles(size_t maximo)
+{
+    std::wstring r;
+    if (!OpenClipboard(nullptr)) return r;
+    HANDLE h = GetClipboardData(CF_UNICODETEXT);
+    if (h)
+    {
+        auto* p = static_cast<const wchar_t*>(GlobalLock(h));
+        if (p)
+        {
+            size_t tope = GlobalSize(h) / sizeof(wchar_t);
+            size_t n = 0;
+            while (n < tope && n < maximo && p[n]) n++;
+            r.assign(p, n);
+        }
+        GlobalUnlock(h);
+    }
+    CloseClipboard();
+    return r;
+}
+
 bool hnd::sistema::EsDireccion(const std::wstring& texto)
 {
     std::wstring bajo = Minusculas(texto.substr(0, 8));
     return (bajo.rfind(L"http://", 0) == 0 || bajo.rfind(L"https://", 0) == 0 || bajo.rfind(L"ftp://", 0) == 0)
-        && texto.size() > 9 && texto.find_first_of(L" \t\"<>") == std::wstring::npos;
+        && texto.size() > 9 && texto.size() <= 8192 && texto.find_first_of(L" \t\r\n\"<>") == std::wstring::npos;
+}
+
+bool hnd::sistema::EsMagnet(const std::wstring& texto)
+{
+    return Minusculas(texto.substr(0, 8)) == L"magnet:?" && texto.size() > 20 && texto.size() <= 8192
+        && texto.find_first_of(L" \t\r\n\"<>") == std::wstring::npos;
+}
+
+bool hnd::sistema::LeerTexto(const std::wstring& ruta, std::wstring& texto, size_t maximo)
+{
+    texto.clear();
+    int64_t tamano = TamanoArchivo(ruta);
+    if (tamano < 0 || (uint64_t)tamano > maximo) return false;
+    std::string b;
+    if (!LeerArchivo(ruta, b)) return false;
+    if (b.size() >= 2 && (unsigned char)b[0] == 0xFF && (unsigned char)b[1] == 0xFE)
+    {
+        texto.assign(reinterpret_cast<const wchar_t*>(b.data() + 2), (b.size() - 2) / sizeof(wchar_t));
+        return true;
+    }
+    if (b.size() >= 3 && (unsigned char)b[0] == 0xEF && (unsigned char)b[1] == 0xBB && (unsigned char)b[2] == 0xBF) b.erase(0, 3);
+    if (b.empty()) return true;
+    UINT pagina = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, b.data(), (int)b.size(), nullptr, 0) > 0 ? CP_UTF8 : CP_ACP;
+    int n = MultiByteToWideChar(pagina, 0, b.data(), (int)b.size(), nullptr, 0);
+    texto.assign(n, L'\0');
+    MultiByteToWideChar(pagina, 0, b.data(), (int)b.size(), texto.data(), n);
+    return true;
 }
 
 void hnd::sistema::MarcarComoDescargado(const std::wstring& ruta, const std::string& url, const std::string& referer,
@@ -121,5 +171,29 @@ void hnd::sistema::MarcarComoDescargado(const std::wstring& ruta, const std::str
         }
         if (SUCCEEDED(com)) CoUninitialize();
         if (alTerminar) alTerminar(ExisteArchivo(ruta));
+    }).detach();
+}
+
+void hnd::sistema::MarcarVariosComoDescargados(std::vector<std::wstring> rutas, std::function<void(size_t)> alTerminar)
+{
+    std::thread([rutas = std::move(rutas), alTerminar]() {
+        HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        size_t faltan = 0;
+        for (auto& ruta : rutas)
+        {
+            if (!ExisteArchivo(ruta)) continue;   // no se eligió o ya no está
+            IAttachmentExecute* ae = nullptr;
+            if (SUCCEEDED(CoCreateInstance(CLSID_AttachmentServices, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&ae))))
+            {
+                ae->SetClientGuid(GuidAtarraya);
+                ae->SetLocalPath(ruta.c_str());
+                ae->SetSource(L"about:internet");   // un torrent no tiene una dirección web: se marca como de internet
+                ae->Save();
+                ae->Release();
+            }
+            if (!ExisteArchivo(ruta)) faltan++;
+        }
+        if (SUCCEEDED(com)) CoUninitialize();
+        if (alTerminar) alTerminar(faltan);
     }).detach();
 }

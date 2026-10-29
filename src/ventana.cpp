@@ -5,6 +5,7 @@
 #include <wx/dataview.h>
 #include <wx/dcbuffer.h>
 #include <wx/display.h>
+#include <wx/filedlg.h>
 #include <wx/graphics.h>
 #include <wx/hyperlink.h>
 #include <wx/menu.h>
@@ -30,6 +31,7 @@
 
 #include "ayuda.hpp"
 #include "dialogos.hpp"
+#include "enlaces.hpp"
 #include "iconos.hpp"
 #include "nombres.hpp"
 #include "sistema.hpp"
@@ -48,6 +50,7 @@ namespace
         switch (e)
         {
         case Estado::Completada: return wxColour(0x1D, 0x9E, 0x75);
+        case Estado::Compartiendo: return wxColour(0x7F, 0x77, 0xDD);
         case Estado::Error: return wxColour(0xD6, 0x45, 0x45);
         case Estado::Pausada:
         case Estado::EnCola: return wxColour(0x88, 0x87, 0x80);
@@ -65,11 +68,54 @@ namespace
         return n.empty() ? wxString::FromUTF8(d.url) : wxString(n);
     }
 
+    bool Activa(const Foto& f)
+    {
+        return f.datos.estado == Estado::Iniciando || f.datos.estado == Estado::Descargando;
+    }
+
     int Permil(const Foto& f)
     {
-        if (f.datos.estado == Estado::Completada) return 1000;
+        if (f.datos.estado == Estado::Completada || f.datos.estado == Estado::Compartiendo) return 1000;
         if (f.datos.tamano <= 0) return 1001;   // tamaño desconocido
         return (int)std::min<int64_t>(1000, f.hecho * 1000 / f.datos.tamano);
+    }
+
+    wxString TextoEstadoFila(const Foto& f)
+    {
+        const auto& d = f.datos;
+        if (f.torrent)
+        {
+            if (f.eligeArchivos) return L"Elige los archivos";
+            switch (d.estado)
+            {
+            case Estado::Iniciando:
+                if (f.buscandoDatos) return wxString::Format(L"Buscando datos (%d pares)", f.activas);
+                if (f.revisando) return L"Revisando archivos";
+                return L"Conectando...";
+            case Estado::Descargando:
+                return f.activas > 0 ? wxString::Format(L"Bajando (%d pares)", f.activas) : wxString(L"Buscando pares...");
+            case Estado::Compartiendo:
+                return wxString::Format(L"Compartiendo (%d pares)", f.activas);
+            default:
+                return TextoEstado(d.estado);
+            }
+        }
+        if (d.estado == Estado::Descargando && f.activas > 0) return wxString::Format(L"Bajando (%d)", f.activas);
+        return TextoEstado(d.estado);
+    }
+
+    wxBitmapBundle IconoFila(bool torrent)
+    {
+        static wxBitmapBundle archivo, iman;
+        static bool oscuro = !TemaOscuro();
+        if (oscuro != TemaOscuro() || !archivo.IsOk())
+        {
+            oscuro = TemaOscuro();
+            wxString color = oscuro ? L"#9AA4B2" : L"#6B7686";
+            archivo = iconos::Crear(iconos::Descarga, color, 16);
+            iman = iconos::Crear(iconos::Torrent, oscuro ? L"#A59FF0" : L"#7F77DD", 16);
+        }
+        return torrent ? iman : archivo;
     }
 }
 
@@ -92,22 +138,22 @@ public:
         bool bajando = d.estado == Estado::Descargando;
         switch (col)
         {
-        case Nombre: v = NombreVisible(d); break;
+        case Nombre: v << wxDataViewIconText(NombreVisible(d), IconoFila(f.torrent)); break;
         case Tamano:
             v = d.tamano >= 0 ? wxString(TextoTamano(d.tamano)) : (f.hecho > 0 ? wxString(TextoTamano(f.hecho)) : wxString(L"?"));
             break;
         case Progreso: v = (long)((int)d.estado * 10000 + Permil(f)); break;
-        case Velocidad: v = bajando ? wxString(TextoVelocidad(f.velocidad)) : wxString(); break;
+        case Velocidad:
+            if (bajando) v = wxString(TextoVelocidad(f.velocidad));
+            else if (d.estado == Estado::Compartiendo && f.subida >= 1) v = L"↑ " + wxString(TextoVelocidad(f.subida));
+            else v = wxString();
+            break;
         case Falta:
             if (bajando && f.velocidad > 1 && d.tamano > 0)
                 v = wxString(TextoDuracion((int64_t)((d.tamano - f.hecho) / f.velocidad)));
             else v = wxString();
             break;
-        case EstadoCol:
-            if (d.estado == Estado::Descargando && f.activas > 0)
-                v = wxString::Format(L"Bajando (%d)", f.activas);
-            else v = wxString(TextoEstado(d.estado));
-            break;
+        case EstadoCol: v = TextoEstadoFila(f); break;
         default: v = wxString();
         }
     }
@@ -176,7 +222,7 @@ private:
 
 // ---------------------------------------------------------------- Detalles de la descarga elegida
 
-// Dibuja el archivo entero y, encima, lo que ya bajó cada parte (como un mapa)
+// Dibuja el archivo entero y, encima, lo que ya bajó cada parte (como un mapa). En un torrent, cada tramo de piezas.
 class BarraPartes : public wxWindow
 {
 public:
@@ -212,9 +258,24 @@ private:
         const auto& d = m_foto.datos;
         wxColour color = ColorEstado(d.estado == Estado::Descargando || d.estado == Estado::Iniciando ? Estado::Descargando : d.estado);
         gc->SetBrush(wxBrush(color));
-        if (d.estado == Estado::Completada)
+        if (d.estado == Estado::Completada || d.estado == Estado::Compartiendo)
         {
             gc->DrawRoundedRectangle(0, 0, s.x, s.y, radio);
+            return;
+        }
+        if (m_foto.torrent)
+        {
+            // Cada tramo se pinta más o menos lleno según lo que ya se tiene
+            const auto& mapa = m_foto.mapa;
+            if (mapa.empty()) return;
+            double ancho = (double)s.x / mapa.size();
+            for (size_t i = 0; i < mapa.size(); i++)
+            {
+                if (mapa[i] == 0) continue;
+                wxColour c(color.Red(), color.Green(), color.Blue(), (unsigned char)std::max(60, (int)mapa[i]));
+                gc->SetBrush(wxBrush(c));
+                gc->DrawRectangle(i * ancho, 0, ancho + 0.5, s.y);
+            }
             return;
         }
         if (d.tamano <= 0)
@@ -288,14 +349,26 @@ public:
             bajado += L"  ·  Velocidad: " + wxString(TextoVelocidad(f->velocidad));
             if (d.tamano > 0) bajado += L"  ·  Falta: " + wxString(TextoDuracion((int64_t)((d.tamano - f->hecho) / f->velocidad)));
         }
+        if (f->torrent && f->subida >= 1) bajado += L"  ·  Subida: " + wxString(TextoVelocidad(f->subida));
         m_linea1->SetLabel(bajado);
 
-        wxString partes = wxString::Format(L"Estado: %s  ·  Conexiones abiertas: %d  ·  Partes: %zu  ·  ", TextoEstado(d.estado),
-                                           f->activas, d.segmentos.size());
-        if (d.estado == Estado::EnCola || (d.tamano < 0 && d.segmentos.empty())) partes += L"Reanudable: se sabrá al empezar";
-        else partes += d.rangos ? L"Reanudable: sí" : L"Reanudable: no (el servidor no lo permite)";
+        wxString partes;
+        if (f->torrent)
+        {
+            partes = wxString::Format(L"Estado: %s  ·  Pares: %d (con todo: %d)  ·  Subido a otras personas: %s  ·  ",
+                                      TextoEstadoFila(*f), f->activas, f->semillas, TextoTamano(f->subido));
+            if (f->tieneDatos) partes += wxString::Format(L"Archivos: %d  ·  ", f->archivos);
+            partes += f->compartir ? L"Al terminar: sigue compartiendo" : L"Al terminar: se detiene";
+        }
+        else
+        {
+            partes = wxString::Format(L"Estado: %s  ·  Conexiones abiertas: %d  ·  Partes: %zu  ·  ", TextoEstado(d.estado), f->activas,
+                                      d.segmentos.size());
+            if (d.estado == Estado::EnCola || (d.tamano < 0 && d.segmentos.empty())) partes += L"Reanudable: se sabrá al empezar";
+            else partes += d.rangos ? L"Reanudable: sí" : L"Reanudable: no (el servidor no lo permite)";
+        }
         m_linea2->SetLabel(partes);
-        m_linea3->SetLabel(L"Dirección: " + wxString::FromUTF8(d.url));
+        m_linea3->SetLabel((f->torrent ? L"Enlace magnet: " : L"Dirección: ") + wxString::FromUTF8(d.url));
         m_linea4->SetLabel(L"Carpeta: " + wxString(d.carpeta.empty() ? std::wstring(L"(se decide al empezar)") : d.carpeta));
         m_error->SetLabel(d.estado == Estado::Error ? wxString::FromUTF8(d.error) : wxString());
         m_error->Wrap(-1);   // wx no vuelve a partir el texto si se le pide el mismo ancho que la vez anterior
@@ -322,8 +395,9 @@ public:
         Bind(wxEVT_TASKBAR_LEFT_DCLICK, [this](wxTaskBarIconEvent&) { m_v->Mostrar(); });
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->Mostrar(); }, ID_MOSTRAR);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->NuevaDescarga({}, false); }, ID_AGREGAR);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().PausarTodas(); }, ID_PAUSAR_TODAS);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().ReanudarTodas(); }, ID_REANUDAR_TODAS);
+        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->AgregarVarios(); }, ID_VARIOS);
+        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().PausarTodas(); m_v->MotorTorrents().PausarTodas(); }, ID_PAUSAR_TODAS);
+        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().ReanudarTodas(); m_v->MotorTorrents().ReanudarTodas(); }, ID_REANUDAR_TODAS);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->Salir(); }, wxID_EXIT);
     }
 
@@ -332,6 +406,7 @@ public:
         auto* m = new wxMenu();
         m->Append(ID_MOSTRAR, L"Mostrar Atarraya");
         m->Append(ID_AGREGAR, L"Agregar enlace...");
+        m->Append(ID_VARIOS, L"Agregar varios enlaces...");
         m->AppendSeparator();
         m->Append(ID_PAUSAR_TODAS, L"Pausar todas");
         m->Append(ID_REANUDAR_TODAS, L"Reanudar todas");
@@ -346,8 +421,8 @@ private:
 
 // ---------------------------------------------------------------- Ventana
 
-VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
-    : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_ajustes(ajustes), m_reloj(this)
+VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Ajustes& ajustes)
+    : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_ajustes(ajustes), m_reloj(this)
 {
     wxIconBundle iconos(wxString(L"AAAA_APP"), (WXHINSTANCE)GetModuleHandleW(nullptr));
     SetIcons(iconos);
@@ -371,13 +446,14 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
         m_lista->AppendColumn(new wxDataViewColumn(titulo, new wxDataViewTextRenderer(L"string", wxDATAVIEW_CELL_INERT, al), col,
                                                    FromDIP(ancho), al, wxDATAVIEW_COL_RESIZABLE));
     };
-    texto(L"Nombre", ModeloLista::Nombre, 320);
+    m_lista->AppendColumn(new wxDataViewColumn(L"Nombre", new wxDataViewIconTextRenderer(), ModeloLista::Nombre, FromDIP(320),
+                                               wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE));
     texto(L"Tamaño", ModeloLista::Tamano, 90, wxALIGN_RIGHT);
     m_lista->AppendColumn(new wxDataViewColumn(L"Progreso", new RenderBarra(), ModeloLista::Progreso, FromDIP(190), wxALIGN_LEFT,
                                                wxDATAVIEW_COL_RESIZABLE));
     texto(L"Velocidad", ModeloLista::Velocidad, 100, wxALIGN_RIGHT);
     texto(L"Falta", ModeloLista::Falta, 100, wxALIGN_RIGHT);
-    texto(L"Estado", ModeloLista::EstadoCol, 130);
+    texto(L"Estado", ModeloLista::EstadoCol, 160);
 
     m_detalles = new PanelDetalles(m_division);
     int altoDetalles = m_ajustes.altoDetalles > 0 ? m_ajustes.altoDetalles : FromDIP(150);
@@ -387,7 +463,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
     // Línea de abajo: resumen a la izquierda; reportar y donar a la derecha
     caja->Add(new wxStaticLine(fondo), 0, wxEXPAND);
     auto* abajo = new wxBoxSizer(wxHORIZONTAL);
-    m_resumen = new wxStaticText(fondo, wxID_ANY, wxEmptyString);
+    m_resumen = new wxStaticText(fondo, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
     abajo->Add(m_resumen, 1, wxALIGN_CENTER_VERTICAL);
     auto* reportar = new wxHyperlinkCtrl(fondo, wxID_ANY, L"Reportar un problema",
                                          L"https://github.com/" APP_REPO "/issues/new/choose");
@@ -405,12 +481,18 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
 
     wxAcceleratorEntry teclas[] = {
         wxAcceleratorEntry(wxACCEL_CTRL, 'N', ID_AGREGAR),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'L', ID_VARIOS),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'P', ID_PAGINA),
+        wxAcceleratorEntry(wxACCEL_CTRL, 'O', ID_TORRENT),
         wxAcceleratorEntry(wxACCEL_NORMAL, WXK_DELETE, ID_QUITAR),
     };
-    SetAcceleratorTable(wxAcceleratorTable(2, teclas));
+    SetAcceleratorTable(wxAcceleratorTable(5, teclas));
 
     // Comandos
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { NuevaDescarga({}, false); }, ID_AGREGAR);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AgregarVarios(); }, ID_VARIOS);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirPagina(L"", false); }, ID_PAGINA);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirTorrent(); }, ID_TORRENT);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Reanudar(); }, ID_REANUDAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Pausar(); }, ID_PAUSAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Quitar(); }, ID_QUITAR);
@@ -419,21 +501,34 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { CopiarEnlace(); }, ID_COPIAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { CambiarEnlace(); }, ID_CAMBIAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { CalcularHuella(); }, ID_HUELLA);
-    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.ReanudarTodas(); Refrescar(); }, ID_REANUDAR_TODAS);
-    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.PausarTodas(); Refrescar(); }, ID_PAUSAR_TODAS);
-    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.LimpiarTerminadas(); Refrescar(); }, ID_LIMPIAR);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { ElegirArchivos(PrimeraSeleccion()); }, ID_ELEGIR);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { CambiarCompartir(); }, ID_COMPARTIR);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.ReanudarTodas(); m_torrents.ReanudarTodas(); Refrescar(); }, ID_REANUDAR_TODAS);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.PausarTodas(); m_torrents.PausarTodas(); Refrescar(); }, ID_PAUSAR_TODAS);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.LimpiarTerminadas(); m_torrents.LimpiarTerminadas(); Refrescar(); }, ID_LIMPIAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { DialogoNavegadores d(this); d.ShowModal(); }, ID_NAVEGADORES);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { DialogoAjustes d(this, m_ajustes); d.ShowModal(); }, ID_AJUSTES);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Salir(); }, wxID_EXIT);
     Bind(wxEVT_CLOSE_WINDOW, &VentanaPrincipal::AlCerrar, this);
 
-    m_motor.alTerminar = [this](const Foto& f) { AlTerminar(f); };
+    // Las opciones de torrents solo se pueden usar con un torrent elegido
+    auto soloTorrent = [this](wxUpdateUIEvent& e) {
+        hnd::Foto f;
+        bool hay = BuscarFoto(PrimeraSeleccion(), f) && f.torrent;
+        e.Enable(hay && (e.GetId() != ID_ELEGIR || f.tieneDatos));
+        if (e.GetId() == ID_COMPARTIR) e.Check(hay && f.compartir);
+    };
+    Bind(wxEVT_UPDATE_UI, soloTorrent, ID_ELEGIR);
+    Bind(wxEVT_UPDATE_UI, soloTorrent, ID_COMPARTIR);
+
+    m_motor.alTerminar = [this](const hnd::Foto& f) { AlTerminar(f); };
+    m_torrents.alTerminar = [this](const hnd::Foto& f, const std::vector<std::wstring>& archivos) { AlTerminarTorrent(f, archivos); };
 
     m_bandeja = std::make_unique<Bandeja>(this);
     m_bandeja->SetIcon(wxBitmapBundle::FromIconBundle(iconos), L"Atarraya");
 
     // Tamaño y lugar de la última vez
-    SetMinSize(FromDIP(wxSize(640, 400)));
+    SetMinSize(FromDIP(wxSize(760, 420)));
     if (m_ajustes.ancho > 200 && m_ajustes.alto > 200)
     {
         wxRect r(m_ajustes.x, m_ajustes.y, m_ajustes.ancho, m_ajustes.alto);
@@ -442,7 +537,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
     }
     else
     {
-        SetSize(FromDIP(wxSize(980, 600)));
+        SetSize(FromDIP(wxSize(1060, 620)));
         CentreOnScreen();
     }
     if (m_ajustes.maximizada) Maximize();
@@ -455,6 +550,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes)
 VentanaPrincipal::~VentanaPrincipal()
 {
     m_motor.alTerminar = nullptr;
+    m_torrents.alTerminar = nullptr;
 }
 
 void VentanaPrincipal::CrearMenu()
@@ -463,6 +559,9 @@ void VentanaPrincipal::CrearMenu()
 
     auto* archivo = new wxMenu();
     archivo->Append(ID_AGREGAR, L"&Agregar enlace...\tCtrl+N");
+    archivo->Append(ID_VARIOS, L"Agregar &varios enlaces (lista o .txt)...\tCtrl+L");
+    archivo->Append(ID_PAGINA, L"Enlaces de una &página...\tCtrl+P");
+    archivo->Append(ID_TORRENT, L"Abrir un archivo .&torrent...\tCtrl+O");
     archivo->AppendSeparator();
     archivo->Append(wxID_EXIT, L"&Salir");
     barra->Append(archivo, L"&Archivo");
@@ -478,6 +577,9 @@ void VentanaPrincipal::CrearMenu()
     descargas->Append(ID_CAMBIAR, L"Cambiar el en&lace...");
     descargas->Append(ID_HUELLA, L"Calcular la &huella SHA-256");
     descargas->AppendSeparator();
+    descargas->Append(ID_ELEGIR, L"Elegir los archivos del torrent...");
+    descargas->AppendCheckItem(ID_COMPARTIR, L"Seguir compartiendo el torrent al terminar");
+    descargas->AppendSeparator();
     descargas->Append(ID_REANUDAR_TODAS, L"Reanudar &todas");
     descargas->Append(ID_PAUSAR_TODAS, L"Pausar t&odas");
     descargas->Append(ID_LIMPIAR, L"Quitar de la lista las &terminadas");
@@ -488,8 +590,10 @@ void VentanaPrincipal::CrearMenu()
     herramientas->Append(ID_AJUSTES, L"&Ajustes...");
     barra->Append(herramientas, L"&Herramientas");
 
-    barra->Append(ayuda::CrearMenu(this, L"Gestor de descargas: baja archivos en varias partes a la vez, se puede pausar y "
-                                         L"reanudar (incluso después de apagar la PC) y recibe las descargas de tu navegador."),
+    barra->Append(ayuda::CrearMenu(this, L"Descargas, torrents y enlaces magnet en un solo programa: baja archivos en varias partes "
+                                         L"a la vez, listas de enlaces, los archivos de una página y videos de sitios que lo permiten. "
+                                         L"Se puede pausar y reanudar, incluso después de apagar la PC, y recibe las descargas de tu "
+                                         L"navegador."),
                   L"A&yuda");
     SetMenuBar(barra);
 }
@@ -498,13 +602,17 @@ void VentanaPrincipal::CrearBarra()
 {
     auto* barra = CreateToolBar(wxTB_HORIZONTAL | wxTB_TEXT | wxTB_HORZ_LAYOUT | wxTB_FLAT | wxTB_NODIVIDER);
     wxString color = TemaOscuro() ? L"#C9D1D9" : L"#5F6B7A";
-    barra->AddTool(ID_AGREGAR, L"Agregar enlace", iconos::Crear(iconos::Agregar, color), L"Agregar una descarga (Ctrl+N)");
+    barra->AddTool(ID_AGREGAR, L"Agregar enlace", iconos::Crear(iconos::Agregar, color), L"Agregar una descarga o un enlace magnet (Ctrl+N)");
+    barra->AddTool(ID_VARIOS, L"Varios enlaces", iconos::Crear(iconos::Varios, color), L"Pegar una lista de enlaces o abrir un .txt (Ctrl+L)");
+    barra->AddTool(ID_PAGINA, L"De una página", iconos::Crear(iconos::Pagina, color),
+                   L"Ver los archivos que enlaza una página o un elemento de Internet Archive (Ctrl+P)");
+    barra->AddTool(ID_TORRENT, L"Torrent", iconos::Crear(iconos::Torrent, color), L"Abrir un archivo .torrent (Ctrl+O)");
     barra->AddSeparator();
     barra->AddTool(ID_REANUDAR, L"Reanudar", iconos::Crear(iconos::Reanudar, color), L"Reanudar lo elegido");
     barra->AddTool(ID_PAUSAR, L"Pausar", iconos::Crear(iconos::Pausar, color), L"Pausar lo elegido");
     barra->AddTool(ID_QUITAR, L"Quitar", iconos::Crear(iconos::Quitar, color), L"Quitar de la lista (pregunta antes)");
     barra->AddSeparator();
-    barra->AddTool(ID_CARPETA, L"Abrir carpeta", iconos::Crear(iconos::Carpeta, color), L"Mostrar el archivo en su carpeta");
+    barra->AddTool(ID_CARPETA, L"Carpeta", iconos::Crear(iconos::Carpeta, color), L"Mostrar el archivo en su carpeta");
     barra->AddStretchableSpace();
     barra->AddTool(ID_NAVEGADORES, L"Navegadores", iconos::Crear(iconos::Navegador, color), L"Conectar con Chrome, Edge, Brave y Firefox");
     barra->AddTool(ID_AJUSTES, L"Ajustes", iconos::Crear(iconos::Ajustes, color), L"Carpeta, conexiones y velocidad");
@@ -530,14 +638,60 @@ uint64_t VentanaPrincipal::PrimeraSeleccion() const
     return ids.empty() ? 0 : ids.front();
 }
 
+bool VentanaPrincipal::BuscarFoto(uint64_t id, hnd::Foto& f)
+{
+    if (id == 0) return false;
+    return EsIdTorrent(id) ? m_torrents.Buscar(id, f) : m_motor.Buscar(id, f);
+}
+
 void VentanaPrincipal::Refrescar()
 {
-    m_motor.maxSimultaneas = m_ajustes.simultaneas;
-    m_motor.limiteBytesSeg = (int64_t)m_ajustes.limiteKB * 1024;
+    // 1. Cola compartida: «Descargas a la vez» cuenta las descargas normales y los torrents que bajan (los que solo
+    //    comparten no ocupan lugar). Las que esperan arrancan en el orden en que se agregaron.
+    int activasHttp = 0, activosTorrent = 0;
+    double velHttp = 0, velTorrent = 0;
+    std::vector<std::pair<int64_t, uint64_t>> cola;
+    for (auto& f : m_modelo->filas)
+    {
+        if (Activa(f)) (f.torrent ? activosTorrent : activasHttp)++;
+        (f.torrent ? velTorrent : velHttp) += f.velocidad;
+        if (f.datos.estado == Estado::EnCola && !f.eligeArchivos) cola.push_back({ f.datos.agregada, f.datos.id });
+    }
+    std::sort(cola.begin(), cola.end());
+    int libres = std::max(0, m_ajustes.simultaneas - activasHttp - activosTorrent);
+    int nuevasHttp = 0, nuevosTorrent = 0;
+    for (auto& [cuando, id] : cola)
+    {
+        if (libres <= 0) break;
+        (EsIdTorrent(id) ? nuevosTorrent : nuevasHttp)++;
+        libres--;
+    }
+    m_motor.maxSimultaneas = activasHttp + nuevasHttp;
+    m_torrents.maxSimultaneas = activosTorrent + nuevosTorrent;
+
+    // 2. Límite de bajada en total: si bajan las dos clases a la vez, cada una deja lugar a la otra
+    int64_t limite = (int64_t)m_ajustes.limiteKB * 1024;
+    int64_t limHttp = limite, limTorrent = limite;
+    if (limite > 0 && activasHttp > 0 && activosTorrent > 0)
+    {
+        limHttp = std::max<int64_t>(limite / 10, limite - (int64_t)std::min<double>(velTorrent, limite / 2.0));
+        limTorrent = std::max<int64_t>(limite / 10, limite - (int64_t)std::min<double>(velHttp, limite / 2.0));
+    }
+    m_motor.limiteBytesSeg = limHttp;
+    m_torrents.limiteBajada = limTorrent;
+    m_torrents.limiteSubida = (int64_t)m_ajustes.limiteSubidaKB * 1024;
+
     m_motor.Tick();
+    m_torrents.Tick();
 
     auto fotos = m_motor.Fotos();
-    std::reverse(fotos.begin(), fotos.end());   // las nuevas arriba
+    auto deTorrents = m_torrents.Fotos();
+    fotos.insert(fotos.end(), std::make_move_iterator(deTorrents.begin()), std::make_move_iterator(deTorrents.end()));
+    // Las nuevas arriba
+    std::stable_sort(fotos.begin(), fotos.end(), [](const hnd::Foto& a, const hnd::Foto& b) {
+        if (a.datos.agregada != b.datos.agregada) return a.datos.agregada > b.datos.agregada;
+        return a.datos.id > b.datos.id;
+    });
 
     bool misma = fotos.size() == m_modelo->filas.size();
     for (size_t i = 0; misma && i < fotos.size(); i++) misma = fotos[i].datos.id == m_modelo->filas[i].datos.id;
@@ -562,25 +716,30 @@ void VentanaPrincipal::Refrescar()
 
     // Detalles, resumen y botones
     uint64_t id = PrimeraSeleccion();
-    const Foto* elegida = nullptr;
-    double total = 0;
-    int bajando = 0, enCola = 0, terminadas = 0;
+    const hnd::Foto* elegida = nullptr;
+    double total = 0, subida = 0;
+    int bajando = 0, enCola = 0, terminadas = 0, compartiendo = 0;
     for (auto& f : m_modelo->filas)
     {
         if (f.datos.id == id) elegida = &f;
         total += f.velocidad;
-        if (f.datos.estado == Estado::Descargando || f.datos.estado == Estado::Iniciando) bajando++;
+        subida += f.subida;
+        if (Activa(f)) bajando++;
         if (f.datos.estado == Estado::EnCola) enCola++;
         if (f.datos.estado == Estado::Completada) terminadas++;
+        if (f.datos.estado == Estado::Compartiendo) compartiendo++;
     }
     if (IsShown()) m_detalles->Mostrar(elegida);
 
     wxString resumen;
-    if (m_modelo->filas.empty()) resumen = L"Sin descargas. Pulsa «Agregar enlace» o baja algo desde tu navegador.";
+    if (m_modelo->filas.empty()) resumen = L"Sin descargas. Pulsa «Agregar enlace», abre un torrent o baja algo desde tu navegador.";
     else
     {
         resumen = wxString::Format(L"↓ %s   ·   %d bajando   ·   %d en cola   ·   %d terminadas",
                                    total > 1 ? wxString(TextoVelocidad(total)) : wxString(L"0 B/s"), bajando, enCola, terminadas);
+        if (compartiendo > 0 || subida >= 1)
+            resumen += wxString::Format(L"   ·   ↑ %s, %d compartiendo", subida >= 1 ? wxString(TextoVelocidad(subida)) : wxString(L"0 B/s"),
+                                        compartiendo);
         if (m_ajustes.limiteKB > 0) resumen += wxString::Format(L"   ·   límite %d KB/s", m_ajustes.limiteKB);
     }
     m_resumen->SetLabel(resumen);
@@ -596,15 +755,45 @@ void VentanaPrincipal::Refrescar()
     }
 
     bool hay = elegida != nullptr;
-    bool activa = hay && (elegida->datos.estado == Estado::Descargando || elegida->datos.estado == Estado::Iniciando
-                          || elegida->datos.estado == Estado::EnCola);
-    bool detenida = hay && (elegida->datos.estado == Estado::Pausada || elegida->datos.estado == Estado::Error);
+    bool activa = hay && (Activa(*elegida) || elegida->datos.estado == Estado::EnCola || elegida->datos.estado == Estado::Compartiendo);
+    bool detenida = hay && (elegida->datos.estado == Estado::Pausada || elegida->datos.estado == Estado::Error
+                            || (elegida->torrent && elegida->datos.estado == Estado::Completada));
     if (auto* barra = GetToolBar())
     {
         barra->EnableTool(ID_REANUDAR, detenida || Seleccion().size() > 1);
         barra->EnableTool(ID_PAUSAR, activa || Seleccion().size() > 1);
         barra->EnableTool(ID_QUITAR, hay);
         barra->EnableTool(ID_CARPETA, hay);
+    }
+
+    // Avisos de los torrents (por ejemplo, archivos que no se pudieron mandar a la Papelera)
+    for (auto& a : m_torrents.Avisos()) Avisar(L"Torrent", a, true);
+
+    // Torrents cuyos datos llegaron y esperan que la persona elija qué bajar
+    for (auto t : m_torrents.PorElegir()) m_porElegir.push_back(t);
+    if (!m_porElegir.empty() && !m_ocupada && !m_saliendo)
+    {
+        if (IsShown() && !IsIconized())
+        {
+            uint64_t t = m_porElegir.front();
+            m_porElegir.erase(m_porElegir.begin());
+            m_ocupada = true;
+            CallAfter([this, t]() {
+                ElegirArchivos(t);
+                m_ocupada = false;
+            });
+        }
+        else
+        {
+            for (auto t : m_porElegir)
+            {
+                if (std::find(m_avisadosElegir.begin(), m_avisadosElegir.end(), t) != m_avisadosElegir.end()) continue;
+                m_avisadosElegir.push_back(t);
+                hnd::Foto f;
+                if (m_torrents.Buscar(t, f))
+                    Avisar(L"Elige los archivos", L"Ya llegaron los datos de «" + NombreVisible(f.datos) + L"». Abre Atarraya para elegir qué bajar.");
+            }
+        }
     }
 }
 
@@ -616,6 +805,23 @@ void VentanaPrincipal::Mostrar()
     Refrescar();
 }
 
+uint64_t VentanaPrincipal::AgregarEnlace(const std::string& url, const std::wstring& carpeta, const std::string& referer, bool empezar,
+                                         bool& yaEstaba)
+{
+    yaEstaba = false;
+    if (m_motor.BuscarPorUrl(url))
+    {
+        yaEstaba = true;
+        return 0;
+    }
+    DatosDescarga d;
+    d.url = url;
+    d.referer = referer;
+    d.carpeta = carpeta;
+    d.conexiones = m_ajustes.conexiones;
+    return m_motor.Agregar(d, empezar);
+}
+
 void VentanaPrincipal::NuevaDescarga(const DatosDescarga& previa, bool delNavegador, int64_t tamanoAnunciado)
 {
     DialogoAgregar d(IsShown() ? this : nullptr, m_ajustes, previa, delNavegador, tamanoAnunciado);
@@ -624,6 +830,18 @@ void VentanaPrincipal::NuevaDescarga(const DatosDescarga& previa, bool delNavega
     Registrar("ventana «Nueva descarga»: " + std::string(respuesta == wxID_OK ? "aceptada" : "cancelada"));
     if (respuesta != wxID_OK) return;
     DatosDescarga datos = d.Datos();
+    // Un magnet o una página de Internet Archive tienen su propia ventana
+    if (sistema::EsMagnet(Ancho(datos.url)))
+    {
+        AgregarMagnet(datos.url, delNavegador, datos.carpeta);
+        return;
+    }
+    std::string ia;
+    if (enlaces::EsInternetArchive(datos.url, ia))
+    {
+        AbrirPagina(Ancho(datos.url), true);
+        return;
+    }
     if (uint64_t otra = m_motor.BuscarPorUrl(datos.url))
     {
         wxMessageDialog pregunta(this, L"Esa dirección ya está en la lista y no ha terminado. ¿Agregarla otra vez?",
@@ -641,19 +859,200 @@ void VentanaPrincipal::NuevaDescarga(const DatosDescarga& previa, bool delNavega
     Refrescar();
 }
 
+void VentanaPrincipal::AgregarVarios()
+{
+    DialogoVarios d(IsShown() ? this : nullptr, m_ajustes);
+    if (d.ShowModal() != wxID_OK) return;
+    int agregadas = 0, yaEstaban = 0, torrents = 0, fallaron = 0;
+    for (const auto& url : d.Enlaces())
+    {
+        if (enlaces::EsMagnet(url))
+        {
+            InfoTorrent info;
+            std::string error;
+            if (!MotorTorrent::LeerMagnet(url, info, error)) { fallaron++; continue; }
+            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; continue; }
+            NuevoTorrent n;
+            n.magnet = url;
+            n.carpeta = d.Carpeta();
+            n.compartir = m_ajustes.compartirTorrents;
+            n.empezar = d.EmpezarAhora();
+            if (m_torrents.Agregar(n, error)) torrents++;
+            else fallaron++;
+            continue;
+        }
+        bool yaEstaba = false;
+        if (AgregarEnlace(url, d.Carpeta(), "", d.EmpezarAhora(), yaEstaba)) agregadas++;
+        else if (yaEstaba) yaEstaban++;
+    }
+    Registrar("varios enlaces: " + std::to_string(agregadas) + " descargas y " + std::to_string(torrents) + " torrents");
+    wxString texto = wxString::Format(L"Se agregaron %d %s", agregadas + torrents, agregadas + torrents == 1 ? L"enlace" : L"enlaces");
+    if (torrents > 0) texto += wxString::Format(L" (%d magnet)", torrents);
+    texto += L".";
+    if (yaEstaban > 0) texto += wxString::Format(L" %d ya estaban en la lista.", yaEstaban);
+    if (fallaron > 0) texto += wxString::Format(L" %d no se pudieron agregar.", fallaron);
+    if (yaEstaban > 0 || fallaron > 0) ayuda::Aviso(texto, L"Agregar varios enlaces", wxOK | wxICON_INFORMATION, this);
+    else Avisar(L"Agregar varios enlaces", texto);
+    Refrescar();
+}
+
+void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
+{
+    DialogoPagina d(IsShown() ? this : nullptr, m_ajustes, url, buscarYa);
+    if (d.ShowModal() != wxID_OK) return;
+    int agregadas = 0, yaEstaban = 0;
+    for (const auto& e : d.Elegidos())
+    {
+        if (enlaces::EsMagnet(e.url))
+        {
+            InfoTorrent info;
+            std::string error;
+            if (!MotorTorrent::LeerMagnet(e.url, info, error)) continue;
+            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; continue; }
+            NuevoTorrent n;
+            n.magnet = e.url;
+            n.carpeta = d.Carpeta();
+            n.compartir = m_ajustes.compartirTorrents;
+            n.empezar = d.EmpezarAhora();
+            if (m_torrents.Agregar(n, error)) agregadas++;
+            continue;
+        }
+        bool yaEstaba = false;
+        if (AgregarEnlace(e.url, d.Carpeta(), d.Pagina(), d.EmpezarAhora(), yaEstaba)) agregadas++;
+        else if (yaEstaba) yaEstaban++;
+    }
+    Registrar("enlaces de una página: " + std::to_string(agregadas) + " agregados de " + SoloSitio(d.Pagina()));
+    wxString texto = wxString::Format(L"Se agregaron %d %s.", agregadas, agregadas == 1 ? L"archivo" : L"archivos");
+    if (yaEstaban > 0) texto += wxString::Format(L" %d ya estaban en la lista.", yaEstaban);
+    Avisar(L"Enlaces de una página", texto);
+    Refrescar();
+}
+
+void VentanaPrincipal::AbrirTorrent()
+{
+    if (!MotorTorrent::Disponible())
+    {
+        ayuda::Aviso(L"Esta copia de Atarraya se compiló sin torrents.", L"Torrent", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    wxFileDialog d(this, L"Abrir un archivo .torrent", wxEmptyString, wxEmptyString, L"Torrents (*.torrent)|*.torrent",
+                   wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (d.ShowModal() != wxID_OK) return;
+    AbrirTorrentDe(d.GetPath().ToStdWstring());
+}
+
+void VentanaPrincipal::AbrirTorrentDe(const std::wstring& ruta)
+{
+    std::string datos;
+    int64_t tamano = TamanoArchivo(ruta);
+    if (tamano <= 0 || tamano > 20LL * 1024 * 1024 || !LeerArchivo(ruta, datos))
+    {
+        ayuda::Aviso(L"No se pudo leer ese archivo .torrent (o pesa más de 20 MB).", L"Nuevo torrent", wxOK | wxICON_WARNING, this);
+        return;
+    }
+    InfoTorrent info;
+    std::string error;
+    if (!MotorTorrent::LeerTorrent(datos, info, error))
+    {
+        ayuda::Aviso(wxString::FromUTF8(error), L"Nuevo torrent", wxOK | wxICON_WARNING, this);
+        return;
+    }
+    Mostrar();
+    AgregarTorrent(info, datos, false, L"");
+}
+
+void VentanaPrincipal::AgregarMagnet(const std::string& magnet, bool delNavegador, const std::wstring& carpeta)
+{
+    InfoTorrent info;
+    std::string error;
+    if (!MotorTorrent::LeerMagnet(magnet, info, error))
+    {
+        if (delNavegador && !MotorTorrent::Disponible()) return;
+        ayuda::Aviso(wxString::FromUTF8(error), L"Nuevo torrent", wxOK | wxICON_WARNING, IsShown() ? this : nullptr);
+        return;
+    }
+    if (delNavegador && !m_ajustes.preguntarNavegador)
+    {
+        // Sin preguntar: baja todos los archivos en la carpeta de siempre
+        if (m_torrents.BuscarPorHuella(info.huella)) return;
+        NuevoTorrent n;
+        n.magnet = magnet;
+        n.carpeta = m_ajustes.CarpetaEfectiva();
+        n.compartir = m_ajustes.compartirTorrents;
+        if (!m_torrents.Agregar(n, error)) Avisar(L"Nuevo torrent", wxString::FromUTF8(error), true);
+        Refrescar();
+        return;
+    }
+    AgregarTorrent(info, "", delNavegador, carpeta);
+}
+
+void VentanaPrincipal::AgregarTorrent(const InfoTorrent& info, const std::string& datos, bool delNavegador, const std::wstring& carpeta)
+{
+    if (uint64_t ya = m_torrents.BuscarPorHuella(info.huella))
+    {
+        ayuda::Aviso(L"Ese torrent ya está en la lista.", L"Nuevo torrent", wxOK | wxICON_INFORMATION, IsShown() ? this : nullptr);
+        (void)ya;
+        return;
+    }
+    DialogoTorrent d(IsShown() ? this : nullptr, m_ajustes, info, DialogoTorrent::Modo::Nuevo, delNavegador, carpeta);
+    d.Raise();
+    int respuesta = d.ShowModal();
+    Registrar("ventana «Nuevo torrent»: " + std::string(respuesta == wxID_OK ? "aceptada" : "cancelada"));
+    if (respuesta != wxID_OK) return;
+    NuevoTorrent n;
+    n.datos = datos;
+    n.magnet = datos.empty() ? info.magnet : std::string();
+    n.carpeta = d.Carpeta();
+    n.bajar = d.Elegidos();
+    n.elegirDespues = d.ElegirDespues();
+    n.compartir = d.Compartir();
+    n.empezar = d.EmpezarAhora();
+    m_ajustes.compartirTorrents = n.compartir;
+    if (datos.empty()) m_ajustes.elegirArchivosMagnet = n.elegirDespues;
+    m_ajustes.Guardar();
+    std::string error;
+    if (!m_torrents.Agregar(n, error))
+    {
+        ayuda::Aviso(wxString::FromUTF8(error), L"Nuevo torrent", wxOK | wxICON_WARNING, IsShown() ? this : nullptr);
+        return;
+    }
+    if (delNavegador) Mostrar();
+    Refrescar();
+}
+
 void VentanaPrincipal::Pedido(const std::string& texto)
 {
     nlohmann::json j;
     try { j = nlohmann::json::parse(texto); }
     catch (...) { Registrar("pedido con JSON no válido"); return; }
+    if (!j.is_object()) return;
     std::string tipo = j.value("tipo", "");
     Registrar("pedido: " + tipo + " " + SoloSitio(j.value("url", "")));
     if (tipo == "mostrar") { Mostrar(); return; }
+    if (tipo == "torrent")
+    {
+        // Otra copia del programa abierta con un .torrent
+        std::wstring ruta = Ancho(j.value("ruta", ""));
+        if (ruta.size() > 8 && Minusculas(ruta.substr(ruta.size() - 8)) == L".torrent" && ExisteArchivo(ruta)) AbrirTorrentDe(ruta);
+        return;
+    }
     if (tipo != "descargar") return;
 
+    std::string url = j.value("url", "");
+    if (sistema::EsMagnet(Ancho(url)))
+    {
+        AgregarMagnet(url, true);
+        return;
+    }
     DatosDescarga d;
-    d.url = j.value("url", "");
+    d.url = url;
     if (!sistema::EsDireccion(Ancho(d.url))) { Registrar("pedido rechazado: dirección no válida"); return; }
+    if (enlaces::NoPermitido(d.url))
+    {
+        Registrar("pedido rechazado: sitio que no permite bajar sus videos");
+        Avisar(L"Atarraya", enlaces::TextoNoPermitido);
+        return;
+    }
     d.referer = j.value("referer", "");
     d.agente = j.value("agente", "");
     d.cookies = j.value("cookies", "");
@@ -673,13 +1072,30 @@ void VentanaPrincipal::Pedido(const std::string& texto)
 
 void VentanaPrincipal::Reanudar()
 {
-    for (auto id : Seleccion()) m_motor.Reanudar(id);
+    for (auto id : Seleccion())
+    {
+        if (EsIdTorrent(id))
+        {
+            hnd::Foto f;
+            if (m_torrents.Buscar(id, f) && f.eligeArchivos && f.tieneDatos)
+            {
+                ElegirArchivos(id);
+                continue;
+            }
+            m_torrents.Reanudar(id);
+        }
+        else m_motor.Reanudar(id);
+    }
     Refrescar();
 }
 
 void VentanaPrincipal::Pausar()
 {
-    for (auto id : Seleccion()) m_motor.Pausar(id);
+    for (auto id : Seleccion())
+    {
+        if (EsIdTorrent(id)) m_torrents.Pausar(id);
+        else m_motor.Pausar(id);
+    }
     Refrescar();
 }
 
@@ -689,14 +1105,19 @@ void VentanaPrincipal::Quitar()
     if (ids.empty()) return;
     wxString pregunta = ids.size() == 1 ? wxString(L"¿Quitar esta descarga de la lista?")
                                         : wxString::Format(L"¿Quitar estas %zu descargas de la lista?", ids.size());
-    pregunta += L"\n\nPuedes dejar el archivo donde está o mandarlo a la Papelera (también lo bajado a medias).";
+    pregunta += L"\n\nPuedes dejar los archivos donde están o mandarlos a la Papelera (también lo bajado a medias).";
     wxMessageDialog d(this, pregunta, L"Quitar", wxYES_NO | wxCANCEL | wxCANCEL_DEFAULT | wxICON_QUESTION);
     d.SetYesNoCancelLabels(L"Quitar de la lista", L"Quitar y mandar a la Papelera", L"Cancelar");
     int r = d.ShowModal();
     if (r == wxID_CANCEL) return;
     for (auto id : ids)
     {
-        Foto f;
+        if (EsIdTorrent(id))
+        {
+            m_torrents.Quitar(id, r == wxID_NO);
+            continue;
+        }
+        hnd::Foto f;
         if (!m_motor.Buscar(id, f)) continue;
         std::wstring final = m_motor.RutaFinal(id), parcial = m_motor.RutaParcial(id);
         m_motor.Quitar(id);
@@ -711,20 +1132,40 @@ void VentanaPrincipal::Quitar()
 
 void VentanaPrincipal::AbrirArchivo()
 {
-    Foto f;
-    if (!m_motor.Buscar(PrimeraSeleccion(), f)) return;
-    if (f.datos.estado != Estado::Completada)
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f)) return;
+    if (f.torrent && f.eligeArchivos && f.tieneDatos)
+    {
+        ElegirArchivos(f.datos.id);
+        return;
+    }
+    bool terminada = f.datos.estado == Estado::Completada || (f.torrent && f.datos.estado == Estado::Compartiendo);
+    if (!terminada)
     {
         AbrirCarpeta();
         return;
     }
-    std::wstring ruta = m_motor.RutaFinal(f.datos.id);
+    std::wstring ruta = f.torrent ? m_torrents.RutaFinal(f.datos.id) : m_motor.RutaFinal(f.datos.id);
+    if (f.torrent && !m_torrents.UnSoloArchivo(f.datos.id))
+    {
+        // Un torrent de varios archivos: se abre su carpeta
+        if (ExisteCarpeta(ruta)) sistema::Abrir(ruta);
+        else AbrirCarpeta();
+        return;
+    }
     if (!ExisteArchivo(ruta))
     {
         ayuda::Aviso(L"El archivo ya no está en su carpeta (quizá se movió o se borró).", L"Abrir", wxOK | wxICON_INFORMATION, this);
         return;
     }
-    if (sistema::EsEjecutable(f.datos.nombre))
+    std::wstring nombre = ruta.substr(ruta.find_last_of(L'\\') + 1);
+    // Un .torrent bajado se abre aquí mismo, como torrent
+    if (!f.torrent && Minusculas(nombre).size() > 8 && Minusculas(nombre).substr(nombre.size() - 8) == L".torrent" && MotorTorrent::Disponible())
+    {
+        AbrirTorrentDe(ruta);
+        return;
+    }
+    if (sistema::EsEjecutable(nombre))
     {
         wxMessageDialog d(this, L"Este archivo es un programa. Ábrelo solo si viene de un sitio en el que confías.\n\n¿Abrirlo?",
                           L"Abrir un programa", wxYES_NO | wxNO_DEFAULT | wxICON_WARNING);
@@ -736,23 +1177,38 @@ void VentanaPrincipal::AbrirArchivo()
 
 void VentanaPrincipal::AbrirCarpeta()
 {
-    Foto f;
-    if (!m_motor.Buscar(PrimeraSeleccion(), f)) return;
-    std::wstring ruta = f.datos.estado == Estado::Completada ? m_motor.RutaFinal(f.datos.id) : m_motor.RutaParcial(f.datos.id);
-    if (ruta.empty()) ruta = (f.datos.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : f.datos.carpeta) + L"\\";
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f)) return;
+    std::wstring ruta;
+    if (f.torrent)
+    {
+        ruta = m_torrents.RutaFinal(f.datos.id);
+        if (!ExisteArchivo(ruta) && !ExisteCarpeta(ruta)) ruta = f.datos.carpeta + L"\\";
+    }
+    else
+    {
+        ruta = f.datos.estado == Estado::Completada ? m_motor.RutaFinal(f.datos.id) : m_motor.RutaParcial(f.datos.id);
+        if (ruta.empty()) ruta = (f.datos.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : f.datos.carpeta) + L"\\";
+    }
     sistema::MostrarEnCarpeta(ruta);
 }
 
 void VentanaPrincipal::CopiarEnlace()
 {
-    Foto f;
-    if (m_motor.Buscar(PrimeraSeleccion(), f)) sistema::CopiarTexto(Ancho(f.datos.url));
+    hnd::Foto f;
+    if (BuscarFoto(PrimeraSeleccion(), f)) sistema::CopiarTexto(Ancho(f.datos.url));
 }
 
 void VentanaPrincipal::CambiarEnlace()
 {
-    Foto f;
-    if (!m_motor.Buscar(PrimeraSeleccion(), f)) return;
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f)) return;
+    if (f.torrent)
+    {
+        ayuda::Aviso(L"Un torrent no tiene un enlace que se pueda cambiar: sus partes llegan de otras personas.", L"Cambiar el enlace",
+                     wxOK | wxICON_INFORMATION, this);
+        return;
+    }
     if (f.datos.estado == Estado::Completada) return;
     if (f.datos.estado == Estado::Descargando || f.datos.estado == Estado::Iniciando)
     {
@@ -776,10 +1232,18 @@ void VentanaPrincipal::CambiarEnlace()
 
 void VentanaPrincipal::CalcularHuella()
 {
-    Foto f;
-    if (!m_motor.Buscar(PrimeraSeleccion(), f) || f.datos.estado != Estado::Completada) return;
-    std::wstring ruta = m_motor.RutaFinal(f.datos.id);
-    wxString nombre = f.datos.nombre;
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f)) return;
+    bool terminada = f.datos.estado == Estado::Completada || (f.torrent && f.datos.estado == Estado::Compartiendo);
+    if (!terminada) return;
+    if (f.torrent && !m_torrents.UnSoloArchivo(f.datos.id))
+    {
+        ayuda::Aviso(L"La huella se calcula para un solo archivo, y este torrent tiene varios. (Los torrents ya comprueban "
+                     L"cada parte al bajarla.)", L"Huella SHA-256", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    std::wstring ruta = f.torrent ? m_torrents.RutaFinal(f.datos.id) : m_motor.RutaFinal(f.datos.id);
+    wxString nombre = ruta.substr(ruta.find_last_of(L'\\') + 1);
     m_resumen->SetLabel(L"Calculando la huella SHA-256 de " + nombre + L"...");
     wxWeakRef<VentanaPrincipal> yo(this);
     std::thread([yo, ruta, nombre]() {
@@ -800,17 +1264,57 @@ void VentanaPrincipal::CalcularHuella()
     }).detach();
 }
 
+void VentanaPrincipal::ElegirArchivos(uint64_t id)
+{
+    if (!EsIdTorrent(id)) return;
+    InfoTorrent info;
+    if (!m_torrents.Archivos(id, info)) return;
+    if (!info.tieneDatos)
+    {
+        ayuda::Aviso(L"Todavía no llegan los datos de este torrent (su lista de archivos). Déjalo bajando un momento.",
+                     L"Elegir los archivos", wxOK | wxICON_INFORMATION, this);
+        return;
+    }
+    Mostrar();
+    DialogoTorrent d(this, m_ajustes, info, DialogoTorrent::Modo::Elegir);
+    if (d.ShowModal() != wxID_OK) return;
+    if (!m_torrents.ElegirArchivos(id, d.Elegidos()))
+        ayuda::Aviso(L"No se pudo cambiar la elección de archivos.", L"Elegir los archivos", wxOK | wxICON_WARNING, this);
+    Refrescar();
+}
+
+void VentanaPrincipal::CambiarCompartir()
+{
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f) || !f.torrent) return;
+    m_torrents.Compartir(f.datos.id, !f.compartir);
+    Refrescar();
+}
+
 void VentanaPrincipal::MenuContextual(wxDataViewEvent&)
 {
-    if (Seleccion().empty()) return;
+    auto ids = Seleccion();
+    if (ids.empty()) return;
+    hnd::Foto f;
+    bool torrent = BuscarFoto(ids.front(), f) && f.torrent;
     wxMenu m;
-    m.Append(ID_REANUDAR, L"Reanudar");
+    m.Append(ID_REANUDAR, torrent && f.datos.estado == Estado::Completada ? L"Volver a compartir" : L"Reanudar");
     m.Append(ID_PAUSAR, L"Pausar");
     m.AppendSeparator();
-    m.Append(ID_ABRIR, L"Abrir el archivo");
+    m.Append(ID_ABRIR, torrent && !m_torrents.UnSoloArchivo(f.datos.id) ? L"Abrir" : L"Abrir el archivo");
     m.Append(ID_CARPETA, L"Abrir la carpeta");
-    m.Append(ID_COPIAR, L"Copiar el enlace");
-    m.Append(ID_CAMBIAR, L"Cambiar el enlace...");
+    m.Append(ID_COPIAR, torrent ? L"Copiar el enlace magnet" : L"Copiar el enlace");
+    if (torrent)
+    {
+        m.Append(ID_ELEGIR, L"Elegir los archivos...");
+        m.AppendCheckItem(ID_COMPARTIR, L"Seguir compartiendo al terminar");
+        m.Check(ID_COMPARTIR, f.compartir);
+        m.Enable(ID_ELEGIR, f.tieneDatos);
+    }
+    else
+    {
+        m.Append(ID_CAMBIAR, L"Cambiar el enlace...");
+    }
     m.Append(ID_HUELLA, L"Calcular la huella SHA-256");
     m.AppendSeparator();
     m.Append(ID_QUITAR, L"Quitar...");
@@ -823,7 +1327,7 @@ void VentanaPrincipal::Avisar(const wxString& titulo, const wxString& texto, boo
         m_bandeja->ShowBalloon(titulo, texto, 6000, error ? wxICON_WARNING : wxICON_INFORMATION);
 }
 
-void VentanaPrincipal::AlTerminar(const Foto& f)
+void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
 {
     wxString nombre = NombreVisible(f.datos);
     if (f.datos.estado == Estado::Completada)
@@ -838,12 +1342,31 @@ void VentanaPrincipal::AlTerminar(const Foto& f)
                              L"Archivo bloqueado", wxOK | wxICON_WARNING, yo.get());
             });
         });
-        if (m_ajustes.avisarAlTerminar) Avisar(L"Descarga terminada", nombre);
+        bool esTorrent = Minusculas(f.datos.nombre).size() > 8 && Minusculas(f.datos.nombre).substr(f.datos.nombre.size() - 8) == L".torrent";
+        if (m_ajustes.avisarAlTerminar)
+            Avisar(L"Descarga terminada", esTorrent ? nombre + L"\nHaz doble clic en él para abrirlo en Atarraya." : nombre);
     }
     else if (f.datos.estado == Estado::Error && m_ajustes.avisarAlTerminar)
     {
         Avisar(L"La descarga se detuvo", nombre + L"\n" + wxString::FromUTF8(f.datos.error), true);
     }
+}
+
+void VentanaPrincipal::AlTerminarTorrent(const hnd::Foto& f, const std::vector<std::wstring>& archivos)
+{
+    wxString nombre = NombreVisible(f.datos);
+    wxWeakRef<VentanaPrincipal> yo(this);
+    sistema::MarcarVariosComoDescargados(archivos, [yo, nombre](size_t faltan) {
+        if (faltan == 0) return;
+        wxTheApp->CallAfter([yo, nombre, faltan]() {
+            if (!yo) return;
+            ayuda::Aviso(wxString::Format(L"Windows (o tu antivirus) bloqueó o quitó %zu %s de «", faltan, faltan == 1 ? L"archivo" : L"archivos")
+                             + nombre + L"» porque podría ser peligroso.",
+                         L"Archivo bloqueado", wxOK | wxICON_WARNING, yo.get());
+        });
+    });
+    if (m_ajustes.avisarAlTerminar)
+        Avisar(L"Torrent terminado", f.compartir ? nombre + L"\nSigue compartiendo con otras personas." : nombre);
 }
 
 void VentanaPrincipal::GuardarGeometria()
@@ -885,12 +1408,15 @@ void VentanaPrincipal::Salir()
     m_saliendo = true;
     m_reloj.Stop();
     if (IsShown()) GuardarGeometria();
-    m_motor.alTerminar = nullptr;
-    m_motor.Detener();
+    Hide();   // se va enseguida; los motores terminan de guardar por detrás
     if (m_bandeja)
     {
         m_bandeja->RemoveIcon();
         m_bandeja.release()->Destroy();   // wx lo borra cuando termina de atender sus eventos
     }
+    m_motor.alTerminar = nullptr;
+    m_torrents.alTerminar = nullptr;
+    m_motor.Detener();
+    m_torrents.Detener();
     Destroy();
 }

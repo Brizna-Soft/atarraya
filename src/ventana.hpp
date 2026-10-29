@@ -9,11 +9,13 @@
 
 #include "ajustes.hpp"
 #include "motor.hpp"
+#include "torrents.hpp"
 
 class wxDataViewCtrl;
 class wxDataViewEvent;
 class wxSplitterWindow;
 class wxStaticText;
+class wxUpdateUIEvent;
 class ModeloLista;
 class PanelDetalles;
 class Bandeja;
@@ -21,14 +23,20 @@ class Bandeja;
 class VentanaPrincipal : public wxFrame
 {
 public:
-    VentanaPrincipal(hnd::Motor& motor, hnd::Ajustes& ajustes);
+    VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Ajustes& ajustes);
     ~VentanaPrincipal() override;
 
     void Mostrar();                          // la trae al frente (también desde el ícono junto al reloj)
     void Pedido(const std::string& json);   // del navegador o de otra copia del programa
     void NuevaDescarga(const hnd::DatosDescarga& previa, bool delNavegador, int64_t tamanoAnunciado = -1);
+    void AgregarVarios();
+    void AbrirPagina(const std::wstring& url, bool buscarYa);
+    void AbrirTorrent();                                    // elegir un .torrent
+    void AbrirTorrentDe(const std::wstring& ruta);          // un .torrent que ya está en el disco
+    void AgregarMagnet(const std::string& magnet, bool delNavegador, const std::wstring& carpeta = L"");
     void Salir();
     hnd::Motor& MotorDescargas() { return m_motor; }
+    hnd::MotorTorrent& MotorTorrents() { return m_torrents; }
 
 private:
     void CrearMenu();
@@ -36,9 +44,14 @@ private:
     void Refrescar();
     std::vector<uint64_t> Seleccion() const;
     uint64_t PrimeraSeleccion() const;
+    bool BuscarFoto(uint64_t id, hnd::Foto& f);
     void AlCerrar(wxCloseEvent& e);
     void AlTerminar(const hnd::Foto& f);
+    void AlTerminarTorrent(const hnd::Foto& f, const std::vector<std::wstring>& archivos);
     void Avisar(const wxString& titulo, const wxString& texto, bool error = false);
+    void AgregarTorrent(const hnd::InfoTorrent& info, const std::string& datos, bool delNavegador, const std::wstring& carpeta);
+    uint64_t AgregarEnlace(const std::string& url, const std::wstring& carpeta, const std::string& referer, bool empezar,
+                           bool& yaEstaba);
 
     void Reanudar();
     void Pausar();
@@ -48,10 +61,13 @@ private:
     void CopiarEnlace();
     void CambiarEnlace();
     void CalcularHuella();
+    void ElegirArchivos(uint64_t id);
+    void CambiarCompartir();
     void MenuContextual(wxDataViewEvent& e);
     void GuardarGeometria();
 
     hnd::Motor& m_motor;
+    hnd::MotorTorrent& m_torrents;
     hnd::Ajustes& m_ajustes;
     wxDataViewCtrl* m_lista = nullptr;
     ModeloLista* m_modelo = nullptr;
@@ -61,6 +77,9 @@ private:
     std::unique_ptr<Bandeja> m_bandeja;
     wxTimer m_reloj;
     bool m_saliendo = false;
+    bool m_ocupada = false;                 // hay una ventana de elegir archivos abierta
+    std::vector<uint64_t> m_porElegir;      // torrents que esperan que la persona elija archivos
+    std::vector<uint64_t> m_avisadosElegir; // ya se avisó con un globo
 };
 
 // Ids de los comandos (los usa también el menú del ícono junto al reloj)
@@ -81,4 +100,9 @@ enum
     ID_NAVEGADORES,
     ID_AJUSTES,
     ID_MOSTRAR,
+    ID_VARIOS,
+    ID_PAGINA,
+    ID_TORRENT,
+    ID_ELEGIR,
+    ID_COMPARTIR,
 };

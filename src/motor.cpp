@@ -325,8 +325,40 @@ namespace
         case hnd::Estado::Pausada: return "pausada";
         case hnd::Estado::Completada: return "completada";
         case hnd::Estado::Error: return "error";
+        case hnd::Estado::Compartiendo: return "completada";   // no se usa en las descargas normales
         }
         return "pausada";
+    }
+
+    // Para BajarTexto: junta el cuerpo en memoria, con un tope
+    struct Memoria
+    {
+        std::string* destino = nullptr;
+        size_t maximo = 0;
+        bool excedido = false;
+    };
+
+    size_t AlRecibirMemoria(char* b, size_t t, size_t n, void* u)
+    {
+        auto* m = static_cast<Memoria*>(u);
+        size_t total = t * n;
+        if (m->destino->size() + total > m->maximo)
+        {
+            m->excedido = true;
+            return 0;
+        }
+        m->destino->append(b, total);
+        return total;
+    }
+
+    std::string TextoErrorPagina(long codigo)
+    {
+        if (codigo == 404 || codigo == 410) return "La página no existe (código " + std::to_string(codigo) + ").";
+        if (codigo == 401 || codigo == 403)
+            return "El sitio no dio permiso para leer la página (código " + std::to_string(codigo) + "). Puede que pida iniciar sesión.";
+        if (codigo == 429) return "El sitio pide esperar un poco antes de volver a intentarlo (código 429).";
+        if (codigo >= 500) return "El sitio tiene problemas (código " + std::to_string(codigo) + "). Inténtalo más tarde.";
+        return "El sitio respondió con el código " + std::to_string(codigo) + ".";
     }
 
     hnd::Estado EstadoDeNombre(const std::string& s)
@@ -357,8 +389,71 @@ namespace hnd
         case Estado::Pausada: return L"En pausa";
         case Estado::Completada: return L"Terminada";
         case Estado::Error: return L"Error";
+        case Estado::Compartiendo: return L"Compartiendo";
         }
         return L"";
+    }
+
+    bool BajarTexto(const std::string& url, size_t maximo, std::string& cuerpo, std::string& urlFinal, std::string& tipo,
+                    std::string& error, const std::atomic<bool>* parar)
+    {
+        cuerpo.clear();
+        urlFinal.clear();
+        tipo.clear();
+        error.clear();
+        std::string bajo = url.substr(0, 8);
+        std::transform(bajo.begin(), bajo.end(), bajo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (bajo.rfind("http://", 0) != 0 && bajo.rfind("https://", 0) != 0)
+        {
+            error = "La dirección tiene que empezar por http:// o https://.";
+            return false;
+        }
+        CURL* c = curl_easy_init();
+        if (!c)
+        {
+            error = "No se pudo preparar la conexión.";
+            return false;
+        }
+        // Un nombre que los sitios aceptan como de navegador, sin ocultar que es Atarraya
+        Peticion p{ url, "", "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " APP_NOMBRE "/" APP_VERSION };
+        Preparar(c, p, ProxyDelSistema());
+        curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
+        curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 120L);
+        curl_easy_setopt(c, CURLOPT_LOW_SPEED_TIME, 30L);
+        Memoria m{ &cuerpo, maximo, false };
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, AlRecibirMemoria);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
+        Cabeceras cab;
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &cab);
+        std::atomic<bool> nunca{ false };
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, parar ? const_cast<std::atomic<bool>*>(parar) : &nunca);
+        char detalle[CURL_ERROR_SIZE] = {};
+        curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detalle);
+
+        CURLcode res = curl_easy_perform(c);
+        long codigo = 0;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &codigo);
+        char* efectiva = nullptr;
+        curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &efectiva);
+        if (efectiva) urlFinal = efectiva;
+        curl_easy_cleanup(c);
+        auto it = cab.v.find("content-type");
+        if (it != cab.v.end()) tipo = it->second;
+
+        if (m.excedido) error = "La página es demasiado grande (más de " + Utf8(TextoTamano((int64_t)maximo)) + ").";
+        else if (res == CURLE_ABORTED_BY_CALLBACK) error = "Se canceló.";
+        else if (res != CURLE_OK) error = TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));
+        else if (codigo >= 400) error = TextoErrorPagina(codigo);
+        if (!error.empty())
+        {
+            cuerpo.clear();
+            return false;
+        }
+        return true;
     }
 
     // Limita la velocidad total: cada conexión «gasta» fichas y espera si se acaban

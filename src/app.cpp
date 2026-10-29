@@ -1,8 +1,10 @@
-// Atarraya: gestor de descargas gratis de Brizna Soft.
+// Atarraya: descargas, torrents y enlaces magnet en un solo programa, gratis, de Brizna Soft.
 //
-// Uso: Atarraya.exe [--bandeja] [dirección]
-//   --bandeja   empieza sin ventana, solo con el ícono junto al reloj (así lo abre el puente del navegador)
-//   dirección   la agrega como descarga nueva (si ya estaba abierto, se la pasa a esa copia)
+// Uso: Atarraya.exe [--bandeja] [dirección | magnet | archivo.torrent]
+//   --bandeja         empieza sin ventana, solo con el ícono junto al reloj (así lo abre el puente del navegador)
+//   dirección         la agrega como descarga nueva (si ya estaba abierto, se la pasa a esa copia)
+//   magnet            lo mismo con un enlace magnet
+//   archivo.torrent   abre la ventana «Nuevo torrent» con ese archivo
 
 #include <windows.h>
 
@@ -16,6 +18,7 @@
 
 #include "ajustes.hpp"
 #include "motor.hpp"
+#include "nombres.hpp"
 #include "sistema.hpp"
 #include "torrents.hpp"
 #include "util.hpp"
@@ -39,6 +42,7 @@ public:
 private:
     std::unique_ptr<wxSingleInstanceChecker> m_unica;
     std::unique_ptr<hnd::Motor> m_motor;
+    std::unique_ptr<hnd::MotorTorrent> m_torrents;
     hnd::Ajustes m_ajustes;
     HWND m_mensajes = nullptr;
 };
@@ -67,19 +71,32 @@ namespace
         }
         return DefWindowProcW(h, mensaje, w, l);
     }
+
+    bool EsArchivoTorrent(const std::wstring& a)
+    {
+        return a.size() > 8 && hnd::Minusculas(a.substr(a.size() - 8)) == L".torrent" && hnd::ExisteArchivo(a);
+    }
 }
 
 bool Aplicacion::OnInit()
 {
     bool bandeja = false;
     std::string url;
+    std::wstring torrent;
     for (int i = 1; i < argc; i++)
     {
         std::wstring a = argv[i].ToStdWstring();
         if (a == L"--bandeja") bandeja = true;
-        else if (a == L"--probar-libtorrent") { hnd::Registrar("libtorrent " + hnd::VersionLibtorrent(true)); return false; }
-        else if (hnd::sistema::EsDireccion(a)) url = hnd::Utf8(a);
+        else if (hnd::sistema::EsDireccion(a) || hnd::sistema::EsMagnet(a)) url = hnd::Utf8(a);
+        else if (EsArchivoTorrent(a))
+        {
+            wchar_t completa[MAX_PATH * 4] = {};
+            torrent = GetFullPathNameW(a.c_str(), MAX_PATH * 4, completa, nullptr) ? completa : a;
+        }
     }
+    nlohmann::json pedido;
+    if (!torrent.empty()) pedido = { { "tipo", "torrent" }, { "ruta", hnd::Utf8(torrent) } };
+    else if (!url.empty()) pedido = { { "tipo", "descargar" }, { "url", url } };
 
     // Una sola copia: si ya está abierto, se le pasa el pedido y esta copia se cierra
     m_unica = std::make_unique<wxSingleInstanceChecker>(L"Atarraya-" + wxGetUserId());
@@ -88,9 +105,7 @@ bool Aplicacion::OnInit()
         HWND otra = FindWindowExW(HWND_MESSAGE, nullptr, ClaseMensajes, nullptr);
         if (otra)
         {
-            nlohmann::json j = url.empty() ? nlohmann::json{ { "tipo", "mostrar" } }
-                                           : nlohmann::json{ { "tipo", "descargar" }, { "url", url } };
-            std::string texto = j.dump();
+            std::string texto = (pedido.is_null() ? nlohmann::json{ { "tipo", "mostrar" } } : pedido).dump();
             DWORD pid = 0;
             GetWindowThreadProcessId(otra, &pid);
             AllowSetForegroundWindow(pid);
@@ -108,7 +123,9 @@ bool Aplicacion::OnInit()
     m_ajustes.Cargar();
     m_motor = std::make_unique<hnd::Motor>(hnd::CarpetaDatos() + L"\\descargas.json");
     m_motor->Cargar();
-    ventana = new VentanaPrincipal(*m_motor, m_ajustes);
+    m_torrents = std::make_unique<hnd::MotorTorrent>(hnd::CarpetaDatos());
+    m_torrents->Cargar();
+    ventana = new VentanaPrincipal(*m_motor, *m_torrents, m_ajustes);
 
     WNDCLASSEXW clase = { sizeof(clase) };
     clase.lpfnWndProc = AlRecibirMensaje;
@@ -118,7 +135,13 @@ bool Aplicacion::OnInit()
     m_mensajes = CreateWindowExW(0, ClaseMensajes, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, clase.hInstance, nullptr);
 
     if (!bandeja) ventana->Show();
-    if (!url.empty()) ventana->Pedido(nlohmann::json{ { "tipo", "descargar" }, { "url", url } }.dump());
+    if (!pedido.is_null())
+    {
+        std::string texto = pedido.dump();
+        CallAfter([this, texto]() {
+            if (ventana) ventana->Pedido(texto);
+        });
+    }
     return true;
 }
 
@@ -126,6 +149,7 @@ int Aplicacion::OnExit()
 {
     if (m_mensajes) DestroyWindow(m_mensajes);
     m_mensajes = nullptr;
+    m_torrents.reset();
     m_motor.reset();
     return wxApp::OnExit();
 }

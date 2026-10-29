@@ -22,6 +22,9 @@ void hnd::Ajustes::Cargar()
         conexiones = std::clamp(j.value("conexiones", 8), 1, 16);
         simultaneas = std::clamp(j.value("simultaneas", 3), 1, 10);
         limiteKB = std::max(0, j.value("limiteKB", 0));
+        limiteSubidaKB = std::max(0, j.value("limiteSubidaKB", 0));
+        compartirTorrents = j.value("compartirTorrents", false);
+        elegirArchivosMagnet = j.value("elegirArchivosMagnet", true);
         preguntarNavegador = j.value("preguntarNavegador", true);
         bandejaAlCerrar = j.value("bandejaAlCerrar", true);
         avisarAlTerminar = j.value("avisarAlTerminar", true);
@@ -40,7 +43,9 @@ void hnd::Ajustes::Guardar() const
 {
     nlohmann::json j = {
         { "carpeta", Utf8(carpeta) }, { "conexiones", conexiones }, { "simultaneas", simultaneas },
-        { "limiteKB", limiteKB }, { "preguntarNavegador", preguntarNavegador }, { "bandejaAlCerrar", bandejaAlCerrar },
+        { "limiteKB", limiteKB }, { "limiteSubidaKB", limiteSubidaKB }, { "compartirTorrents", compartirTorrents },
+        { "elegirArchivosMagnet", elegirArchivosMagnet },
+        { "preguntarNavegador", preguntarNavegador }, { "bandejaAlCerrar", bandejaAlCerrar },
         { "avisarAlTerminar", avisarAlTerminar }, { "avisoBandejaMostrado", avisoBandejaMostrado },
         { "x", x }, { "y", y }, { "ancho", ancho }, { "alto", alto }, { "maximizada", maximizada },
         { "altoDetalles", altoDetalles },
