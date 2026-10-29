@@ -45,7 +45,7 @@ jobs:
           restore-keys: vcpkg-2026.10.16-
 
       # Aparte de la compilación del programa, para guardar la caché aunque el programa no compile
-      - name: Preparar las bibliotecas (la primera vez tarda: Boost, OpenSSL y libtorrent)
+      - name: Preparar las bibliotecas (la primera vez tarda por Boost, OpenSSL y libtorrent)
         shell: pwsh
         run: ./compilar.ps1 -Publicacion -SoloPreparar
 
