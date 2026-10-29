@@ -19,6 +19,7 @@ concurrency:
 jobs:
   compilar:
     runs-on: windows-2022
+    timeout-minutes: 150
     permissions:
       contents: write   # solo se usa para crear la versión cuando hay etiqueta
     env:
@@ -34,16 +35,19 @@ jobs:
           git clone --depth 1 --branch 2026.10.16 https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
           New-Item -ItemType Directory -Force "$env:VCPKG_DEFAULT_BINARY_CACHE" | Out-Null
 
+      # Si cambian las bibliotecas, se parte de la caché anterior: solo se compila lo nuevo
       - name: Traer las bibliotecas ya compiladas (caché)
         id: cache
         uses: actions/cache/restore@v6
         with:
           path: vendor/vcpkg-binarios
-          key: vcpkg-2026.10.16-${{ hashFiles('vcpkg.json', 'triplets/**') }}
+          key: vcpkg-2026.10.16-${{ hashFiles('vcpkg.json', 'triplets/**', 'vendor/vcpkg-overlays/**') }}
+          restore-keys: vcpkg-2026.10.16-
 
-      - name: Compilar
+      # Aparte de la compilación del programa, para guardar la caché aunque el programa no compile
+      - name: Preparar las bibliotecas (la primera vez tarda: Boost, OpenSSL y libtorrent)
         shell: pwsh
-        run: ./compilar.ps1 -Publicacion
+        run: ./compilar.ps1 -Publicacion -SoloPreparar
 
       - name: Guardar las bibliotecas compiladas (caché)
         if: steps.cache.outputs.cache-hit != 'true'
@@ -51,6 +55,10 @@ jobs:
         with:
           path: vendor/vcpkg-binarios
           key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Compilar
+        shell: pwsh
+        run: ./compilar.ps1 -Publicacion
 
       - name: Empaquetar
         shell: pwsh
@@ -69,7 +77,7 @@ jobs:
         run: |
           $version = "${{ github.ref_name }}".TrimStart('v')
           $notas = @"
-          Atarraya ${version}: gestor de descargas gratis, sin publicidad y sin recoger datos.
+          Atarraya ${version}: descargas, torrents y enlaces magnet en un solo programa, gratis, sin publicidad y sin recoger datos.
 
           1. Baja ``Atarraya-$version-x64.zip``, descomprímelo y abre ``Atarraya.exe``.
           2. Si Windows dice «Windows protegió su PC», pulsa «Más información» y luego «Ejecutar de todas formas»

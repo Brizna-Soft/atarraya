@@ -1,16 +1,20 @@
 ﻿# Compila Atarraya y deja el programa listo en .\programa
 #
 # Uso:
-#   powershell -ExecutionPolicy Bypass -File compilar.ps1 [-Limpiar] [-Publicacion]
+#   powershell -ExecutionPolicy Bypass -File compilar.ps1 [-Limpiar] [-Publicacion] [-SinTorrents] [-SoloPreparar]
 #
-#   -Limpiar      borra la carpeta build antes de compilar
-#   -Publicacion  versión limpia (la de version.txt, sin "-local"); la usa GitHub Actions
+#   -Limpiar       borra la carpeta build antes de compilar
+#   -Publicacion   versión limpia (la de version.txt, sin "-local"); la usa GitHub Actions
+#   -SinTorrents   sin libtorrent (ni Boost ni OpenSSL): compila mucho más rápido, para probar lo demás
+#   -SoloPreparar  solo prepara las bibliotecas con vcpkg, sin compilar el programa (lo usa GitHub Actions)
 #
 # Necesita Visual Studio 2022 (o sus Build Tools) con C++ y Git. Si la variable VCPKG_ROOT no está puesta,
 # baja vcpkg (versión fija) a vendor\vcpkg la primera vez.
 param(
     [switch]$Limpiar,
-    [switch]$Publicacion
+    [switch]$Publicacion,
+    [switch]$SinTorrents,
+    [switch]$SoloPreparar
 )
 
 $ErrorActionPreference = 'Stop'
@@ -51,6 +55,7 @@ if (-not $Publicacion) {
     $sha = & git -C $codigo rev-parse --short=7 HEAD 2>$null
     $texto = if ($LASTEXITCODE -eq 0 -and $sha) { "$version-local+$($sha.Trim())" } else { "$version-local" }
 }
+if ($SinTorrents) { $texto += '-sin-torrents' }
 Write-Host "Versión: $texto"
 
 if ($Limpiar -and (Test-Path $build)) {
@@ -58,11 +63,16 @@ if ($Limpiar -and (Test-Path $build)) {
     Remove-Item -Recurse -Force $build
 }
 
-Paso 'Configurando (la primera vez vcpkg compila wxWidgets y curl; tarda unos minutos)'
+$conTorrents = if ($SinTorrents) { 'OFF' } else { 'ON' }
+Paso 'Configurando (la primera vez vcpkg compila wxWidgets, curl y, con torrents, Boost, OpenSSL y libtorrent; tarda)'
 & $cmake -S $codigo -B $build -G 'Visual Studio 17 2022' -A x64 -T v143 `
-    "-DAPP_VERSION_TEXTO=$texto" `
+    "-DAPP_VERSION_TEXTO=$texto" "-DCON_TORRENTS=$conTorrents" `
     "-DVCPKG_INSTALL_OPTIONS=--clean-buildtrees-after-build;--clean-packages-after-build"
 if ($LASTEXITCODE -ne 0) { throw "Falló la configuración (código $LASTEXITCODE)" }
+if ($SoloPreparar) {
+    Write-Host 'Bibliotecas listas.' -ForegroundColor Green
+    return
+}
 
 Paso 'Compilando'
 & $cmake --build $build --config Release --parallel

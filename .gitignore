@@ -2,5 +2,7 @@ build/
 programa/
 publicar/
 pruebas-locales/
-vendor/
+# vendor: lo que baja vcpkg no se sube; el puerto propio de libtorrent sí
+/vendor/*
+!/vendor/vcpkg-overlays/
 *.user

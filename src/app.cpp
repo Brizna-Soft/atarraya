@@ -17,6 +17,7 @@
 #include "ajustes.hpp"
 #include "motor.hpp"
 #include "sistema.hpp"
+#include "torrents.hpp"
 #include "util.hpp"
 #include "ventana.hpp"
 #include "version.h"
@@ -76,6 +77,7 @@ bool Aplicacion::OnInit()
     {
         std::wstring a = argv[i].ToStdWstring();
         if (a == L"--bandeja") bandeja = true;
+        else if (a == L"--probar-libtorrent") { hnd::Registrar("libtorrent " + hnd::VersionLibtorrent(true)); return false; }
         else if (hnd::sistema::EsDireccion(a)) url = hnd::Utf8(a);
     }
 
