@@ -34,6 +34,7 @@ namespace hnd
         std::string referer;      // de dónde vino el enlace (por ejemplo, la página de Click'n'Load)
         std::wstring nombre;      // el nombre que se espera, sacado del enlace (puede faltar)
         std::wstring paquete;
+        std::string grupo;        // el de las demás partes de su paquete que llegaron juntas (para Jícaro)
         std::wstring carpeta;     // dónde se guarda lo que baje
         EstadoParte estado = EstadoParte::Esperando;
         uint64_t descarga = 0;    // la descarga de Atarraya, cuando se tomó

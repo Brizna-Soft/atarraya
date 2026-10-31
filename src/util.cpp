@@ -4,8 +4,10 @@
 #include <bcrypt.h>
 #include <shlobj.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -201,6 +203,22 @@ std::string hnd::Sha256Archivo(const std::wstring& ruta)
 int64_t hnd::AhoraUnix()
 {
     return std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+std::string hnd::NuevoId()
+{
+    unsigned char b[8] = {};
+    if (BCryptGenRandom(nullptr, b, sizeof(b), BCRYPT_USE_SYSTEM_PREFERRED_RNG) != 0)
+    {
+        // Muy raro: con la hora y un contador también sirve para no mezclar paquetes
+        static std::atomic<uint64_t> cuenta{ 0 };
+        uint64_t v = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count() ^ (++cuenta << 48);
+        memcpy(b, &v, sizeof(b));
+    }
+    static const char* hex = "0123456789abcdef";
+    std::string r;
+    for (unsigned char c : b) { r += hex[c >> 4]; r += hex[c & 15]; }
+    return r;
 }
 
 void hnd::Registrar(const std::string& texto)

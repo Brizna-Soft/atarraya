@@ -1135,6 +1135,7 @@ namespace hnd
                     { "etag", d.etag }, { "modificado", d.modificado }, { "tipo", d.tipoMime },
                     { "estado", NombreEstado(e) }, { "error", d.error }, { "conexiones", d.conexiones },
                     { "agregada", d.agregada }, { "terminada", d.terminada }, { "segmentos", segs },
+                    { "paquete", Utf8(d.paquete) }, { "grupo", d.grupo },
                 });
             }
         }
@@ -1177,6 +1178,8 @@ namespace hnd
                 d.conexiones = std::clamp(j.value("conexiones", 8), 1, 16);
                 d.agregada = j.value("agregada", (int64_t)0);
                 d.terminada = j.value("terminada", (int64_t)0);
+                d.paquete = Ancho(j.value("paquete", ""));
+                d.grupo = j.value("grupo", "");
                 for (auto& s : j.value("segmentos", json::array()))
                 {
                     if (s.is_array() && s.size() == 3)

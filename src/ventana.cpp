@@ -73,6 +73,15 @@ namespace
         return n.empty() ? wxString::FromUTF8(d.url) : wxString(n);
     }
 
+    // Un grupo por paquete en cada tanda: las descargas de un mismo paquete que llegan juntas lo comparten, y así
+    // Jícaro sabe cuándo terminaron todas (sin mezclarlas con las de otra vez que tenían el mismo nombre de paquete)
+    std::string GrupoDe(std::map<std::wstring, std::string>& grupos, const std::wstring& paquete)
+    {
+        auto& g = grupos[paquete];
+        if (g.empty()) g = NuevoId();
+        return g;
+    }
+
     bool Activa(const Foto& f)
     {
         return f.datos.estado == Estado::Iniciando || f.datos.estado == Estado::Descargando;
@@ -469,6 +478,9 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // Barra de «de una en una» (se ve solo mientras hay páginas de sitios de descargas en la cola)
     CrearBarraSitios(fondo);
     caja->Add(m_barraSitios, 0, wxEXPAND);
+    // Barra de Jícaro (se ve mientras descomprime y con el resultado, hasta que la persona la cierra)
+    CrearBarraJicaro(fondo);
+    caja->Add(m_barraJicaro, 0, wxEXPAND);
 
     m_division = new wxSplitterWindow(fondo, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_NOBORDER | wxSP_3DSASH);
     m_division->SetSashGravity(1.0);
@@ -902,7 +914,7 @@ void VentanaPrincipal::Mostrar()
 }
 
 uint64_t VentanaPrincipal::AgregarEnlace(const std::string& url, const std::wstring& carpeta, const std::string& referer, bool empezar,
-                                         bool& yaEstaba)
+                                         bool& yaEstaba, const std::wstring& paquete, const std::string& grupo)
 {
     yaEstaba = false;
     if (m_motor.BuscarPorUrl(url))
@@ -915,6 +927,8 @@ uint64_t VentanaPrincipal::AgregarEnlace(const std::string& url, const std::wstr
     d.referer = referer;
     d.carpeta = carpeta;
     d.conexiones = m_ajustes.conexiones;
+    d.paquete = paquete;
+    d.grupo = grupo;
     return m_motor.Agregar(d, empezar);
 }
 
@@ -1077,6 +1091,7 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
 {
     std::vector<uint64_t> hechos;
     std::vector<const EnlaceRecolectado*> paginas, sitios;
+    std::map<std::wstring, std::string> grupos;   // uno por paquete: lo comparten las directas y las de «de una en una»
     int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
     for (const auto& e : lista)
     {
@@ -1120,13 +1135,15 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         d.carpeta = destino;
         d.conexiones = m_ajustes.conexiones;
         if (e.estado == Comprobacion::Archivo && !e.nombre.empty()) d.nombre = e.nombre;
+        d.paquete = PaqueteDe(e);
+        d.grupo = GrupoDe(grupos, d.paquete);
         m_motor.Agregar(d, empezar);
         descargas++;
         hechos.push_back(e.id);
     }
     wxWindow* padre = m_ventanaRecolector && m_ventanaRecolector->IsShown() ? (wxWindow*)m_ventanaRecolector : (wxWindow*)this;
     // Las páginas de sitios de descargas se abren de una en una: la siguiente cuando termina la anterior
-    if (!sitios.empty() && EmpezarDeUnaEnUna(sitios, carpeta, porPaquete, empezar, padre))
+    if (!sitios.empty() && EmpezarDeUnaEnUna(sitios, carpeta, porPaquete, empezar, padre, &grupos))
     {
         for (auto* e : sitios) hechos.push_back(e->id);
     }
@@ -1170,6 +1187,7 @@ void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
     if (d.ShowModal() != wxID_OK) return;
     int agregadas = 0, yaEstaban = 0;
     std::vector<EnlaceRecolectado> sitios;   // páginas de sitios de descargas: de una en una
+    std::map<std::wstring, std::string> grupos;   // las partes de un mismo archivo van juntas, como en el recolector
     for (const auto& e : d.Elegidos())
     {
         if (VaAlNavegador(e.url, false))
@@ -1198,7 +1216,12 @@ void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
             continue;
         }
         bool yaEstaba = false;
-        if (AgregarEnlace(e.url, d.Carpeta(), d.Pagina(), d.EmpezarAhora(), yaEstaba)) agregadas++;
+        EnlaceRecolectado como;
+        como.url = e.url;
+        como.nombre = NombreDeUrl(e.url);
+        como.estado = Comprobacion::Archivo;
+        std::wstring paquete = PaqueteDe(como);
+        if (AgregarEnlace(e.url, d.Carpeta(), d.Pagina(), d.EmpezarAhora(), yaEstaba, paquete, GrupoDe(grupos, paquete))) agregadas++;
         else if (yaEstaba) yaEstaban++;
     }
     Registrar("enlaces de una página: " + std::to_string(agregadas) + " agregados de " + SoloSitio(d.Pagina()));
@@ -1697,15 +1720,24 @@ void VentanaPrincipal::Avisar(const wxString& titulo, const wxString& texto, boo
 void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
 {
     wxString nombre = NombreVisible(f.datos);
+    // De una en una: si era una parte, se marca ya (así se sabe si su paquete quedó completo). La siguiente se abre al
+    // final.
+    int parte = m_sitios.Terminar(f.datos.id, f.datos.estado == Estado::Completada);
     if (f.datos.estado == Estado::Completada)
     {
         std::wstring ruta = f.datos.carpeta + L"\\" + f.datos.nombre;
         VentanaPrincipal* yo = this;
         hilos::Vivo vivo = m_vivo;
-        sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, vivo, nombre](bool existe) {
-            if (existe) return;
-            hilos::Enviar([yo, vivo, nombre]() {
+        // Jícaro, si con esta terminó todo su paquete. Se abre cuando Windows ya marcó todas sus partes como bajadas de
+        // internet: así lo que salga del comprimido queda marcado igual.
+        m_marcando.insert(Minusculas(ruta));
+        EncolarJicaro(PrepararJicaro(f.datos));
+        sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, vivo, nombre, ruta](bool existe) {
+            hilos::Enviar([yo, vivo, nombre, ruta, existe]() {
                 if (!*vivo) return;
+                yo->m_marcando.erase(Minusculas(ruta));
+                yo->SiguienteJicaro();
+                if (existe) return;
                 ayuda::Aviso(L"Windows (o tu antivirus) bloqueó o quitó «" + nombre + L"» porque podría ser peligroso.",
                              L"Archivo bloqueado", wxOK | wxICON_WARNING, yo);
             });
@@ -1728,7 +1760,6 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
     }
 
     // De una en una: si era una parte, se abre la siguiente (este aviso va al último, para que sea el que se ve)
-    int parte = m_sitios.Terminar(f.datos.id, f.datos.estado == Estado::Completada);
     if (parte >= 0)
     {
         GuardarCola();
@@ -1818,8 +1849,10 @@ void VentanaPrincipal::Salir()
 // resuelve captchas, no se salta esperas ni usa cuentas premium.
 
 bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolectado*>& sitios, const std::wstring& carpeta,
-                                         bool porPaquete, bool abrir, wxWindow* padre)
+                                         bool porPaquete, bool abrir, wxWindow* padre, std::map<std::wstring, std::string>* grupos)
 {
+    std::map<std::wstring, std::string> propios;
+    if (!grupos) grupos = &propios;
     // Sin la extensión, lo que se baje en esas páginas se queda en el navegador
     bool conectada = false;
     for (const auto& n : navegadores::Estado()) conectada = conectada || n.conectado;
@@ -1852,6 +1885,7 @@ bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolecta
         p.referer = e->referer;
         p.nombre = NombreDeUrl(e->url);
         p.paquete = PaqueteDe(*e);
+        p.grupo = GrupoDe(*grupos, p.paquete);
         p.carpeta = porPaquete ? carpeta + L"\\" + LimpiarNombre(p.paquete) : carpeta;
         partes.push_back(std::move(p));
     }
@@ -2057,6 +2091,8 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
 {
     const auto& p = m_sitios.Partes()[i];
     d.carpeta = p.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : p.carpeta;
+    d.paquete = p.paquete;
+    d.grupo = p.grupo;
     SHCreateDirectoryExW(nullptr, d.carpeta.c_str(), nullptr);
     // Una sola conexión, como el navegador: así no se pasa de lo que el sitio deja bajar sin cuenta premium
     d.conexiones = 1;
@@ -2177,6 +2213,7 @@ void VentanaPrincipal::AbrirElegidasEnNavegador()
 void VentanaPrincipal::RevisarPartes()
 {
     bool cambio = false;
+    std::vector<DatosDescarga> listas;
     const auto& partes = m_sitios.Partes();
     for (size_t i = 0; i < partes.size(); i++)
     {
@@ -2190,12 +2227,271 @@ void VentanaPrincipal::RevisarPartes()
         else if (f.datos.estado == Estado::Completada)
         {
             m_sitios.Terminar(partes[i].descarga, true);   // terminó sin que la cola se enterara (un cierre de golpe)
+            listas.push_back(f.datos);
             cambio = true;
         }
     }
     if (cambio)
     {
+        // Antes de que la cola avance (y se vacíe si terminó): así se sabe si quedó completo su paquete
+        for (const auto& d : listas) EncolarJicaro(PrepararJicaro(d));
         GuardarCola();
         Avanzar();
     }
+}
+
+// --- Jícaro ---------------------------------------------------------------------------------------------------------
+// Atarraya solo le pasa a Jícaro archivos que bajó, con las rutas revisadas y entre comillas. Nunca borra las partes:
+// como mucho ofrece «Borrar las partes» (a la Papelera) cuando Jícaro terminó bien, y solo si la persona lo pulsa.
+
+std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(const DatosDescarga& d)
+{
+    std::vector<TrabajoJicaro> trabajos;
+    if (!m_ajustes.jicaroAlTerminar || d.estado != Estado::Completada || d.nombre.empty()) return trabajos;
+    std::wstring exe = jicaro::Buscar(m_ajustes.rutaJicaro);
+    if (exe.empty()) return trabajos;   // sin Jícaro no se hace nada (en Ajustes, la casilla se ve apagada)
+
+    std::wstring carpeta = Minusculas(d.carpeta);
+    std::vector<hnd::Foto> fotos = m_motor.Fotos();
+    std::vector<std::wstring> propias;   // los archivos del paquete que terminó (o el comprimido suelto)
+    std::string clave;
+    if (!d.grupo.empty())
+    {
+        // Tienen que haber terminado todas las del paquete, también las de «de una en una» que todavía no se bajan
+        propias = jicaro::ArchivosDelPaquete(d.grupo, d.carpeta, fotos, m_sitios.Partes());
+        if (propias.empty()) return trabajos;
+        clave = "paquete " + d.grupo;
+    }
+    else
+    {
+        // Suelta: solo un .rar, .zip o .7z entero. De unas partes sueltas no se sabe si ya llegaron todas (tampoco de
+        // un «peli.rar» que es la primera parte del estilo viejo).
+        std::wstring ruta = d.carpeta + L"\\" + d.nombre;
+        if (!jicaro::EsComprimidoSuelto(d.nombre) || jicaro::EsVolumenRar(ruta)) return trabajos;
+        propias.push_back(ruta);
+        clave = "descarga " + std::to_string(d.id);
+    }
+    // Una sola vez por paquete (por ejemplo, si dos partes terminaron en el mismo momento)
+    if (!m_jicaroVistos.insert(clave).second) return trabajos;
+
+    // Las partes de cada comprimido: las del paquete y las que ya había bajado Atarraya en esa carpeta (por ejemplo,
+    // una parte que faltó y se bajó después en otra tanda). Solo descargas de Atarraya que terminaron.
+    std::vector<std::wstring> todas = propias;
+    for (const auto& f : fotos)
+    {
+        if (!f.torrent && f.datos.estado == Estado::Completada && !f.datos.nombre.empty() && Minusculas(f.datos.carpeta) == carpeta)
+            todas.push_back(f.datos.carpeta + L"\\" + f.datos.nombre);
+    }
+    std::set<std::wstring> deEste;
+    for (const auto& a : propias) deEste.insert(Minusculas(a));
+    // Las carpetas que ya eligieron otros trabajos (puede que todavía no existan): no se repiten
+    auto reservar = [&](const std::wstring& nombre) {
+        std::wstring destino = jicaro::CarpetaDestino(d.carpeta, nombre);
+        for (int i = 2; !destino.empty() && m_destinosJicaro.count(Minusculas(destino)) && i < 1000; i++)
+            destino = jicaro::CarpetaDestino(d.carpeta, nombre + L" (" + std::to_wstring(i) + L")");
+        if (!destino.empty()) m_destinosJicaro.insert(Minusculas(destino));
+        return destino;
+    };
+    // Un paquete con nombre propio va todo a una carpeta con ese nombre; si Atarraya no sabía el nombre («Páginas de
+    // ...»), cada comprimido va a una con el suyo
+    bool unaCarpeta = !d.paquete.empty() && jicaro::NombreDeCarpeta(d.paquete, L"") == d.paquete;
+    std::wstring comun;
+    for (const auto& c : jicaro::Comprimidos(todas))
+    {
+        if (std::none_of(c.partes.begin(), c.partes.end(), [&](const std::wstring& p) { return deEste.count(Minusculas(p)) > 0; }))
+            continue;   // de otro paquete
+        TrabajoJicaro t;
+        t.exe = exe;
+        t.primera = c.Primera();
+        t.nombre = jicaro::NombreDeCarpeta(d.paquete, c.nombre);
+        if (unaCarpeta && comun.empty()) comun = reservar(t.nombre);
+        t.destino = unaCarpeta ? comun : reservar(t.nombre);
+        for (const auto& p : c.partes) t.partes.push_back({ p, -1 });
+        if (t.destino.empty()) continue;
+        trabajos.push_back(std::move(t));
+    }
+    if (!trabajos.empty())
+        Registrar("jícaro: terminó " + std::string(d.grupo.empty() ? "un comprimido suelto" : "un paquete") + "; "
+                  + std::to_string(trabajos.size()) + (trabajos.size() == 1 ? " comprimido" : " comprimidos") + " para descomprimir");
+    return trabajos;
+}
+
+void VentanaPrincipal::EncolarJicaro(std::vector<TrabajoJicaro> trabajos)
+{
+    if (trabajos.empty() || m_saliendo) return;
+    for (auto& t : trabajos) m_colaJicaro.push_back(std::move(t));
+    SiguienteJicaro();
+}
+
+void VentanaPrincipal::SiguienteJicaro()
+{
+    while (!m_jicaroOcupado && !m_colaJicaro.empty() && !m_saliendo)
+    {
+        // Espera a que Windows termine de marcar sus partes como bajadas de internet (al terminar, se llama otra vez)
+        const auto& siguiente = m_colaJicaro.front().partes;
+        if (std::any_of(siguiente.begin(), siguiente.end(), [this](const auto& p) { return m_marcando.count(Minusculas(p.first)) > 0; }))
+            break;
+        TrabajoJicaro t = std::move(m_colaJicaro.front());
+        m_colaJicaro.pop_front();
+        // El tamaño de cada parte ahora: «Borrar las partes» solo manda a la Papelera esos mismos archivos
+        for (auto& p : t.partes) p.second = TamanoArchivo(p.first);
+        std::wstring orden = jicaro::ArmarOrden(t.exe, t.primera, t.destino);
+        void* proceso = !orden.empty() && ExisteArchivo(t.primera) ? jicaro::Abrir(t.exe, orden) : nullptr;
+        if (!proceso)
+        {
+            Registrar(orden.empty() ? "jícaro: una ruta no se puede pasar a Jícaro; no se abrió" : "jícaro: no se pudo abrir");
+            MostrarResultadoJicaro(std::move(t), jicaro::Resultado::NoAbrio);
+            continue;
+        }
+        m_jicaroOcupado = true;
+        m_jicaroActual = t;
+        Registrar("jícaro: descomprimiendo (" + std::to_string(t.partes.size()) + (t.partes.size() == 1 ? " archivo)" : " partes)"));
+        // Un hilo espera a que Jícaro se cierre y le pasa su código a la ventana
+        VentanaPrincipal* yo = this;
+        hilos::Vivo vivo = m_vivo;
+        std::thread([proceso, yo, vivo]() {
+            HANDLE h = (HANDLE)proceso;
+            WaitForSingleObject(h, INFINITE);
+            DWORD codigo = 1;
+            if (!GetExitCodeProcess(h, &codigo)) codigo = 1;
+            CloseHandle(h);
+            hilos::Enviar([yo, vivo, codigo]() {
+                if (*vivo) yo->AlTerminarJicaro(codigo);
+            });
+        }).detach();
+    }
+    ActualizarBarraJicaro();
+}
+
+void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
+{
+    if (!m_jicaroOcupado) return;
+    m_jicaroOcupado = false;
+    Registrar("jícaro: terminó con el código " + std::to_string(codigo));
+    TrabajoJicaro t = std::move(m_jicaroActual);
+    m_jicaroActual = TrabajoJicaro();
+    MostrarResultadoJicaro(std::move(t), jicaro::LeerCodigo(codigo));
+    SiguienteJicaro();
+}
+
+void VentanaPrincipal::MostrarResultadoJicaro(TrabajoJicaro t, jicaro::Resultado r)
+{
+    ResultadoJicaro res;
+    res.r = r;
+    res.texto = jicaro::Texto(r, t.nombre, t.destino);
+    res.t = std::move(t);
+    bool bien = r == jicaro::Resultado::Listo || r == jicaro::Resultado::Parcial;
+    if (m_ajustes.avisarAlTerminar || !bien) Avisar(jicaro::Titulo(r), res.texto, !bien);
+    m_resultadosJicaro.push_back(std::move(res));
+    while (m_resultadosJicaro.size() > 20) m_resultadosJicaro.pop_front();
+    ActualizarBarraJicaro();
+}
+
+void VentanaPrincipal::CrearBarraJicaro(wxWindow* padre)
+{
+    m_barraJicaro = new wxPanel(padre);
+    bool oscuro = TemaOscuro();
+    m_barraJicaro->SetBackgroundColour(oscuro ? wxColour(0x1B, 0x2F, 0x3D) : wxColour(0xE3, 0xF1, 0xFB));
+    auto* caja = new wxBoxSizer(wxVERTICAL);
+    m_textoJicaro = new wxStaticText(m_barraJicaro, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
+    m_textoJicaro->SetForegroundColour(oscuro ? wxColour(0xD5, 0xE8, 0xF5) : wxColour(0x0B, 0x2E, 0x45));
+    caja->Add(m_textoJicaro, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    auto* botones = new wxBoxSizer(wxHORIZONTAL);
+    auto boton = [&](const wxString& texto, const wxString& ayuda) {
+        auto* b = new wxButton(m_barraJicaro, wxID_ANY, texto);
+        b->SetToolTip(ayuda);
+        botones->Add(b, 0, wxRIGHT, FromDIP(6));
+        return b;
+    };
+    m_bCarpetaJicaro = boton(L"Abrir la carpeta", L"Abre la carpeta con lo que sacó Jícaro");
+    m_bBorrarPartes = boton(L"Borrar las partes", L"Manda a la Papelera las partes que bajó Atarraya (desde ahí se pueden recuperar)");
+    m_bCerrarJicaro = boton(L"Cerrar", L"Quitar este aviso");
+    caja->Add(botones, 0, wxALL, FromDIP(8));
+    m_barraJicaro->SetSizer(caja);
+    m_barraJicaro->Hide();
+
+    m_bCarpetaJicaro->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!m_resultadosJicaro.empty() && ExisteCarpeta(m_resultadosJicaro.front().t.destino)) sistema::Abrir(m_resultadosJicaro.front().t.destino);
+    });
+    m_bBorrarPartes->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { BorrarPartes(); });
+    m_bCerrarJicaro->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (!m_resultadosJicaro.empty()) m_resultadosJicaro.pop_front();
+        ActualizarBarraJicaro();
+    });
+}
+
+void VentanaPrincipal::ActualizarBarraJicaro()
+{
+    if (!m_barraJicaro) return;
+    wxString texto;
+    bool carpeta = false, borrar = false, cerrar = false;
+    if (!m_resultadosJicaro.empty())
+    {
+        const auto& r = m_resultadosJicaro.front();
+        texto = r.texto;
+        if (m_resultadosJicaro.size() > 1) texto += wxString::Format(L" (y %zu avisos más)", m_resultadosJicaro.size() - 1);
+        carpeta = (r.r == jicaro::Resultado::Listo || r.r == jicaro::Resultado::Parcial) && ExisteCarpeta(r.t.destino);
+        // «Borrar las partes» solo si Jícaro terminó bien del todo
+        borrar = r.r == jicaro::Resultado::Listo && !r.borradas;
+        cerrar = true;
+    }
+    else if (m_jicaroOcupado)
+    {
+        texto = L"Jícaro está descomprimiendo «" + m_jicaroActual.nombre + L"»...";
+        if (!m_colaJicaro.empty()) texto += wxString::Format(L" Después siguen %zu más.", m_colaJicaro.size());
+    }
+    bool mostrar = !texto.empty();
+    bool cambio = mostrar != m_barraJicaro->IsShown();
+    if (m_textoJicaro->GetLabelText() != texto)
+    {
+        m_textoJicaro->SetLabelText(texto);   // tal cual: un «&» en el nombre del paquete no es un atajo
+        m_textoJicaro->SetToolTip(texto);
+        cambio = true;
+    }
+    auto ver = [&](wxButton* b, bool si) {
+        if (b->IsShown() != si)
+        {
+            b->Show(si);
+            cambio = true;
+        }
+    };
+    ver(m_bCarpetaJicaro, carpeta);
+    ver(m_bBorrarPartes, borrar);
+    ver(m_bCerrarJicaro, cerrar);
+    if (cambio)
+    {
+        m_barraJicaro->Show(mostrar);
+        m_barraJicaro->GetParent()->Layout();
+    }
+}
+
+void VentanaPrincipal::BorrarPartes()
+{
+    if (m_resultadosJicaro.empty()) return;
+    auto& r = m_resultadosJicaro.front();
+    if (r.r != jicaro::Resultado::Listo || r.borradas) return;
+    // Solo las partes que bajó Atarraya y que siguen siendo esos mismos archivos (mismo tamaño que cuando Jícaro las abrió)
+    size_t mandadas = 0, quedaron = 0;
+    for (const auto& [ruta, tamano] : r.t.partes)
+    {
+        if (!ExisteArchivo(ruta)) continue;   // ya no está
+        if (tamano < 0 || TamanoArchivo(ruta) != tamano || !sistema::MandarAPapelera(ruta)) quedaron++;
+        else mandadas++;
+    }
+    r.borradas = true;
+    Registrar("jícaro: " + std::to_string(mandadas) + " partes a la Papelera" + (quedaron ? ", " + std::to_string(quedaron) + " no" : ""));
+    wxString nombre = L"«" + r.t.nombre + L"»";
+    if (quedaron == 1)
+        r.texto = L"Una parte de " + nombre + L" no se pudo mandar a la Papelera (puede que esté abierta o que haya cambiado). "
+                  L"Sigue en su carpeta.";
+    else if (quedaron > 1)
+        r.texto = wxString::Format(L"%zu partes de ", quedaron) + nombre + L" no se pudieron mandar a la Papelera (puede que estén "
+                  L"abiertas o que hayan cambiado). Siguen en su carpeta.";
+    else if (mandadas == 0)
+        r.texto = L"Las partes de " + nombre + L" ya no estaban en su carpeta.";
+    else if (mandadas == 1)
+        r.texto = L"La parte de " + nombre + L" está en la Papelera. Lo descomprimido sigue en su carpeta.";
+    else
+        r.texto = wxString::Format(L"Las %zu partes de ", mandadas) + nombre + L" están en la Papelera. Lo descomprimido sigue en su carpeta.";
+    ActualizarBarraJicaro();
 }

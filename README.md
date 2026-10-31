@@ -35,6 +35,9 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
   hasta que lo confirmas.**
 - **Click'n'Load.** Sitios como filecrypt.cc pueden pasarle a Atarraya los enlaces de una carpeta, igual que a
   JDownloader, después de que tú resuelves el captcha en tu navegador. Llegan al recolector y tú decides.
+- **Descomprime con Jícaro.** Si tienes [Jícaro](https://brizna-soft.github.io/programas/jicaro/), el descompresor
+  gratis de Brizna Soft, cuando terminan de bajar todas las partes de un paquete Atarraya lo descomprime solo, en una
+  carpeta con su nombre. Ver [Descomprimir con Jícaro](#descomprimir-con-jícaro).
 - **Los archivos de una página.** Pega la dirección de una página y Atarraya te muestra los archivos que enlaza
   (videos, música, documentos, programas...) para que marques cuáles bajar. En Internet Archive usa su lista
   oficial de archivos.
@@ -76,6 +79,25 @@ Lo mismo pasa si pegas uno de esos enlaces en **Agregar enlace** o lo eliges en 
 navegador de una en una, en vez de bajar la página. Y si algún sitio responde con una página en vez del archivo
 (por ejemplo, porque pide un captcha o porque el enlace venció), Atarraya no la guarda como si fuera el archivo:
 te avisa «El sitio respondió con una página, no con el archivo» y te ofrece **Abrir en el navegador**.
+
+## Descomprimir con Jícaro
+
+Desde la 0.2.2, si tienes [Jícaro](https://brizna-soft.github.io/programas/jicaro/), el descompresor gratis de
+Brizna Soft, Atarraya le pide que descomprima lo que bajaste en cuanto termina:
+
+- **Cuándo:** cuando terminan todas las partes de un paquete (de «de una en una», del recolector o de **De una
+  página**) o un .rar, .zip o .7z suelto. Si una parte falla o todavía no se baja, espera. Las partes que bajas
+  sueltas desde el navegador no se descomprimen solas, porque Atarraya no sabe si ya están todas.
+- **Dónde:** en una carpeta nueva con el nombre del paquete, al lado de las partes. Si ya existe, usa «nombre (2)».
+- **Qué te dice:** arriba de la lista ves cómo terminó: listo, faltan partes, tiene contraseña, cancelado o no se
+  pudo. Jícaro muestra los detalles en su propia ventana.
+- **Las partes no se borran solas.** Cuando Jícaro termina bien, Atarraya te ofrece **Borrar las partes**: van a la
+  Papelera, y solo si lo pulsas.
+
+Atarraya busca Jícaro en `%LOCALAPPDATA%\Programs\Jicaro`. Si lo tienes en otra carpeta, elígelo en **Ajustes** con
+**Elegir...**; ahí también se apaga, con la casilla **Descomprimir con Jícaro al terminar**. Si no encuentra Jícaro,
+no hace nada y en Ajustes te ofrece abrir su página. Solo le pasa a Jícaro archivos que bajó él mismo, con la ruta
+revisada y entre comillas, y lo abre sin quitarle el foco a lo que estés haciendo.
 
 ## Conectar con el navegador
 

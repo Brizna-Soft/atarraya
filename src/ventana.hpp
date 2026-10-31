@@ -3,14 +3,20 @@
 #include <wx/frame.h>
 #include <wx/timer.h>
 
+#include <cstdint>
+#include <deque>
+#include <map>
 #include <memory>
+#include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ajustes.hpp"
 #include "clicknload.hpp"
 #include "deunaenuna.hpp"
 #include "hilos.hpp"
+#include "jicaro.hpp"
 #include "motor.hpp"
 #include "recolector.hpp"
 #include "torrents.hpp"
@@ -66,7 +72,7 @@ private:
     void Avisar(const wxString& titulo, const wxString& texto, bool error = false);
     void AgregarTorrent(const hnd::InfoTorrent& info, const std::string& datos, bool delNavegador, const std::wstring& carpeta);
     uint64_t AgregarEnlace(const std::string& url, const std::wstring& carpeta, const std::string& referer, bool empezar,
-                           bool& yaEstaba);
+                           bool& yaEstaba, const std::wstring& paquete = L"", const std::string& grupo = "");
 
     void Reanudar();
     void Pausar();
@@ -83,8 +89,9 @@ private:
 
     // «De una en una»: páginas de sitios de descargas, de a una en el navegador
     // Pone las páginas en la cola (y abre la primera si «abrir»). false si la persona prefirió dejarlas en el recolector.
+    // «grupos»: el grupo de cada paquete en esta tanda (lo comparten con las descargas directas del mismo paquete).
     bool EmpezarDeUnaEnUna(const std::vector<const hnd::EnlaceRecolectado*>& sitios, const std::wstring& carpeta, bool porPaquete,
-                           bool abrir, wxWindow* padre);
+                           bool abrir, wxWindow* padre, std::map<std::wstring, std::string>* grupos = nullptr);
     void CrearBarraSitios(wxWindow* padre);
     void ActualizarBarraSitios();
     void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
@@ -103,6 +110,31 @@ private:
     // Descargas cuyo sitio respondió con una página en vez del archivo: se ofrece abrirlas en el navegador
     void OfrecerAbrirPaginas();
     void AbrirElegidasEnNavegador();
+
+    // Jícaro: cuando termina todo un paquete (o un .rar, .zip o .7z suelto), lo descomprime. De a un comprimido a la
+    // vez; las partes nunca se borran solas.
+    struct TrabajoJicaro
+    {
+        std::wstring nombre;                                    // el del paquete o el del comprimido, para mostrar
+        std::wstring exe, primera, destino;
+        std::vector<std::pair<std::wstring, int64_t>> partes;   // las que bajó Atarraya y su tamaño al abrir Jícaro
+    };
+    struct ResultadoJicaro
+    {
+        TrabajoJicaro t;
+        hnd::jicaro::Resultado r = hnd::jicaro::Resultado::Error;
+        wxString texto;
+        bool borradas = false;
+    };
+    // Si con esta descarga terminó todo su paquete, lo que hay que descomprimir (vacío si falta algo o ya se hizo)
+    std::vector<TrabajoJicaro> PrepararJicaro(const hnd::DatosDescarga& d);
+    void EncolarJicaro(std::vector<TrabajoJicaro> trabajos);
+    void SiguienteJicaro();
+    void AlTerminarJicaro(unsigned long codigo);
+    void MostrarResultadoJicaro(TrabajoJicaro t, hnd::jicaro::Resultado r);
+    void CrearBarraJicaro(wxWindow* padre);
+    void ActualizarBarraJicaro();
+    void BorrarPartes();   // solo cuando la persona lo pulsa: a la Papelera
 
     hnd::Motor& m_motor;
     hnd::MotorTorrent& m_torrents;
@@ -141,6 +173,19 @@ private:
 
     std::vector<uint64_t> m_paginasPorAbrir;   // descargas que recibieron una página: falta ofrecer abrirlas
     bool m_ofreciendoPaginas = false;
+
+    std::deque<TrabajoJicaro> m_colaJicaro;
+    bool m_jicaroOcupado = false;
+    TrabajoJicaro m_jicaroActual;
+    std::deque<ResultadoJicaro> m_resultadosJicaro;   // la barra muestra el primero
+    std::set<std::string> m_jicaroVistos;             // paquetes (o descargas sueltas) que ya pasaron a Jícaro
+    std::set<std::wstring> m_destinosJicaro;          // carpetas ya elegidas (en minúsculas), aunque aún no existan
+    std::set<std::wstring> m_marcando;                // archivos que Windows todavía marca como bajados de internet
+    wxPanel* m_barraJicaro = nullptr;
+    wxStaticText* m_textoJicaro = nullptr;
+    wxButton* m_bCarpetaJicaro = nullptr;
+    wxButton* m_bBorrarPartes = nullptr;
+    wxButton* m_bCerrarJicaro = nullptr;
 };
 
 // Ids de los comandos (los usa también el menú del ícono junto al reloj)

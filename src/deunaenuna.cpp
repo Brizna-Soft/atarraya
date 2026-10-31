@@ -191,6 +191,7 @@ void hnd::DeUnaEnUna::Cargar()
             p.referer = j.value("referer", "");
             p.nombre = Ancho(j.value("nombre", ""));
             p.paquete = Ancho(j.value("paquete", ""));
+            p.grupo = j.value("grupo", "");
             p.carpeta = Ancho(j.value("carpeta", ""));
             p.estado = EstadoDeNombre(j.value("estado", ""));
             p.descarga = j.value("descarga", (uint64_t)0);
@@ -214,7 +215,8 @@ bool hnd::DeUnaEnUna::Guardar() const
     for (auto& p : m_partes)
     {
         l.push_back({ { "url", p.url }, { "referer", p.referer }, { "nombre", Utf8(p.nombre) }, { "paquete", Utf8(p.paquete) },
-                      { "carpeta", Utf8(p.carpeta) }, { "estado", NombreEstado(p.estado) }, { "descarga", p.descarga } });
+                      { "grupo", p.grupo }, { "carpeta", Utf8(p.carpeta) }, { "estado", NombreEstado(p.estado) },
+                      { "descarga", p.descarga } });
     }
     json todo = { { "version", 1 }, { "partes", l } };
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));

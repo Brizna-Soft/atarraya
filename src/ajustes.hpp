@@ -20,6 +20,10 @@ namespace hnd
         bool bandejaAlCerrar = true;    // la X deja el programa junto al reloj
         bool avisarAlTerminar = true;
         bool avisoBandejaMostrado = false;
+        // Jícaro: descomprimir los paquetes (y los .rar, .zip o .7z sueltos) cuando terminan. Solo sirve si se
+        // encuentra Jícaro: en «rutaJicaro» (la que eligió la persona) o en %LOCALAPPDATA%\Programs\Jicaro.
+        bool jicaroAlTerminar = true;
+        std::wstring rutaJicaro;
 
         // Ventana
         int x = -1, y = -1, ancho = 0, alto = 0;

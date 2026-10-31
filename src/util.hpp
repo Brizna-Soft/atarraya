@@ -39,6 +39,8 @@ namespace hnd
     std::string Sha256Archivo(const std::wstring& ruta);
 
     int64_t AhoraUnix();
+    // 16 letras y números al azar: el grupo de las descargas de un mismo paquete que llegaron juntas
+    std::string NuevoId();
 
     // Registro corto para ayudar a encontrar fallas (%LOCALAPPDATA%\Atarraya\registro.txt).
     // No guarda direcciones completas: solo el sitio.

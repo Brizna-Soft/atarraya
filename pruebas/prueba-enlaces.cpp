@@ -22,8 +22,11 @@
 
 #include <bcrypt.h>
 
+#include <shellapi.h>
+
 #include "clicknload.hpp"
 #include "deunaenuna.hpp"
+#include "jicaro.hpp"
 #include "nombres.hpp"
 #include "enlaces.hpp"
 #include "motor.hpp"
@@ -787,6 +790,256 @@ namespace
                   && !EnlaceParaRecolectar("https://ejemplo.org/foto.jpg"),
                   "recolector: qué se toma del portapapeles");
     }
+
+    // Jícaro: elegir la primera parte, saber cuándo terminó un paquete, armar la orden y leer los códigos
+    void JicaroPruebas()
+    {
+        using namespace hnd::jicaro;
+        const std::wstring d = L"C:\\Descargas\\";
+        auto rutas = [&](std::initializer_list<const wchar_t*> nombres) {
+            std::vector<std::wstring> r;
+            for (auto* n : nombres) r.push_back(d + n);
+            return r;
+        };
+
+        // 1. La primera parte de cada comprimido
+        {
+            std::vector<std::wstring> l;
+            for (int i : { 10, 2, 7, 1, 3, 9, 4, 8, 5, 6 }) l.push_back(d + L"peli.part" + std::to_wstring(i) + L".rar");
+            auto c = Comprimidos(l);
+            Comprobar(c.size() == 1 && c[0].Primera() == d + L"peli.part1.rar" && c[0].partes.size() == 10
+                          && c[0].partes[1] == d + L"peli.part2.rar" && c[0].partes.back() == d + L"peli.part10.rar" && c[0].nombre == L"peli",
+                      "jícaro: la primera de peli.part1.rar ... part10.rar, en orden por número (no por texto)");
+        }
+        {
+            auto c = Comprimidos(rutas({ L"Juego.part03.rar", L"Juego.part01.rar", L"Juego.part02.rar", L"Juego.nfo", L"Juego.sfv" }));
+            Comprobar(c.size() == 1 && c[0].Primera() == d + L"Juego.part01.rar" && c[0].partes.size() == 3 && c[0].nombre == L"Juego",
+                      "jícaro: .part01.rar con ceros; el .nfo y el .sfv quedan fuera");
+        }
+        {
+            auto c = Comprimidos(rutas({ L"viejo.r01", L"viejo.rar", L"viejo.r00" }));
+            Comprobar(c.size() == 1 && c[0].partes.size() == 3 && c[0].Primera() == d + L"viejo.rar" && c[0].partes[1] == d + L"viejo.r00",
+                      "jícaro: estilo viejo .rar + .r00 + .r01: la primera es el .rar");
+        }
+        {
+            auto c = Comprimidos(rutas({ L"datos.7z.002", L"datos.7z.001", L"datos.7z.003" }));
+            auto z = Comprimidos(rutas({ L"datos.zip.002", L"datos.zip.001" }));
+            Comprobar(c.size() == 1 && c[0].Primera() == d + L"datos.7z.001" && c[0].nombre == L"datos" && z.size() == 1
+                          && z[0].Primera() == d + L"datos.zip.001",
+                      "jícaro: trozos .7z.001 y .zip.001");
+        }
+        {
+            auto c = Comprimidos(rutas({ L"PELI.PART2.RAR", L"peli.part1.rar" }));
+            auto f = Comprimidos(rutas({ L"peli.part3.rar", L"peli.part2.rar" }));
+            Comprobar(c.size() == 1 && c[0].Primera() == d + L"peli.part1.rar" && f.size() == 1 && f[0].Primera() == d + L"peli.part2.rar",
+                      "jícaro: sin importar mayúsculas; si falta la parte 1 va la más baja (Jícaro dice cuál falta)");
+        }
+        {
+            auto c = Comprimidos(rutas({ L"a.part1.rar", L"a.part2.rar", L"programa.zip", L"fotos.7z", L"video.mkv", L"video.mkv.001",
+                                         L"notas.txt", L"a.part1.rar" }));
+            bool ok = c.size() == 3;
+            for (const auto& x : c)
+            {
+                if (x.nombre == L"a") ok = ok && x.partes.size() == 2 && x.Primera() == d + L"a.part1.rar";
+                else if (x.nombre == L"programa") ok = ok && x.partes.size() == 1 && x.Primera() == d + L"programa.zip";
+                else if (x.nombre == L"fotos") ok = ok && x.partes.size() == 1 && x.Primera() == d + L"fotos.7z";
+                else ok = false;
+            }
+            Comprobar(ok, "jícaro: varios comprimidos en un paquete; un video, un .txt y un repetido no cuentan");
+        }
+        Comprobar(Comprimidos(rutas({ L"serie.s01" })).empty() && Comprimidos(rutas({ L"serie.rar", L"serie.s01" })).size() == 1
+                      && Comprimidos(rutas({ L"serie.rar", L"serie.s01" }))[0].partes.size() == 2,
+                  "jícaro: una .s01 sola no es un RAR; con su .rar, sí");
+
+        // 2. Sueltos: solo un comprimido entero
+        Comprobar(EsComprimidoSuelto(L"programa.zip") && EsComprimidoSuelto(L"Fotos.7Z") && EsComprimidoSuelto(L"juego.rar")
+                      && !EsComprimidoSuelto(L"peli.part1.rar") && !EsComprimidoSuelto(L"peli.r00") && !EsComprimidoSuelto(L"datos.7z.001")
+                      && !EsComprimidoSuelto(L"video.mp4") && !EsComprimidoSuelto(L"zip"),
+                  "jícaro: suelto se descomprime un .zip, .7z o .rar entero, no una parte");
+        {
+            auto b = [](std::initializer_list<int> v) {
+                std::string s;
+                for (int x : v) s += (char)x;
+                return s;
+            };
+            std::string rar5 = b({ 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00, 0x11, 0x22, 0x33, 0x44 });
+            std::string rar4 = b({ 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00, 0x11, 0x22 });
+            bool volumen5 = EsVolumenRar(rar5 + b({ 0x06, 0x01, 0x00, 0x01, 0x00 }));                // cabecera principal: «es parte»
+            bool entero5 = !EsVolumenRar(rar5 + b({ 0x06, 0x01, 0x00, 0x04, 0x00 }));               // sólido, de una sola parte
+            bool extra5 = EsVolumenRar(rar5 + b({ 0x0B, 0x01, 0x01, 0x85, 0x01, 0x03 }));           // con área extra (número de 2 bytes)
+            bool otroTipo = !EsVolumenRar(rar5 + b({ 0x06, 0x02, 0x00, 0x01, 0x00 }));              // no es la cabecera principal
+            bool volumen4 = EsVolumenRar(rar4 + b({ 0x73, 0x01, 0x01, 0x0D, 0x00 }));               // RAR 4: MHD_VOLUME
+            bool entero4 = !EsVolumenRar(rar4 + b({ 0x73, 0x00, 0x00, 0x0D, 0x00 }));
+            bool zip = !EsVolumenRar(b({ 'P', 'K', 3, 4, 0x14, 0, 0, 0, 0, 0, 0, 0, 0, 0 }));
+            bool corto = !EsVolumenRar(rar5 + b({ 0x86 })) && !EsVolumenRar(std::string("Rar!"));
+            Comprobar(volumen5 && entero5 && extra5 && otroTipo && volumen4 && entero4 && zip && corto,
+                      "jícaro: por su cabecera (RAR 4 y RAR 5), un .rar sabe si es una parte de varias");
+        }
+
+        // 3. ¿Terminó todo el paquete? Solo las del mismo grupo; también cuentan sus partes en «de una en una»
+        {
+            auto foto = [&](uint64_t id, const char* grupo, const wchar_t* nombre, Estado e, const std::wstring& carpeta = L"C:\\Descargas") {
+                Foto f;
+                f.datos.id = id;
+                f.datos.grupo = grupo;
+                f.datos.nombre = nombre;
+                f.datos.carpeta = carpeta;
+                f.datos.estado = e;
+                return f;
+            };
+            std::vector<Foto> lista = { foto(1, "g1", L"peli.part1.rar", Estado::Completada), foto(2, "g1", L"peli.part2.rar", Estado::Completada),
+                                        foto(3, "otro", L"otra.zip", Estado::Error), foto(4, "", L"suelto.zip", Estado::Descargando),
+                                        foto(5, "g1", L"peli.part3.rar", Estado::Completada, L"D:\\Otra") };
+            auto listas = ArchivosDelPaquete("g1", L"C:\\descargas", lista, {});
+            Comprobar(listas.size() == 2 && listas[0] == d + L"peli.part1.rar" && listas[1] == d + L"peli.part2.rar",
+                      "jícaro: un paquete terminado da sus archivos (los de otros grupos y otras carpetas no cuentan)");
+            auto conError = lista;
+            conError[1].datos.estado = Estado::Error;
+            auto bajando = lista;
+            bajando[0].datos.estado = Estado::Descargando;
+            Parte esperando;
+            esperando.grupo = "g1";
+            esperando.estado = EstadoParte::Esperando;
+            Parte lista3 = esperando;
+            lista3.estado = EstadoParte::Lista;
+            Parte deOtro = esperando;
+            deOtro.grupo = "otro";
+            Comprobar(ArchivosDelPaquete("g1", L"C:\\Descargas", conError, {}).empty() && ArchivosDelPaquete("g1", L"C:\\Descargas", bajando, {}).empty()
+                          && ArchivosDelPaquete("g1", L"C:\\Descargas", lista, { lista3, esperando }).empty()
+                          && ArchivosDelPaquete("g1", L"C:\\Descargas", lista, { lista3, deOtro }).size() == 2
+                          && ArchivosDelPaquete("", L"C:\\Descargas", lista, {}).empty(),
+                      "jícaro: falta algo si una del grupo falló, sigue bajando o tiene una parte sin bajar en «de una en una»");
+        }
+
+        // 4. La orden: cada ruta entre comillas, y Windows la lee igual
+        {
+            std::wstring exe = L"C:\\Users\\Ana\\AppData\\Local\\Programs\\Jicaro\\Jicaro.exe";
+            std::wstring archivo = L"C:\\Users\\Ana\\Mis descargas\\Película ñ & más (2024)\\peli.part1.rar";
+            std::wstring destino = L"C:\\Users\\Ana\\Mis descargas\\Película ñ & más (2024)\\Película ñ & más (2024)";
+            std::wstring orden = ArmarOrden(exe, archivo, destino);
+            Comprobar(orden == L"\"" + exe + L"\" --extraer \"" + archivo + L"\" --destino \"" + destino + L"\"",
+                      "jícaro: la orden es \"Jicaro.exe\" --extraer \"<primera parte>\" --destino \"<carpeta>\"");
+            int n = 0;
+            LPWSTR* a = CommandLineToArgvW(orden.c_str(), &n);
+            bool igual = a && n == 5 && exe == a[0] && std::wstring(a[1]) == L"--extraer" && archivo == a[2] && std::wstring(a[3]) == L"--destino"
+                         && destino == a[4];
+            if (a) LocalFree(a);
+            Comprobar(igual, "jícaro: Windows la lee como 5 argumentos, con espacios, «&» y acentos en las rutas");
+            Comprobar(!ArmarOrden(L"\\\\nas\\programas\\Jicaro\\Jicaro.exe", L"\\\\nas\\pelis\\peli.part1.rar", L"\\\\nas\\pelis\\peli").empty()
+                          && !ArmarOrden(L"D:\\Jicaro\\JICARO.EXE", L"D:\\a.zip", L"D:\\a").empty(),
+                      "jícaro: rutas de red (\\\\servidor\\carpeta) y otra unidad");
+            Comprobar(ArmarOrden(exe, L"C:\\D\\x\" --aqui \"y.rar", destino).empty() && ArmarOrden(exe, archivo, destino + L"\\").empty()
+                          && ArmarOrden(exe, L"peli.part1.rar", destino).empty() && ArmarOrden(exe, L"-peli.rar", destino).empty()
+                          && ArmarOrden(exe, L"C:\\D\\..\\peli.rar", destino).empty() && ArmarOrden(exe, L"C:\\D\\.\\peli.rar", destino).empty()
+                          && ArmarOrden(exe, L"C:\\D\\peli.rar:flujo", destino).empty() && ArmarOrden(exe, L"C:\\D\\pe\nli.rar", destino).empty()
+                          && ArmarOrden(exe, L"\\\\?\\C:\\D\\peli.rar", destino).empty() && ArmarOrden(exe, L"\\\\.\\PhysicalDrive0", destino).empty()
+                          && ArmarOrden(exe, L"C:\\D\\*.rar", destino).empty() && ArmarOrden(exe, L"C:/D/peli.rar", destino).empty()
+                          && ArmarOrden(exe, L"C:\\D\\\\peli.rar", destino).empty() && ArmarOrden(exe, L"C:\\D\\peli.rar ", destino).empty()
+                          && ArmarOrden(exe, archivo, L"C:\\D\\peli.").empty() && ArmarOrden(exe, L"", destino).empty(),
+                      "jícaro: no se arma con comillas, rutas relativas, «..», flujos, caracteres de control, \\\\?\\, comodines ni «\\» al final");
+            Comprobar(ArmarOrden(L"C:\\Windows\\System32\\cmd.exe", archivo, destino).empty() && ArmarOrden(L"Jicaro.exe", archivo, destino).empty()
+                          && ArmarOrden(L"C:\\x\\Jicaro.exe.bat", archivo, destino).empty() && !EsRutaDeJicaro(L"C:\\x\\NoJicaro.exe"),
+                      "jícaro: solo se abre un Jicaro.exe con su ruta completa");
+        }
+
+        // 5. Los códigos de salida y el texto para la persona
+        Comprobar(LeerCodigo(0) == Resultado::Listo && LeerCodigo(1) == Resultado::Error && LeerCodigo(2) == Resultado::Cancelado
+                      && LeerCodigo(3) == Resultado::FaltanPartes && LeerCodigo(4) == Resultado::Contrasena && LeerCodigo(5) == Resultado::YaExtrayendo
+                      && LeerCodigo(6) == Resultado::Parcial && LeerCodigo(7) == Resultado::Error && LeerCodigo(0xC0000005) == Resultado::Error
+                      && LeerCodigo(259) == Resultado::Error,
+                  "jícaro: códigos 0 a 6; uno desconocido o un cierre de golpe es un error");
+        {
+            auto tiene = [](const std::wstring& t, const wchar_t* s) { return t.find(s) != std::wstring::npos; };
+            Comprobar(tiene(Texto(Resultado::Listo, L"Peli", L"C:\\Descargas\\Peli (2)"), L"«Peli» quedó descomprimido en la carpeta «Peli (2)»")
+                          && tiene(Texto(Resultado::FaltanPartes, L"Peli", L""), L"le faltan partes")
+                          && tiene(Texto(Resultado::Contrasena, L"Peli", L""), L"contraseña") && tiene(Texto(Resultado::Cancelado, L"Peli", L""), L"canceló")
+                          && tiene(Texto(Resultado::Error, L"Peli", L""), L"no pudo") && tiene(Texto(Resultado::Parcial, L"Peli", L"C:\\D\\Peli"), L"se saltaron")
+                          && tiene(Texto(Resultado::YaExtrayendo, L"Peli", L""), L"otra ventana") && tiene(Texto(Resultado::NoAbrio, L"Peli", L""), L"Ajustes")
+                          && Titulo(Resultado::Listo) == L"Jícaro: listo" && Titulo(Resultado::FaltanPartes) == L"Jícaro: faltan partes"
+                          && Titulo(Resultado::Contrasena) == L"Jícaro: tiene contraseña" && Titulo(Resultado::Cancelado) == L"Jícaro: cancelado"
+                          && Titulo(Resultado::Error) == L"Jícaro: no se pudo descomprimir",
+                      "jícaro: el resultado en español: listo, faltan partes, contraseña, cancelado o error");
+        }
+
+        // 6. La carpeta de destino, al lado de las partes y sin pisar nada; dónde está Jícaro
+        Comprobar(NombreDeCarpeta(L"Peli de prueba", L"peli") == L"Peli de prueba" && NombreDeCarpeta(L"Páginas de ddownload.com", L"peli") == L"peli"
+                      && NombreDeCarpeta(L"Enlaces de ejemplo.org", L"peli") == L"peli" && NombreDeCarpeta(L"", L"peli") == L"peli",
+                  "jícaro: la carpeta lleva el nombre del paquete (o el del comprimido, si Atarraya no sabía el del paquete)");
+        {
+            namespace fs = std::filesystem;
+            std::wstring b = (fs::temp_directory_path() / (L"atarraya-prueba-jicaro-" + std::to_wstring(GetCurrentProcessId()))).wstring();
+            std::error_code ec;
+            fs::remove_all(b, ec);
+            fs::create_directories(b, ec);
+            std::wstring d1 = CarpetaDestino(b, L"Peli");
+            CreateDirectoryW(d1.c_str(), nullptr);
+            std::wstring d2 = CarpetaDestino(b + L"\\", L"Peli");
+            EscribirSeguro(b + L"\\Peli (2)", "un archivo con ese nombre");
+            std::wstring d3 = CarpetaDestino(b, L"Peli");
+            std::wstring raro = CarpetaDestino(b, L"Peli: 2024? <hd>.");
+            std::wstring reservado = CarpetaDestino(b, L"CON");
+            Comprobar(d1 == b + L"\\Peli" && d2 == b + L"\\Peli (2)" && d3 == b + L"\\Peli (3)" && raro == b + L"\\Peli_ 2024_ _hd_"
+                          && reservado == b + L"\\_CON" && CarpetaDestino(L"", L"Peli").empty(),
+                      "jícaro: carpeta nueva «Peli»; si ya hay algo con ese nombre, «Peli (2)», «Peli (3)»...; el nombre se limpia");
+            EscribirSeguro(b + L"\\viejo.rar", std::string("Rar!\x1A\x07\x00\x11\x22\x73\x01\x01\x0D\x00", 14));
+            EscribirSeguro(b + L"\\entero.rar", std::string("Rar!\x1A\x07\x00\x11\x22\x73\x00\x00\x0D\x00", 14));
+            Comprobar(EsVolumenRar(b + L"\\viejo.rar") && !EsVolumenRar(b + L"\\entero.rar") && !EsVolumenRar(b + L"\\no-esta.rar"),
+                      "jícaro: lee la cabecera del archivo en el disco");
+            // Dónde está Jícaro: el elegido, si existe y se llama Jicaro.exe; si no, el de la ruta de siempre. En las pruebas
+            // la «ruta de siempre» queda dentro de su carpeta de datos (nunca el Jícaro que instaló la persona).
+            SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", b.c_str());
+            std::wstring siempre = b + L"\\Programs\\Jicaro\\Jicaro.exe";
+            EscribirSeguro(b + L"\\Jicaro.exe", "no es un programa: solo para buscarlo");
+            EscribirSeguro(b + L"\\Otro.exe", "tampoco");
+            bool sinJicaro = RutaPredeterminada() == siempre && Buscar(L"").empty() && Buscar(b + L"\\Otro.exe").empty()
+                             && Buscar(b + L"\\falta\\Jicaro.exe").empty();
+            fs::create_directories(b + L"\\Programs\\Jicaro", ec);
+            EscribirSeguro(siempre, "tampoco es un programa");
+            Comprobar(sinJicaro && Buscar(b + L"\\Jicaro.exe") == b + L"\\Jicaro.exe" && Buscar(L"") == siempre
+                          && Buscar(b + L"\\Otro.exe") == siempre && Buscar(b + L"\\falta\\Jicaro.exe") == siempre,
+                      "jícaro: usa el Jicaro.exe elegido; si no, el de la ruta de siempre (Programs\\Jicaro); si no hay ninguno, nada");
+            SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
+            fs::remove_all(b, ec);
+        }
+
+        // 7. El paquete y su grupo se guardan con cada descarga y con cada parte de la cola
+        {
+            namespace fs = std::filesystem;
+            std::wstring b = (fs::temp_directory_path() / (L"atarraya-prueba-grupos-" + std::to_wstring(GetCurrentProcessId()))).wstring();
+            std::error_code ec;
+            fs::create_directories(b, ec);
+            uint64_t id = 0;
+            {
+                Motor m(b + L"\\descargas.json");
+                DatosDescarga x;
+                x.url = "http://127.0.0.1:9/peli.part1.rar";
+                x.carpeta = b;
+                x.paquete = L"Película ñ";
+                x.grupo = NuevoId();
+                id = m.Agregar(x, false);
+                m.Guardar();
+                Motor otro(b + L"\\descargas.json");
+                otro.Cargar();
+                Foto f;
+                Comprobar(otro.Buscar(id, f) && f.datos.paquete == L"Película ñ" && f.datos.grupo == x.grupo && x.grupo.size() == 16
+                              && x.grupo != NuevoId(),
+                          "jícaro: cada descarga guarda su paquete y su grupo (16 letras al azar)");
+            }
+            {
+                DeUnaEnUna q(b + L"\\de-una-en-una.json");
+                Parte p;
+                p.url = "https://ddownload.com/abc123/peli.part1.rar";
+                p.paquete = L"Peli";
+                p.grupo = "0123456789abcdef";
+                bool guardada = q.Agregar({ p });
+                DeUnaEnUna otra(b + L"\\de-una-en-una.json");
+                otra.Cargar();
+                Comprobar(guardada && otra.Partes().size() == 1 && otra.Partes()[0].grupo == "0123456789abcdef",
+                          "jícaro: cada parte de «de una en una» guarda su grupo");
+            }
+            fs::remove_all(b, ec);
+        }
+    }
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -816,6 +1069,7 @@ int wmain(int argc, wchar_t** argv)
     DeUnaEnUnaPruebas();
     PaginaEnVezDeArchivo();
     PaginaEnUnaParte();
+    JicaroPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

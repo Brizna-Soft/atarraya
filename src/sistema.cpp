@@ -55,6 +55,15 @@ void hnd::sistema::MostrarEnCarpeta(const std::wstring& ruta)
 bool hnd::sistema::MandarAPapelera(const std::wstring& ruta)
 {
     if (!ExisteArchivo(ruta)) return true;
+#ifdef ATARRAYA_PRUEBAS
+    // Copia de prueba: nada va a la Papelera de la persona. Se mueve a «papelera», dentro de la carpeta de la prueba.
+    std::wstring papelera = CarpetaDePrueba() + L"\\papelera";
+    CreateDirectoryW(papelera.c_str(), nullptr);
+    std::wstring nombre = ruta.substr(ruta.find_last_of(L'\\') + 1);
+    std::wstring destino = papelera + L"\\" + nombre;
+    for (int i = 2; ExisteArchivo(destino) && i < 1000; i++) destino = papelera + L"\\" + std::to_wstring(i) + L"-" + nombre;
+    return MoveFileExW(ruta.c_str(), destino.c_str(), MOVEFILE_COPY_ALLOWED) != 0;
+#else
     std::wstring doble = ruta;
     doble.push_back(L'\0');   // SHFileOperation pide la lista terminada en dos ceros
     SHFILEOPSTRUCTW op = {};
@@ -64,6 +73,7 @@ bool hnd::sistema::MandarAPapelera(const std::wstring& ruta)
     // de borrar para siempre, en vez de borrar sin avisar
     op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI | FOF_WANTNUKEWARNING;
     return SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted;
+#endif
 }
 
 bool hnd::sistema::EsEjecutable(const std::wstring& nombre)

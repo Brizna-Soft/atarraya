@@ -22,6 +22,7 @@
 
 #include "ayuda.hpp"
 #include "hilos.hpp"
+#include "jicaro.hpp"
 #include "navegadores.hpp"
 #include "nombres.hpp"
 #include "sistema.hpp"
@@ -730,11 +731,62 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
                          L"confirmes. Los captchas siempre los resuelves tú en tu navegador.", FromDIP(520)),
               0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
 
+    // Jícaro, el descompresor de Brizna Soft. Sin Jícaro, la casilla queda apagada (lo guardado no se toca).
+    caja->Add(new wxStaticLine(this), 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    auto elegido = std::make_shared<std::wstring>(ajustes.rutaJicaro);
+    auto quiere = std::make_shared<bool>(ajustes.jicaroAlTerminar);
+    auto* casillaJicaro = new wxCheckBox(this, wxID_ANY, L"Descomprimir con Jícaro al terminar");
+    caja->Add(casillaJicaro, 0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    auto* filaJicaro = new wxBoxSizer(wxHORIZONTAL);
+    auto* dondeJicaro = new wxStaticText(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(FromDIP(300), -1), wxST_ELLIPSIZE_MIDDLE);
+    dondeJicaro->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+    auto* elegirJicaro = new wxButton(this, wxID_ANY, L"Elegir...");
+    elegirJicaro->SetToolTip(L"Si pusiste Jícaro en otra carpeta, elige su archivo Jicaro.exe");
+    auto* paginaJicaro = new wxButton(this, wxID_ANY, L"Abrir la página de Jícaro");
+    paginaJicaro->SetToolTip(L"Abre en tu navegador la página de Jícaro, el descompresor gratis de Brizna Soft");
+    filaJicaro->Add(dondeJicaro, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    filaJicaro->Add(elegirJicaro, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
+    filaJicaro->Add(paginaJicaro, 0, wxALIGN_CENTER_VERTICAL);
+    caja->Add(filaJicaro, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    caja->Add(Nota(this, L"Cuando termina un paquete (o un .rar, .zip o .7z suelto), Jícaro lo descomprime en una carpeta con su "
+                         L"nombre, al lado de las partes. Las partes no se borran: después puedes mandarlas a la Papelera.", FromDIP(520)),
+              0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    auto mostrarJicaro = [=, this]() {
+        std::wstring ruta = jicaro::Buscar(*elegido);
+        bool hay = !ruta.empty();
+        casillaJicaro->Enable(hay);
+        casillaJicaro->SetValue(hay && *quiere);
+        dondeJicaro->SetLabel(hay ? L"Jícaro está en " + ruta : std::wstring(L"No se encontró Jícaro en esta PC."));
+        dondeJicaro->SetToolTip(hay ? wxString(ruta) : wxString());
+        paginaJicaro->Show(!hay);
+        Layout();
+    };
+    mostrarJicaro();
+    casillaJicaro->Bind(wxEVT_CHECKBOX, [=](wxCommandEvent&) { *quiere = casillaJicaro->GetValue(); });
+    elegirJicaro->Bind(wxEVT_BUTTON, [=, this](wxCommandEvent&) {
+        wxFileDialog d(this, L"¿Dónde está Jícaro?", wxEmptyString, L"Jicaro.exe", L"Jícaro (Jicaro.exe)|Jicaro.exe",
+                       wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+        if (d.ShowModal() != wxID_OK) return;
+        std::wstring ruta = d.GetPath().ToStdWstring();
+        if (!jicaro::EsRutaDeJicaro(ruta))
+        {
+            ayuda::Aviso(L"Elige el archivo Jicaro.exe, el programa de Jícaro.", L"Ajustes", wxOK | wxICON_WARNING, this);
+            return;
+        }
+        *elegido = ruta;
+        *quiere = true;   // si la persona lo buscó, es porque lo quiere usar
+        mostrarJicaro();
+        Fit();
+    });
+    paginaJicaro->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { sistema::AbrirPaginaWeb("https://brizna-soft.github.io/programas/jicaro/"); });
+
     caja->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, borde);
     if (auto* ok = FindWindow(wxID_OK)) ok->SetLabel(L"Guardar");
     if (auto* cancelar = FindWindow(wxID_CANCEL)) cancelar->SetLabel(L"Cancelar");
 
     Bind(wxEVT_BUTTON, [=, this](wxCommandEvent& e) {
+        if (casillaJicaro->IsEnabled()) m_ajustes.jicaroAlTerminar = casillaJicaro->GetValue();
+        m_ajustes.rutaJicaro = *elegido;
         m_ajustes.carpeta = carpeta->GetPath().ToStdWstring();
         m_ajustes.conexiones = conexiones->GetValue();
         m_ajustes.simultaneas = simultaneas->GetValue();

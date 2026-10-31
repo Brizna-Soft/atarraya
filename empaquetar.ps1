@@ -34,6 +34,10 @@ Atarraya $version - descargas, torrents y enlaces magnet, gratis, de Brizna Soft
    Tú resuelves el captcha y pulsas descargar; la extensión le pasa el archivo a Atarraya y, cuando termina,
    se abre la página siguiente. Si un sitio responde con una página en vez del archivo, Atarraya no la guarda:
    te avisa y te ofrece abrirla en el navegador.
+6. Nuevo en la 0.2.2: si tienes Jícaro, el descompresor gratis de Brizna Soft, cuando terminan de bajar todas
+   las partes de un paquete (o un .rar, .zip o .7z suelto) Atarraya lo descomprime en una carpeta con su nombre,
+   al lado de las partes. Las partes no se borran solas: cuando Jícaro termina bien, Atarraya te ofrece
+   "Borrar las partes" (van a la Papelera). Se apaga en Ajustes. Jícaro: https://brizna-soft.github.io/programas/jicaro/
 
 Si ya tenías la extensión de una versión anterior, recárgala: en chrome://extensions (o edge://extensions)
 busca Atarraya y pulsa el botón de recargar. Si pusiste esta versión en otra carpeta, carga otra vez la

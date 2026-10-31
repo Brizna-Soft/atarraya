@@ -50,6 +50,10 @@ namespace hnd
         std::vector<Segmento> segmentos;
         int conexiones = 8;
         int64_t agregada = 0, terminada = 0;
+        // Las de un mismo paquete que llegaron juntas (del recolector, de una página o de «de una en una») comparten
+        // «grupo»: cuando terminan todas, Jícaro puede descomprimirlas. Vacío = una descarga suelta.
+        std::wstring paquete;
+        std::string grupo;
 
         int64_t Hecho() const;
     };
