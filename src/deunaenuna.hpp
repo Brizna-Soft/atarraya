@@ -89,6 +89,7 @@ namespace hnd
         bool QuedanPorAbrir() const;
         bool Terminada() const;      // tenía partes y ya no queda nada por abrir ni por bajar
         size_t Cuantas(EstadoParte e) const;
+        bool TieneDescarga(uint64_t descarga) const;   // ¿esa descarga es de una parte de la cola?
         const std::vector<Parte>& Partes() const { return m_partes; }
 
     private:

@@ -72,6 +72,11 @@ vuelve al recolector para otra vez. Si cierras Atarraya, al abrirlo sigue donde 
 página: solo la abre y recibe lo que el navegador le pasa. Baja cada parte con una sola conexión, como el
 navegador. Necesita la extensión conectada (ver abajo); si no lo está, te avisa.
 
+Lo mismo pasa si pegas uno de esos enlaces en **Agregar enlace** o lo eliges en **De una página**: se abre en tu
+navegador de una en una, en vez de bajar la página. Y si algún sitio responde con una página en vez del archivo
+(por ejemplo, porque pide un captcha o porque el enlace venció), Atarraya no la guarda como si fuera el archivo:
+te avisa «El sitio respondió con una página, no con el archivo» y te ofrece **Abrir en el navegador**.
+
 ## Conectar con el navegador
 
 Atarraya toma las descargas de **cualquier sitio**, igual que IDM. Las únicas que se quedan en el navegador son
@@ -91,6 +96,12 @@ las que salen de un formulario, las que arma la misma página y los videos de Yo
    enlace magnet) y elegir **Descargar con Atarraya**.
 
 Si Atarraya está cerrado, se abre solo junto al reloj. Si no está conectado, el navegador baja todo como siempre.
+
+**Al pasar a una versión nueva, recarga la extensión.** En `chrome://extensions` (en Edge, `edge://extensions`)
+busca Atarraya y pulsa el botón de recargar (la flecha en círculo). Si pusiste la versión nueva en otra carpeta,
+quita la extensión, vuelve a pulsar **Cargar descomprimida** con la carpeta `extension\chrome` nueva y, en
+Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.2.1 lo necesita: su extensión le dice a Atarraya en
+qué página pulsaste descargar, para reconocer las partes de «de una en una».
 
 ## Torrents
 

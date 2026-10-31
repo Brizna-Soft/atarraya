@@ -30,6 +30,14 @@ Atarraya $version - descargas, torrents y enlaces magnet, gratis, de Brizna Soft
    La extensión para Chrome, Edge y Brave está en la carpeta extension\chrome.
 4. Para bajar muchos enlaces de una vez usa el "Recolector": ahí ves el nombre y el tamaño de cada uno
    y eliges cuáles bajar. Nada empieza hasta que lo confirmas.
+5. Las páginas de sitios de descargas (ddownload, Rapidgator y otros) se abren en tu navegador de una en una.
+   Tú resuelves el captcha y pulsas descargar; la extensión le pasa el archivo a Atarraya y, cuando termina,
+   se abre la página siguiente. Si un sitio responde con una página en vez del archivo, Atarraya no la guarda:
+   te avisa y te ofrece abrirla en el navegador.
+
+Si ya tenías la extensión de una versión anterior, recárgala: en chrome://extensions (o edge://extensions)
+busca Atarraya y pulsa el botón de recargar. Si pusiste esta versión en otra carpeta, carga otra vez la
+carpeta extension\chrome nueva y, en Atarraya, pulsa de nuevo "Navegadores" y "Conectar".
 
 Los captchas de los sitios de descargas siempre los resuelves tú en tu navegador.
 Ayuda, novedades y reportes de problemas: https://github.com/Brizna-Soft/atarraya

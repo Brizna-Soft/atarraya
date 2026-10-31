@@ -22,6 +22,22 @@ bool hnd::sistema::Abrir(const std::wstring& ruta)
     return (INT_PTR)ShellExecuteW(nullptr, L"open", ruta.c_str(), nullptr, nullptr, SW_SHOWNORMAL) > 32;
 }
 
+void hnd::sistema::AbrirPaginaWeb(const std::string& url)
+{
+    std::string inicio = url.substr(0, 8);
+    for (auto& c : inicio) c = (char)tolower((unsigned char)c);
+    if (inicio.rfind("http://", 0) != 0 && inicio.rfind("https://", 0) != 0) return;   // solo páginas web
+#ifdef ATARRAYA_PRUEBAS
+    // Copia de prueba: no se abre ningún navegador, solo se anota la página
+    std::wstring archivo = CarpetaDePrueba() + L"\\paginas-abiertas.txt";
+    std::string antes;
+    LeerArchivo(archivo, antes);
+    EscribirSeguro(archivo, antes + url + "\n");
+#else
+    ShellExecuteW(nullptr, L"open", Ancho(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+#endif
+}
+
 void hnd::sistema::MostrarEnCarpeta(const std::wstring& ruta)
 {
     PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(ruta.c_str());

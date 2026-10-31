@@ -10,6 +10,9 @@
 namespace hnd::sistema
 {
     bool Abrir(const std::wstring& ruta);
+    // Abre una página web (solo http o https) en el navegador. En la copia de prueba solo la anota en
+    // «paginas-abiertas.txt», sin abrir ningún navegador.
+    void AbrirPaginaWeb(const std::string& url);
     void MostrarEnCarpeta(const std::wstring& ruta);
     bool MandarAPapelera(const std::wstring& ruta);
     bool EsEjecutable(const std::wstring& nombre);

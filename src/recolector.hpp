@@ -100,6 +100,10 @@ namespace hnd
     // Para el portapapeles: solo se recolectan enlaces a archivos, magnet y páginas de sitios de descargas
     bool EnlaceParaRecolectar(const std::string& url);
     bool EsSitioDeDescargas(const std::string& url);
+    // «Agregar enlace» o «De una página»: un enlace de un sitio de descargas no se baja (daría su página, no el
+    // archivo); se abre en el navegador de una en una, como en el recolector. Lo que pasa el navegador sí se baja:
+    // ese ya es el archivo.
+    bool VaAlNavegador(const std::string& url, bool delNavegador);
     // localhost, direcciones privadas (192.168..., 10..., 172.16-31...), nombres sin punto o .local / .lan
     bool EsDireccionLocal(const std::string& url);
 }

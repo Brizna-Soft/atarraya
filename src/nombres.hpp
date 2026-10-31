@@ -19,4 +19,12 @@ namespace hnd
     std::wstring NombreUnico(const std::wstring& carpeta, const std::wstring& nombre,
                              const std::set<std::wstring>& ocupados);
     std::wstring Minusculas(std::wstring s);
+
+    // ¿Este nombre puede ser el de una página web? Sin extensión, o .html, .htm, .php, .asp... (también una
+    // «extensión» rara, larga o con símbolos, que no es de un archivo)
+    bool EsNombreDePagina(const std::wstring& nombre);
+    // Se pidió un archivo y el servidor respondió con una página web: llega como página (text/html o
+    // application/xhtml+xml), no como adjunto, y el nombre que se esperaba no es de página (.rar, .zip, .7z, .exe,
+    // .iso, un video...). Pasa, por ejemplo, con la página de un sitio de descargas que pide un captcha.
+    bool RespondioPagina(const std::string& tipoMime, bool adjunto, const std::wstring& nombreEsperado);
 }

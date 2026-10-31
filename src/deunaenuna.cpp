@@ -374,6 +374,11 @@ bool hnd::DeUnaEnUna::Terminada() const
         && Cuantas(EstadoParte::Tomada) == 0;
 }
 
+bool hnd::DeUnaEnUna::TieneDescarga(uint64_t descarga) const
+{
+    return descarga != 0 && std::any_of(m_partes.begin(), m_partes.end(), [&](const Parte& p) { return p.descarga == descarga; });
+}
+
 size_t hnd::DeUnaEnUna::Cuantas(EstadoParte e) const
 {
     return (size_t)std::count_if(m_partes.begin(), m_partes.end(), [&](const Parte& p) { return p.estado == e; });

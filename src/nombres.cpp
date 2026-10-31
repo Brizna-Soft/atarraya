@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cwchar>
+#include <cwctype>
 
 #include "util.hpp"
 
@@ -49,6 +50,28 @@ std::wstring hnd::Minusculas(std::wstring s)
 {
     if (!s.empty()) CharLowerBuffW(s.data(), (DWORD)s.size());
     return s;
+}
+
+bool hnd::EsNombreDePagina(const std::wstring& nombre)
+{
+    std::wstring n = Minusculas(nombre);
+    auto punto = n.find_last_of(L'.');
+    if (punto == std::wstring::npos || punto == 0 || punto + 1 >= n.size()) return true;   // sin extensión
+    std::wstring ext = n.substr(punto + 1);
+    for (const wchar_t* e : { L"html", L"htm", L"xhtml", L"shtml", L"php", L"asp", L"aspx", L"jsp", L"cgi", L"pl" })
+    {
+        if (ext == e) return true;
+    }
+    // Una «extensión» larga o con símbolos no es de un archivo (por ejemplo, la de un código con puntos)
+    return ext.size() > 8 || !std::all_of(ext.begin(), ext.end(), [](wchar_t c) { return std::iswalnum(c) != 0; });
+}
+
+bool hnd::RespondioPagina(const std::string& tipoMime, bool adjunto, const std::wstring& nombreEsperado)
+{
+    std::string tipo = tipoMime;
+    std::transform(tipo.begin(), tipo.end(), tipo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    bool pagina = tipo.find("text/html") != std::string::npos || tipo.find("application/xhtml+xml") != std::string::npos;
+    return pagina && !adjunto && !EsNombreDePagina(nombreEsperado);
 }
 
 std::wstring hnd::NombreDeContentDisposition(const std::string& valor)

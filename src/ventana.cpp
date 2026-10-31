@@ -541,6 +541,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { CalcularHuella(); }, ID_HUELLA);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { ElegirArchivos(PrimeraSeleccion()); }, ID_ELEGIR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { CambiarCompartir(); }, ID_COMPARTIR);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirElegidasEnNavegador(); }, ID_ABRIR_EN_NAVEGADOR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.ReanudarTodas(); m_torrents.ReanudarTodas(); Refrescar(); }, ID_REANUDAR_TODAS);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.PausarTodas(); m_torrents.PausarTodas(); Refrescar(); }, ID_PAUSAR_TODAS);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.LimpiarTerminadas(); m_torrents.LimpiarTerminadas(); Refrescar(); }, ID_LIMPIAR);
@@ -937,6 +938,19 @@ void VentanaPrincipal::NuevaDescarga(const DatosDescarga& previa, bool delNavega
         AbrirPagina(Ancho(datos.url), true);
         return;
     }
+    // La página de un sitio de descargas (ddownload, Rapidgator...): bajarla daría la página, no el archivo. Como en el
+    // recolector, se abre en el navegador de una en una.
+    if (VaAlNavegador(datos.url, delNavegador))
+    {
+        EnlaceRecolectado e;
+        e.url = datos.url;
+        e.referer = datos.referer;
+        e.nombre = NombreDeUrl(datos.url);
+        e.estado = Comprobacion::Sitio;
+        Registrar("nueva descarga: es la página de un sitio de descargas (" + SoloSitio(datos.url) + "); va de una en una");
+        MandarDeUnaEnUna({ e }, datos.carpeta, d.EmpezarAhora());
+        return;
+    }
     if (uint64_t otra = m_motor.BuscarPorUrl(datos.url))
     {
         wxMessageDialog pregunta(this, L"Esa dirección ya está en la lista y no ha terminado. ¿Agregarla otra vez?",
@@ -1129,7 +1143,7 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         {
             for (size_t i = 0; i < paginas.size() && i < tope; i++)
             {
-                ayuda::AbrirEnlace(wxString::FromUTF8(paginas[i]->url));
+                sistema::AbrirPaginaWeb(paginas[i]->url);
                 hechos.push_back(paginas[i]->id);
             }
         }
@@ -1155,8 +1169,19 @@ void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
     DialogoPagina d(IsShown() ? this : nullptr, m_ajustes, url, buscarYa);
     if (d.ShowModal() != wxID_OK) return;
     int agregadas = 0, yaEstaban = 0;
+    std::vector<EnlaceRecolectado> sitios;   // páginas de sitios de descargas: de una en una
     for (const auto& e : d.Elegidos())
     {
+        if (VaAlNavegador(e.url, false))
+        {
+            EnlaceRecolectado s;
+            s.url = e.url;
+            s.referer = d.Pagina();
+            s.nombre = NombreDeUrl(e.url);
+            s.estado = Comprobacion::Sitio;
+            sitios.push_back(std::move(s));
+            continue;
+        }
         if (enlaces::EsMagnet(e.url))
         {
             InfoTorrent info;
@@ -1177,9 +1202,13 @@ void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
         else if (yaEstaba) yaEstaban++;
     }
     Registrar("enlaces de una página: " + std::to_string(agregadas) + " agregados de " + SoloSitio(d.Pagina()));
-    wxString texto = wxString::Format(L"Se agregaron %d %s.", agregadas, agregadas == 1 ? L"archivo" : L"archivos");
-    if (yaEstaban > 0) texto += wxString::Format(L" %d ya estaban en la lista.", yaEstaban);
-    Avisar(L"Enlaces de una página", texto);
+    if (agregadas > 0 || yaEstaban > 0)
+    {
+        wxString texto = wxString::Format(L"Se agregaron %d %s.", agregadas, agregadas == 1 ? L"archivo" : L"archivos");
+        if (yaEstaban > 0) texto += wxString::Format(L" %d ya estaban en la lista.", yaEstaban);
+        Avisar(L"Enlaces de una página", texto);
+    }
+    if (!sitios.empty()) MandarDeUnaEnUna(sitios, d.Carpeta(), d.EmpezarAhora());
     Refrescar();
 }
 
@@ -1649,6 +1678,8 @@ void VentanaPrincipal::MenuContextual(wxDataViewEvent&)
     else
     {
         m.Append(ID_CAMBIAR, L"Cambiar el enlace...");
+        // El sitio respondió con una página: se puede abrir en el navegador
+        if (f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina) m.Append(ID_ABRIR_EN_NAVEGADOR, L"Abrir en el navegador");
     }
     m.Append(ID_HUELLA, L"Calcular la huella SHA-256");
     m.AppendSeparator();
@@ -1686,6 +1717,14 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
     else if (f.datos.estado == Estado::Error && m_ajustes.avisarAlTerminar)
     {
         Avisar(L"La descarga se detuvo", nombre + L"\n" + wxString::FromUTF8(f.datos.error), true);
+    }
+
+    // El sitio respondió con una página en vez del archivo: se ofrece abrirla en el navegador. (Las partes de «de una
+    // en una» ya tienen su camino: vuelven al recolector.)
+    if (f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina && !m_sitios.TieneDescarga(f.datos.id))
+    {
+        m_paginasPorAbrir.push_back(f.datos.id);
+        CallAfter([this]() { OfrecerAbrirPaginas(); });
     }
 
     // De una en una: si era una parte, se abre la siguiente (este aviso va al último, para que sea el que se ve)
@@ -1970,15 +2009,7 @@ void VentanaPrincipal::AbrirParte(int i, bool avisar)
     if (i < 0 || (size_t)i >= partes.size()) return;
     std::string url = partes[i].url;
     size_t total = partes.size();
-#ifdef ATARRAYA_PRUEBAS
-    // Copia de prueba: no se abre ningún navegador, solo se anota la página
-    std::wstring archivo = CarpetaDePrueba() + L"\\paginas-abiertas.txt";
-    std::string antes;
-    LeerArchivo(archivo, antes);
-    EscribirSeguro(archivo, antes + url + "\n");
-#else
-    ayuda::AbrirEnlace(wxString::FromUTF8(url));
-#endif
+    sistema::AbrirPaginaWeb(url);
     Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " abierta en el navegador ("
               + SoloSitio(url) + ")");
     if (avisar)
@@ -2084,6 +2115,63 @@ void VentanaPrincipal::GuardarCola()
     if (m_colaSinGuardar) return;   // ya se avisó
     m_colaSinGuardar = true;
     Avisar(L"De una en una", L"No se pudo guardar la cola. Si cierras Atarraya ahora, puede que no siga donde iba.", true);
+}
+
+void VentanaPrincipal::MandarDeUnaEnUna(const std::vector<EnlaceRecolectado>& sitios, const std::wstring& carpeta, bool abrir)
+{
+    std::vector<const EnlaceRecolectado*> lista;
+    for (const auto& e : sitios) lista.push_back(&e);
+    if (EmpezarDeUnaEnUna(lista, carpeta, false, abrir, IsShown() ? (wxWindow*)this : nullptr)) return;
+    // No empezó (por ejemplo, para conectar antes la extensión): quedan en el recolector, donde «Descargar los
+    // marcados» los manda otra vez
+    std::vector<std::string> urls;
+    for (const auto& e : sitios) urls.push_back(e.url);
+    m_recolector.Agregar(urls, L"", sitios.empty() ? std::string() : sitios.front().referer, "agregar", true);
+    m_recolector.Guardar();
+    AbrirRecolector(false);
+}
+
+void VentanaPrincipal::OfrecerAbrirPaginas()
+{
+    if (m_saliendo || m_ofreciendoPaginas || m_paginasPorAbrir.empty()) return;
+    m_ofreciendoPaginas = true;   // mientras está la pregunta, las que lleguen esperan a la siguiente
+    auto ids = std::move(m_paginasPorAbrir);
+    m_paginasPorAbrir.clear();
+    std::vector<std::pair<wxString, std::string>> paginas;   // nombre y dirección
+    for (auto id : ids)
+    {
+        hnd::Foto f;
+        if (m_motor.Buscar(id, f) && f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina)
+            paginas.push_back({ NombreVisible(f.datos), f.datos.url });
+    }
+    if (!paginas.empty())
+    {
+        bool una = paginas.size() == 1;
+        wxString texto = una ? L"«" + paginas[0].first + L"»: el sitio respondió con una página, no con el archivo, así que Atarraya no la "
+                                   L"guardó como si fuera el archivo."
+                             : wxString::Format(L"%zu descargas: los sitios respondieron con una página, no con el archivo, así que Atarraya "
+                                                L"no las guardó como si fueran los archivos.", paginas.size());
+        texto += una ? L"\n\nÁbrela en el navegador: puede que pida un captcha o que pulses descargar."
+                     : L"\n\nÁbrelas en el navegador: puede que pidan un captcha o que pulses descargar.";
+        texto += L" Si tienes la extensión de Atarraya, la descarga llega aquí sola.";
+        wxMessageDialog p(IsShown() ? this : nullptr, texto, L"El sitio respondió con una página", wxYES_NO | wxYES_DEFAULT | wxICON_INFORMATION);
+        p.SetYesNoLabels(L"Abrir en el navegador", L"Ahora no");
+        bool abrir = p.ShowModal() == wxID_YES;
+        Registrar("respondió con una página: " + std::to_string(paginas.size()) + (abrir ? ", se abren en el navegador" : ", ahora no"));
+        for (size_t i = 0; abrir && i < paginas.size() && i < 10; i++) sistema::AbrirPaginaWeb(paginas[i].second);
+    }
+    m_ofreciendoPaginas = false;
+    if (!m_paginasPorAbrir.empty()) CallAfter([this]() { OfrecerAbrirPaginas(); });
+}
+
+void VentanaPrincipal::AbrirElegidasEnNavegador()
+{
+    for (auto id : Seleccion())
+    {
+        hnd::Foto f;
+        if (BuscarFoto(id, f) && !f.torrent && f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina)
+            sistema::AbrirPaginaWeb(f.datos.url);
+    }
 }
 
 void VentanaPrincipal::RevisarPartes()

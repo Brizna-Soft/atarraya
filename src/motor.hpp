@@ -159,4 +159,8 @@ namespace hnd
 
     // Para la ventana y las pruebas
     const wchar_t* TextoEstado(Estado e);
+
+    // El error de una descarga cuyo sitio respondió con una página en vez del archivo (la ventana ofrece abrirla en
+    // el navegador)
+    extern const char* const TextoRespondioPagina;
 }

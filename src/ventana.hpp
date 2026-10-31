@@ -96,6 +96,13 @@ private:
     bool DevolverYVaciar(size_t& devueltas);
     void GuardarCola();                    // y avisa una vez si no se pudo
     void RevisarPartes();                  // descargas de partes que la persona quitó de la lista
+    // Enlaces de sitios de descargas agregados a mano o desde una página: de una en una. Si la persona no empieza
+    // (por ejemplo, para conectar antes la extensión), quedan en el recolector.
+    void MandarDeUnaEnUna(const std::vector<hnd::EnlaceRecolectado>& sitios, const std::wstring& carpeta, bool abrir);
+
+    // Descargas cuyo sitio respondió con una página en vez del archivo: se ofrece abrirlas en el navegador
+    void OfrecerAbrirPaginas();
+    void AbrirElegidasEnNavegador();
 
     hnd::Motor& m_motor;
     hnd::MotorTorrent& m_torrents;
@@ -131,6 +138,9 @@ private:
     wxButton* m_bSaltar = nullptr;
     wxButton* m_bParar = nullptr;
     wxButton* m_bCerrarSitios = nullptr;
+
+    std::vector<uint64_t> m_paginasPorAbrir;   // descargas que recibieron una página: falta ofrecer abrirlas
+    bool m_ofreciendoPaginas = false;
 };
 
 // Ids de los comandos (los usa también el menú del ícono junto al reloj)
@@ -156,4 +166,5 @@ enum
     ID_TORRENT,
     ID_ELEGIR,
     ID_COMPARTIR,
+    ID_ABRIR_EN_NAVEGADOR,
 };

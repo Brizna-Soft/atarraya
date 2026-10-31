@@ -396,6 +396,30 @@ namespace
         for (const auto& f : { archivo, archivoCola, archivoRecolector, archivoCola3, archivoCola4 }) DeleteFileW(f.c_str());
     }
 
+    // El sitio respondió con una página en vez del archivo (como la página de ddownload guardada como .rar), y los
+    // enlaces de sitios de descargas que se agregan a mano
+    void PaginaEnVezDeArchivo()
+    {
+        Comprobar(RespondioPagina("text/html; charset=UTF-8", false, L"Juego-elamigos.part1.rar")
+                      && RespondioPagina("application/xhtml+xml", false, L"pelicula.mp4") && RespondioPagina("TEXT/HTML", false, L"setup.exe")
+                      && RespondioPagina("text/html", false, L"disco.iso") && RespondioPagina("text/html", false, L"peli.7z.001"),
+                  "página en vez del archivo: un .rar, un video, un .exe o un .iso que llega como página no se guarda");
+        Comprobar(!RespondioPagina("text/html", true, L"peli.rar") && !RespondioPagina("application/octet-stream", false, L"peli.rar")
+                      && !RespondioPagina("application/x-rar-compressed", false, L"peli.rar"),
+                  "página en vez del archivo: un adjunto o un archivo de verdad se bajan como siempre");
+        Comprobar(!RespondioPagina("text/html", false, L"index.html") && !RespondioPagina("text/html", false, L"noticia.php")
+                      && !RespondioPagina("text/html", false, L"descarga") && !RespondioPagina("text/html", false, L""),
+                  "página en vez del archivo: si se esperaba una página (o no se sabe), se guarda la página");
+        Comprobar(VaAlNavegador("https://ddownload.com/abc123def456/Juego-elamigos.part1.rar", false)
+                      && VaAlNavegador("https://rapidgator.net/file/0123456789abcdef/peli.rar.html", false)
+                      && VaAlNavegador("https://1fichier.com/?abcdefghij", false),
+                  "agregar enlace: la página de un sitio de descargas va al navegador, de una en una");
+        Comprobar(!VaAlNavegador("https://s12.ddownload.com/d/token/Juego-elamigos.part1.rar", true)
+                      && !VaAlNavegador("https://ejemplo.org/peli.rar", false)
+                      && !VaAlNavegador("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567", false),
+                  "agregar enlace: lo que pasa el navegador y los enlaces de otros sitios se bajan como siempre");
+    }
+
     // Varias consultas a la vez: cada una lee las redes por su cuenta, sin nada compartido que pueda chocar
     void AlMismoTiempo()
     {
@@ -631,6 +655,7 @@ int wmain(int argc, wchar_t** argv)
     SinRedes();
     AlMismoTiempo();
     DeUnaEnUnaPruebas();
+    PaginaEnVezDeArchivo();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

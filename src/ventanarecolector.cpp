@@ -342,7 +342,7 @@ void VentanaRecolector::MenuContextual(wxTreeListEvent& e)
         m.Append(wxID_ANY, wxString::FromUTF8(enlace.detalle.substr(0, 120)))->Enable(false);
     }
     int r = GetPopupMenuSelectionFromUser(m);
-    if (r == abrir) ayuda::AbrirEnlace(wxString::FromUTF8(enlace.url));
+    if (r == abrir) sistema::AbrirPaginaWeb(enlace.url);
     else if (r == copiar) sistema::CopiarTexto(Ancho(enlace.url));
     else if (r == quitar)
     {

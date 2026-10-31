@@ -239,6 +239,7 @@ namespace
         std::wstring nombre;
         std::string etag, modificado, tipo, urlFinal, errorCurl;
         bool noPermitido = false;   // una redirección llevaba a YouTube
+        bool adjunto = false;       // llega como adjunto (Content-Disposition con «attachment» o con nombre)
     };
 
     // Pide el primer byte para saber el tamaño, el nombre y si se puede partir/reanudar.
@@ -304,7 +305,10 @@ namespace
                 s.tamano = _atoi64(rango.c_str() + barra + 1);
                 s.rangos = true;
             }
-            s.nombre = hnd::NombreDeContentDisposition(valor("content-disposition"));
+            std::string disposicion = valor("content-disposition");
+            s.nombre = hnd::NombreDeContentDisposition(disposicion);
+            std::transform(disposicion.begin(), disposicion.end(), disposicion.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+            s.adjunto = disposicion.find("attachment") != std::string::npos || !s.nombre.empty();
             s.noPermitido = cab.sitioNoPermitido;
             s.etag = valor("etag");
             s.modificado = valor("last-modified");
@@ -432,6 +436,9 @@ namespace hnd
         for (auto& s : segmentos) total += s.hecho;
         return total;
     }
+
+    const char* const TextoRespondioPagina =
+        "El sitio respondió con una página, no con el archivo. Ábrela en el navegador: puede que pida un captcha o que pulses descargar.";
 
     const wchar_t* TextoEstado(Estado e)
     {
@@ -1224,6 +1231,22 @@ namespace hnd
         }
         if (!error.empty()) { terminar(Estado::Error, error); return; }
         if (x->parar) { terminar(x->pausaPedida ? Estado::Pausada : Estado::EnCola, ""); return; }
+
+        // 1b. Se pidió un archivo y el servidor respondió con una página (por ejemplo, la de un sitio de descargas que
+        //     pide un captcha): no se guarda como si fuera el archivo ni se da por terminada
+        if (!ftp)
+        {
+            std::wstring esperado;
+            {
+                std::lock_guard g(x->m);
+                esperado = !x->d.nombre.empty() ? x->d.nombre : NombreDeUrl(x->d.url);
+            }
+            if (RespondioPagina(s.tipo, s.adjunto, esperado))
+            {
+                terminar(Estado::Error, TextoRespondioPagina);
+                return;
+            }
+        }
 
         // 2. Nombres ya usados por otras descargas (para no chocar)
         std::set<std::wstring> ocupados;

@@ -115,6 +115,11 @@ bool hnd::EsSitioDeDescargas(const std::string& url)
     return false;
 }
 
+bool hnd::VaAlNavegador(const std::string& url, bool delNavegador)
+{
+    return !delNavegador && !enlaces::EsMagnet(url) && EsSitioDeDescargas(url);
+}
+
 bool hnd::EsDireccionLocal(const std::string& url)
 {
     std::string s = enlaces::Sitio(url);
