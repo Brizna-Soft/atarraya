@@ -80,6 +80,18 @@ namespace hnd
     bool BajarTexto(const std::string& url, size_t maximo, std::string& cuerpo, std::string& urlFinal,
                     std::string& tipo, std::string& error, const std::atomic<bool>* parar = nullptr);
 
+    // Lo que dice el servidor de un enlace sin bajarlo (una consulta HEAD: no llega ni un byte del archivo)
+    struct InfoEnlace
+    {
+        long codigo = 0;          // 0 si no hubo respuesta
+        bool pagina = false;      // es una página web, no un archivo
+        std::wstring nombre;
+        int64_t tamano = -1;
+        std::string tipo, urlFinal;
+        std::string error;        // en español, si no se pudo consultar
+    };
+    void ComprobarEnlace(const std::string& url, const std::string& referer, InfoEnlace& r, const std::atomic<bool>* parar = nullptr);
+
     class Motor
     {
     public:

@@ -10,7 +10,11 @@
 #include <cstdio>
 #include <string>
 
+#include <bcrypt.h>
+
+#include "clicknload.hpp"
 #include "enlaces.hpp"
+#include "recolector.hpp"
 #include "util.hpp"
 
 using namespace hnd;
@@ -115,6 +119,77 @@ namespace
         Comprobar(NoPermitido("https://m.youtube.com/watch?v=1") && NoPermitido("https://rr3---sn.googlevideo.com/videoplayback")
                   && NoPermitido("https://youtu.be/x") && !NoPermitido("https://notyoutube.com/a.mp4"), "YouTube fuera");
         Comprobar(Sitio("https://usuario:clave@Ejemplo.ORG:8080/x") == "ejemplo.org", "sitio sin usuario ni puerto");
+
+        // Click'n'Load: la clave sin ejecutar JavaScript
+        std::vector<uint8_t> clave;
+        Comprobar(cnl::ClaveDeJk("function f(){ return '31323334353637383930393837363534';}", clave) && clave.size() == 16 && clave[0] == '1',
+                  "CnL: jk de la página de JDownloader");
+        Comprobar(cnl::ClaveDeJk("function f(){return \"3132333435363738\" + '3930393837363534'}", clave), "CnL: jk en dos trozos");
+        Comprobar(!cnl::ClaveDeJk("function f(){ return atob('MTIz'); }", clave), "CnL: rechaza código");
+        Comprobar(!cnl::ClaveDeJk("function f(){ return '3132'; }", clave), "CnL: rechaza clave corta");
+        Comprobar(!cnl::ClaveDeJk("function f(){ return '31323334353637383930393837363534'; } alert(1)", clave), "CnL: rechaza lo que sigue");
+        Comprobar(!cnl::ClaveDeJk("function f(){ return 'zz323334353637383930393837363534'; }", clave), "CnL: rechaza letras que no son hex");
+        auto form = cnl::LeerFormulario("jk=function+f()%7B+return+'61'%3B%7D&crypted=ab+cd%2B&source=https%3A%2F%2Fejemplo.org%2Fc");
+        Comprobar(form["jk"] == "function f(){ return '61';}" && form["crypted"] == "ab cd+" && form["source"] == "https://ejemplo.org/c",
+                  "CnL: formulario");
+
+        // Cifrar como lo haría el sitio (AES-128-CBC, la clave también es el vector inicial, relleno con ceros) y descifrar
+        std::string claro = "https://ejemplo.org/a.zip\r\nhttps://ejemplo.org/b.zip\r\nhttps://ejemplo.org/a.zip";
+        std::string relleno = claro + std::string(16 - claro.size() % 16, '\0');
+        std::vector<uint8_t> k = { '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '9', '8', '7', '6', '5', '4' };
+        BCRYPT_ALG_HANDLE alg = nullptr;
+        BCRYPT_KEY_HANDLE hk = nullptr;
+        BCryptOpenAlgorithmProvider(&alg, BCRYPT_AES_ALGORITHM, nullptr, 0);
+        BCryptSetProperty(alg, BCRYPT_CHAINING_MODE, (PUCHAR)BCRYPT_CHAIN_MODE_CBC, sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
+        BCryptGenerateSymmetricKey(alg, &hk, nullptr, 0, k.data(), 16, 0);
+        UCHAR iv[16];
+        memcpy(iv, k.data(), 16);
+        std::string cifrado(relleno.size(), '\0');
+        ULONG n = 0;
+        BCryptEncrypt(hk, (PUCHAR)relleno.data(), (ULONG)relleno.size(), nullptr, iv, 16, (PUCHAR)cifrado.data(), (ULONG)cifrado.size(), &n, 0);
+        BCryptDestroyKey(hk);
+        BCryptCloseAlgorithmProvider(alg, 0);
+        static const char* b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        std::string base64;
+        for (size_t i = 0; i < cifrado.size(); i += 3)
+        {
+            uint32_t w = (uint8_t)cifrado[i] << 16 | (i + 1 < cifrado.size() ? (uint8_t)cifrado[i + 1] << 8 : 0) | (i + 2 < cifrado.size() ? (uint8_t)cifrado[i + 2] : 0);
+            base64 += b64[(w >> 18) & 63];
+            base64 += b64[(w >> 12) & 63];
+            base64 += i + 1 < cifrado.size() ? b64[(w >> 6) & 63] : '=';
+            base64 += i + 2 < cifrado.size() ? b64[w & 63] : '=';
+        }
+        std::string sinMas = base64;
+        for (auto& c : sinMas)
+        {
+            if (c == '+') c = ' ';   // como llega si el sitio no codifica los «+»
+        }
+        std::string texto;
+        Comprobar(cnl::Descifrar(sinMas, k, texto) && texto == claro, "CnL: descifrar (y «+» que llegan como espacios)");
+        auto lista = cnl::Enlaces(texto, 1000);
+        Comprobar(lista.size() == 2, "CnL: enlaces sin repetir");
+        Comprobar(!cnl::Descifrar("AAAA", k, texto), "CnL: rechaza datos que no son bloques de 16");
+        std::vector<uint8_t> otra(16, 'x');
+        Comprobar(!cnl::Descifrar(base64, otra, texto) || texto != claro, "CnL: con otra clave no sale lo mismo");
+
+        // Recolector: paquetes y direcciones locales
+        EnlaceRecolectado e1, e2, e3;
+        e1.nombre = L"Mi película.part1.rar";
+        e2.nombre = L"Mi película.part2.rar";
+        e3.nombre = L"Mi película.r00";
+        Comprobar(PaqueteDe(e1) == L"Mi película" && PaqueteDe(e2) == L"Mi película" && PaqueteDe(e3) == L"Mi película",
+                  "recolector: partes en el mismo paquete");
+        EnlaceRecolectado e4;
+        e4.nombre = L"programa.7z.003";
+        Comprobar(PaqueteDe(e4) == L"programa", "recolector: .7z.003");
+        Comprobar(EsDireccionLocal("http://192.168.1.1/x.zip") && EsDireccionLocal("http://localhost:8080/a.mp4")
+                  && EsDireccionLocal("http://nas/peli.mkv") && EsDireccionLocal("http://[::1]/a") && EsDireccionLocal("http://0x7f.1/a")
+                  && !EsDireccionLocal("https://archive.org/download/x/y.mp4") && !EsDireccionLocal("https://cafe.be/a.zip"),
+                  "recolector: direcciones de la red local");
+        Comprobar(EnlaceParaRecolectar("https://ejemplo.org/a.zip") && EnlaceParaRecolectar("https://rapidgator.net/file/abc")
+                  && !EnlaceParaRecolectar("https://ejemplo.org/noticia.html") && !EnlaceParaRecolectar("https://youtu.be/x")
+                  && !EnlaceParaRecolectar("https://ejemplo.org/foto.jpg"),
+                  "recolector: qué se toma del portapapeles");
     }
 }
 

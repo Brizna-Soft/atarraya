@@ -120,6 +120,30 @@ std::wstring hnd::sistema::TodoElPortapapeles(size_t maximo)
     return r;
 }
 
+bool hnd::sistema::PortapapelesPrivado()
+{
+    // Los formatos que usan los programas para pedir que el portapapeles no se lea ni se guarde en el historial
+    static const UINT excluir = RegisterClipboardFormatW(L"ExcludeClipboardContentFromMonitorProcessing");
+    static const UINT ignorar = RegisterClipboardFormatW(L"Clipboard Viewer Ignore");
+    static const UINT historial = RegisterClipboardFormatW(L"CanIncludeInClipboardHistory");
+    if ((excluir && IsClipboardFormatAvailable(excluir)) || (ignorar && IsClipboardFormatAvailable(ignorar))) return true;
+    if (historial && IsClipboardFormatAvailable(historial) && OpenClipboard(nullptr))
+    {
+        bool privado = false;
+        if (HANDLE h = GetClipboardData(historial))
+        {
+            if (auto* v = static_cast<const DWORD*>(GlobalLock(h)))
+            {
+                privado = GlobalSize(h) >= sizeof(DWORD) && *v == 0;
+                GlobalUnlock(h);
+            }
+        }
+        CloseClipboard();
+        return privado;
+    }
+    return false;
+}
+
 bool hnd::sistema::EsDireccion(const std::wstring& texto)
 {
     std::wstring bajo = Minusculas(texto.substr(0, 8));

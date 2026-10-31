@@ -328,10 +328,10 @@ void DialogoTorrent::AlAceptar(bool empezar)
     EndModal(wxID_OK);
 }
 
-// ---------------------------------------------------------------- Varios enlaces
+// ---------------------------------------------------------------- Varios enlaces (para el recolector)
 
-DialogoVarios::DialogoVarios(wxWindow* padre, const Ajustes& ajustes)
-    : wxDialog(padre, wxID_ANY, L"Agregar varios enlaces", wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+DialogoVarios::DialogoVarios(wxWindow* padre, const Ajustes&)
+    : wxDialog(padre, wxID_ANY, L"Pegar enlaces en el recolector", wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
 {
     const int borde = FromDIP(12);
     auto* caja = new wxBoxSizer(wxVERTICAL);
@@ -350,26 +350,18 @@ DialogoVarios::DialogoVarios(wxWindow* padre, const Ajustes& ajustes)
     m_cuenta = new wxStaticText(this, wxID_ANY, wxEmptyString);
     fila->Add(m_cuenta, 1, wxALIGN_CENTER_VERTICAL);
     caja->Add(fila, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
-
-    auto* rejilla = new wxFlexGridSizer(2, FromDIP(8), FromDIP(10));
-    rejilla->AddGrowableCol(1, 1);
-    m_carpeta = ElegirCarpeta(this, ajustes.CarpetaEfectiva());
-    rejilla->Add(Etiqueta(this, L"Guardar en:"), 0, wxALIGN_CENTER_VERTICAL);
-    rejilla->Add(m_carpeta, 1, wxEXPAND);
-    caja->Add(rejilla, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
-    caja->Add(Nota(this, L"Entran a la cola: bajan de a pocos a la vez, según «Descargas a la vez» en Ajustes. "
-                         L"Los enlaces que ya están en la lista sin terminar no se repiten.", FromDIP(600)),
+    caja->Add(Nota(this, L"Pasan al recolector: ahí ves el nombre y el tamaño de cada uno, sin bajarlo, y eliges cuáles bajar. "
+                         L"Nada empieza hasta que lo confirmes.", FromDIP(600)),
               0, wxLEFT | wxRIGHT | wxTOP, borde);
 
-    wxButton *descargar = nullptr, *luego = nullptr;
-    caja->Add(Botones(this, L"Descargar", &descargar, &luego), 0, wxEXPAND | wxALL, borde);
-    descargar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(true); });
-    luego->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(false); });
+    wxButton *agregar = nullptr, *luego = nullptr;
+    caja->Add(Botones(this, L"Agregar al recolector", &agregar, &luego, false), 0, wxEXPAND | wxALL, borde);
+    agregar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(); });
     abrir->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AbrirTxt(); });
     m_texto->Bind(wxEVT_TEXT, [this](wxCommandEvent&) { Contar(); });
 
     SetSizerAndFit(caja);
-    SetMinSize(FromDIP(wxSize(480, 360)));
+    SetMinSize(FromDIP(wxSize(480, 340)));
     Contar();
     Centrar(this, padre);
     m_texto->SetFocus();
@@ -381,8 +373,8 @@ void DialogoVarios::Contar()
     m_enlaces = r.enlaces;
     wxString t = r.enlaces.empty() ? wxString(L"Todavía no hay enlaces.")
                                    : wxString::Format(L"Enlaces encontrados: %zu", r.enlaces.size());
-    if (r.repetidos > 0) t += wxString::Format(L"  ·  repetidos: %d (se agregan una vez)", r.repetidos);
-    if (r.noPermitidos > 0) t += wxString::Format(L"  ·  de YouTube: %d (no se agregan)", r.noPermitidos);
+    if (r.repetidos > 0) t += wxString::Format(L"  ·  repetidos: %d (entran una vez)", r.repetidos);
+    if (r.noPermitidos > 0) t += wxString::Format(L"  ·  de YouTube: %d (no entran)", r.noPermitidos);
     m_cuenta->SetLabel(t);
 }
 
@@ -403,9 +395,7 @@ void DialogoVarios::AbrirTxt()
     Contar();
 }
 
-std::wstring DialogoVarios::Carpeta() const { return m_carpeta->GetPath().ToStdWstring(); }
-
-void DialogoVarios::AlAceptar(bool empezar)
+void DialogoVarios::AlAceptar()
 {
     Contar();
     if (m_enlaces.empty())
@@ -414,11 +404,8 @@ void DialogoVarios::AlAceptar(bool empezar)
                      GetTitle(), wxOK | wxICON_INFORMATION, this);
         return;
     }
-    if (!CarpetaValida(this, m_carpeta, GetTitle())) return;
-    m_empezar = empezar;
     EndModal(wxID_OK);
 }
-
 // ---------------------------------------------------------------- Enlaces de una página
 
 DialogoPagina::DialogoPagina(wxWindow* padre, const Ajustes& ajustes, const std::wstring& url, bool buscarYa)
@@ -722,7 +709,14 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
     bandeja->SetValue(ajustes.bandejaAlCerrar);
     auto* avisar = new wxCheckBox(this, wxID_ANY, L"Avisar cuando termina una descarga");
     avisar->SetValue(ajustes.avisarAlTerminar);
-    for (auto* c : { preguntar, bandeja, avisar }) caja->Add(c, 0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    auto* portapapeles = new wxCheckBox(this, wxID_ANY, L"Vigilar el portapapeles: los enlaces de archivos que copies pasan al recolector");
+    portapapeles->SetValue(ajustes.vigilarPortapapeles);
+    auto* cnl = new wxCheckBox(this, wxID_ANY, L"Recibir enlaces de Click'n'Load (solo desde esta PC, 127.0.0.1:9666)");
+    cnl->SetValue(ajustes.clickNLoad);
+    for (auto* c : { preguntar, bandeja, avisar, portapapeles, cnl }) caja->Add(c, 0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    caja->Add(Nota(this, L"Lo que llega del portapapeles o de Click'n'Load espera en el recolector: no se baja nada hasta que lo "
+                         L"confirmes. Los captchas siempre los resuelves tú en tu navegador.", FromDIP(520)),
+              0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
 
     caja->Add(CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, borde);
     if (auto* ok = FindWindow(wxID_OK)) ok->SetLabel(L"Guardar");
@@ -737,6 +731,8 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
         m_ajustes.preguntarNavegador = preguntar->GetValue();
         m_ajustes.bandejaAlCerrar = bandeja->GetValue();
         m_ajustes.avisarAlTerminar = avisar->GetValue();
+        m_ajustes.vigilarPortapapeles = portapapeles->GetValue();
+        m_ajustes.clickNLoad = cnl->GetValue();
         m_ajustes.Guardar();
         e.Skip();
     }, wxID_OK);

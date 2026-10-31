@@ -13,6 +13,9 @@ namespace hnd
         int limiteSubidaKB = 0;         // KB/s que los torrents suben a otras personas; 0 = sin límite
         bool compartirTorrents = false; // la última elección de «Seguir compartiendo cuando termine»
         bool elegirArchivosMagnet = true; // la última elección de «Elegir los archivos cuando lleguen los datos»
+        bool vigilarPortapapeles = true; // los enlaces de archivos que se copian pasan al recolector
+        bool clickNLoad = true;         // recibir enlaces de Click'n'Load en 127.0.0.1:9666 (van al recolector)
+        bool carpetaPorPaquete = false; // en el recolector: una carpeta por paquete
         bool preguntarNavegador = true; // mostrar la ventana «Nueva descarga» para lo que llega del navegador
         bool bandejaAlCerrar = true;    // la X deja el programa junto al reloj
         bool avisarAlTerminar = true;

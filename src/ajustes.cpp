@@ -25,6 +25,9 @@ void hnd::Ajustes::Cargar()
         limiteSubidaKB = std::max(0, j.value("limiteSubidaKB", 0));
         compartirTorrents = j.value("compartirTorrents", false);
         elegirArchivosMagnet = j.value("elegirArchivosMagnet", true);
+        vigilarPortapapeles = j.value("vigilarPortapapeles", true);
+        clickNLoad = j.value("clickNLoad", true);
+        carpetaPorPaquete = j.value("carpetaPorPaquete", false);
         preguntarNavegador = j.value("preguntarNavegador", true);
         bandejaAlCerrar = j.value("bandejaAlCerrar", true);
         avisarAlTerminar = j.value("avisarAlTerminar", true);
@@ -44,7 +47,8 @@ void hnd::Ajustes::Guardar() const
     nlohmann::json j = {
         { "carpeta", Utf8(carpeta) }, { "conexiones", conexiones }, { "simultaneas", simultaneas },
         { "limiteKB", limiteKB }, { "limiteSubidaKB", limiteSubidaKB }, { "compartirTorrents", compartirTorrents },
-        { "elegirArchivosMagnet", elegirArchivosMagnet },
+        { "elegirArchivosMagnet", elegirArchivosMagnet }, { "vigilarPortapapeles", vigilarPortapapeles },
+        { "clickNLoad", clickNLoad }, { "carpetaPorPaquete", carpetaPorPaquete },
         { "preguntarNavegador", preguntarNavegador }, { "bandejaAlCerrar", bandejaAlCerrar },
         { "avisarAlTerminar", avisarAlTerminar }, { "avisoBandejaMostrado", avisoBandejaMostrado },
         { "x", x }, { "y", y }, { "ancho", ancho }, { "alto", alto }, { "maximizada", maximizada },

@@ -16,6 +16,8 @@ namespace hnd::sistema
     void CopiarTexto(const std::wstring& texto);
     std::wstring TextoDelPortapapeles();           // solo la primera línea
     std::wstring TodoElPortapapeles(size_t maximo = 4 * 1024 * 1024);
+    // El programa que copió pidió que nadie lo lea (gestores de contraseñas, por ejemplo)
+    bool PortapapelesPrivado();
     bool EsDireccion(const std::wstring& texto);   // http, https o ftp
     bool EsMagnet(const std::wstring& texto);      // magnet:?xt=...
 

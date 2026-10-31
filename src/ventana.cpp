@@ -23,6 +23,7 @@
 #include <wx/weakref.h>
 
 #include <windows.h>
+#include <shlobj.h>
 
 #include <nlohmann/json.hpp>
 
@@ -36,6 +37,7 @@
 #include "nombres.hpp"
 #include "sistema.hpp"
 #include "util.hpp"
+#include "ventanarecolector.hpp"
 #include "version.h"
 
 using namespace hnd;
@@ -395,7 +397,7 @@ public:
         Bind(wxEVT_TASKBAR_LEFT_DCLICK, [this](wxTaskBarIconEvent&) { m_v->Mostrar(); });
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->Mostrar(); }, ID_MOSTRAR);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->NuevaDescarga({}, false); }, ID_AGREGAR);
-        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->AgregarVarios(); }, ID_VARIOS);
+        Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->AbrirRecolector(false); }, ID_VARIOS);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().PausarTodas(); m_v->MotorTorrents().PausarTodas(); }, ID_PAUSAR_TODAS);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->MotorDescargas().ReanudarTodas(); m_v->MotorTorrents().ReanudarTodas(); }, ID_REANUDAR_TODAS);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->Salir(); }, wxID_EXIT);
@@ -406,7 +408,7 @@ public:
         auto* m = new wxMenu();
         m->Append(ID_MOSTRAR, L"Mostrar Atarraya");
         m->Append(ID_AGREGAR, L"Agregar enlace...");
-        m->Append(ID_VARIOS, L"Agregar varios enlaces...");
+        m->Append(ID_VARIOS, L"Recolector de enlaces...");
         m->AppendSeparator();
         m->Append(ID_PAUSAR_TODAS, L"Pausar todas");
         m->Append(ID_REANUDAR_TODAS, L"Reanudar todas");
@@ -421,8 +423,9 @@ private:
 
 // ---------------------------------------------------------------- Ventana
 
-VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Ajustes& ajustes)
-    : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_ajustes(ajustes), m_reloj(this)
+VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Recolector& recolector, hnd::Ajustes& ajustes)
+    : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_recolector(recolector), m_ajustes(ajustes),
+      m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this)
 {
     wxIconBundle iconos(wxString(L"AAAA_APP"), (WXHINSTANCE)GetModuleHandleW(nullptr));
     SetIcons(iconos);
@@ -491,7 +494,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
 
     // Comandos
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { NuevaDescarga({}, false); }, ID_AGREGAR);
-    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AgregarVarios(); }, ID_VARIOS);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirRecolector(false); }, ID_VARIOS);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirPagina(L"", false); }, ID_PAGINA);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { AbrirTorrent(); }, ID_TORRENT);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Reanudar(); }, ID_REANUDAR);
@@ -508,7 +511,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.PausarTodas(); m_torrents.PausarTodas(); Refrescar(); }, ID_PAUSAR_TODAS);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_motor.LimpiarTerminadas(); m_torrents.LimpiarTerminadas(); Refrescar(); }, ID_LIMPIAR);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { DialogoNavegadores d(this); d.ShowModal(); }, ID_NAVEGADORES);
-    Bind(wxEVT_MENU, [this](wxCommandEvent&) { DialogoAjustes d(this, m_ajustes); d.ShowModal(); }, ID_AJUSTES);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) {
+        DialogoAjustes d(this, m_ajustes);
+        if (d.ShowModal() == wxID_OK) AplicarAjustes();
+    }, ID_AJUSTES);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Salir(); }, wxID_EXIT);
     Bind(wxEVT_CLOSE_WINDOW, &VentanaPrincipal::AlCerrar, this);
 
@@ -543,6 +549,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     }
     if (m_ajustes.maximizada) Maximize();
 
+    // Portapapeles y Click'n'Load. Lo que ya está copiado al abrir el programa no se recolecta: solo lo que se copie después.
+    m_ultimoPortapapeles = std::hash<std::wstring>{}(sistema::TodoElPortapapeles(256 * 1024));
+    AplicarAjustes();
+
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { Refrescar(); });
     m_reloj.Start(500);
     Refrescar();
@@ -560,7 +570,7 @@ void VentanaPrincipal::CrearMenu()
 
     auto* archivo = new wxMenu();
     archivo->Append(ID_AGREGAR, L"&Agregar enlace...\tCtrl+N");
-    archivo->Append(ID_VARIOS, L"Agregar &varios enlaces (lista o .txt)...\tCtrl+L");
+    archivo->Append(ID_VARIOS, L"&Recolector de enlaces (pegar muchos, revisar y elegir)...\tCtrl+L");
     archivo->Append(ID_PAGINA, L"Enlaces de una &página...\tCtrl+P");
     archivo->Append(ID_TORRENT, L"Abrir un archivo .&torrent...\tCtrl+O");
     archivo->AppendSeparator();
@@ -604,7 +614,8 @@ void VentanaPrincipal::CrearBarra()
     auto* barra = CreateToolBar(wxTB_HORIZONTAL | wxTB_TEXT | wxTB_HORZ_LAYOUT | wxTB_FLAT | wxTB_NODIVIDER);
     wxString color = TemaOscuro() ? L"#C9D1D9" : L"#5F6B7A";
     barra->AddTool(ID_AGREGAR, L"Agregar enlace", iconos::Crear(iconos::Agregar, color), L"Agregar una descarga o un enlace magnet (Ctrl+N)");
-    barra->AddTool(ID_VARIOS, L"Varios enlaces", iconos::Crear(iconos::Varios, color), L"Pegar una lista de enlaces o abrir un .txt (Ctrl+L)");
+    barra->AddTool(ID_VARIOS, L"Recolector", iconos::Crear(iconos::Varios, color),
+                   L"Recolector de enlaces: pega muchos de una vez, mira su nombre y tamaño y elige cuáles bajar (Ctrl+L)");
     barra->AddTool(ID_PAGINA, L"De una página", iconos::Crear(iconos::Pagina, color),
                    L"Ver los archivos que enlaza una página o un elemento de Internet Archive (Ctrl+P)");
     barra->AddTool(ID_TORRENT, L"Torrent", iconos::Crear(iconos::Torrent, color), L"Abrir un archivo .torrent (Ctrl+O)");
@@ -684,6 +695,23 @@ void VentanaPrincipal::Refrescar()
 
     m_motor.Tick();
     m_torrents.Tick();
+    m_recolector.Tick();
+
+    // El botón del recolector dice cuántos enlaces esperan
+    size_t enRecolector = m_recolector.Cantidad();
+    if (enRecolector != m_cuentaRecolector)
+    {
+        m_cuentaRecolector = enRecolector;
+        if (auto* barra = GetToolBar())
+        {
+            if (auto* boton = barra->FindById(ID_VARIOS))
+            {
+                boton->SetLabel(enRecolector ? wxString::Format(L"Recolector (%zu)", enRecolector) : wxString(L"Recolector"));
+                barra->Realize();
+            }
+        }
+    }
+    if (m_ventanaRecolector) m_ventanaRecolector->Refrescar();
 
     auto fotos = m_motor.Fotos();
     auto deTorrents = m_torrents.Fotos();
@@ -860,43 +888,188 @@ void VentanaPrincipal::NuevaDescarga(const DatosDescarga& previa, bool delNavega
     Refrescar();
 }
 
-void VentanaPrincipal::AgregarVarios()
+void VentanaPrincipal::AbrirRecolector(bool sinFoco)
 {
-    DialogoVarios d(IsShown() ? this : nullptr, m_ajustes);
-    if (d.ShowModal() != wxID_OK) return;
-    int agregadas = 0, yaEstaban = 0, torrents = 0, fallaron = 0;
-    for (const auto& url : d.Enlaces())
+    if (!m_ventanaRecolector)
     {
-        if (enlaces::EsMagnet(url))
+        m_ventanaRecolector = new VentanaRecolector(this, m_recolector, m_ajustes,
+            [this](const std::vector<EnlaceRecolectado>& lista, const std::wstring& carpeta, bool porPaquete, bool empezar) {
+                return ConfirmarRecolector(lista, carpeta, porPaquete, empezar);
+            });
+        m_ventanaRecolector->alCambiarAjustes = [this]() { AplicarAjustes(); };
+        m_ventanaRecolector->EstadoClickNLoad(m_estadoCnl);
+    }
+    if (sinFoco) m_ventanaRecolector->MostrarSinFoco();
+    else
+    {
+        if (m_ventanaRecolector->IsIconized()) m_ventanaRecolector->Iconize(false);
+        m_ventanaRecolector->Show();
+        m_ventanaRecolector->Raise();
+        m_ventanaRecolector->Refrescar();
+    }
+}
+
+void VentanaPrincipal::AplicarAjustes()
+{
+    // Portapapeles: Windows avisa con WM_CLIPBOARDUPDATE cada vez que alguien copia algo
+    HWND h = (HWND)GetHWND();
+    if (m_ajustes.vigilarPortapapeles && !m_oyendoPortapapeles) m_oyendoPortapapeles = AddClipboardFormatListener(h) != FALSE;
+    else if (!m_ajustes.vigilarPortapapeles && m_oyendoPortapapeles)
+    {
+        RemoveClipboardFormatListener(h);
+        m_oyendoPortapapeles = false;
+    }
+
+    // Click'n'Load: solo en 127.0.0.1
+    if (m_ajustes.clickNLoad && !m_cnl->Activo())
+    {
+        wxWeakRef<VentanaPrincipal> yo(this);
+        std::string error;
+        bool ok = m_cnl->Iniciar([yo](std::vector<std::string> lista, std::wstring paquete, std::string origen) {
+            wxTheApp->CallAfter([yo, lista, paquete, origen]() {
+                if (yo) yo->AlRecibirCnL(lista, paquete, origen);
+            });
+        }, error);
+        m_estadoCnl = ok ? wxString(L"Click'n'Load: listo en 127.0.0.1:9666 (solo desde esta PC). Lo que llegue espera aquí.")
+                         : L"Click'n'Load no se pudo encender: " + wxString::FromUTF8(error);
+    }
+    else if (!m_ajustes.clickNLoad && m_cnl->Activo())
+    {
+        m_cnl->Detener();
+    }
+    if (!m_ajustes.clickNLoad) m_estadoCnl = L"Click'n'Load: apagado (se enciende en Ajustes).";
+    if (m_ventanaRecolector) m_ventanaRecolector->EstadoClickNLoad(m_estadoCnl);
+}
+
+WXLRESULT VentanaPrincipal::MSWWindowProc(WXUINT mensaje, WXWPARAM w, WXLPARAM l)
+{
+    if (mensaje == WM_CLIPBOARDUPDATE)
+    {
+        if (!m_saliendo) CallAfter([this]() { PortapapelesCambio(); });
+        return 0;
+    }
+    return wxFrame::MSWWindowProc(mensaje, w, l);
+}
+
+void VentanaPrincipal::PortapapelesCambio()
+{
+    if (!m_ajustes.vigilarPortapapeles || m_saliendo) return;
+    if (sistema::PortapapelesPrivado()) return;   // una contraseña o algo que pidió no ser leído
+    std::wstring texto = sistema::TodoElPortapapeles(256 * 1024);
+    size_t huella = std::hash<std::wstring>{}(texto);
+    if (texto.empty() || huella == m_ultimoPortapapeles) return;
+    m_ultimoPortapapeles = huella;
+    if (texto == m_copiadoPorAtarraya) return;
+    std::vector<std::string> utiles;
+    for (const auto& u : enlaces::DeTexto(texto).enlaces)
+    {
+        if (!EnlaceParaRecolectar(u) || m_motor.BuscarPorUrl(u)) continue;
+        if (enlaces::EsMagnet(u))
         {
             InfoTorrent info;
             std::string error;
-            if (!MotorTorrent::LeerMagnet(url, info, error)) { fallaron++; continue; }
-            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; continue; }
+            if (MotorTorrent::LeerMagnet(u, info, error) && m_torrents.BuscarPorHuella(info.huella)) continue;
+        }
+        utiles.push_back(u);
+    }
+    if (utiles.empty()) return;
+    size_t n = m_recolector.Agregar(utiles, L"", "", "portapapeles");
+    if (n == 0) return;
+    Registrar("portapapeles: " + std::to_string(n) + " enlaces al recolector");
+    Avisar(L"Recolector de enlaces", n == 1 ? wxString(L"Copiaste un enlace: está en el recolector. Ábrelo para revisarlo y bajarlo.")
+                                            : wxString::Format(L"Copiaste %zu enlaces: están en el recolector. Ábrelo para revisarlos y elegir.", n));
+}
+
+void VentanaPrincipal::AlRecibirCnL(std::vector<std::string> lista, std::wstring paquete, std::string origen)
+{
+    if (m_saliendo) return;
+    size_t n = m_recolector.Agregar(lista, paquete, origen, "clicknload");
+    if (n == 0) return;
+    AbrirRecolector(true);
+    std::string sitio = enlaces::Sitio(origen);
+    Avisar(L"Click'n'Load", wxString::Format(L"Llegaron %zu enlaces%s. Están en el recolector: revisa y elige cuáles bajar.", n,
+                                             sitio.empty() ? wxString() : L" de " + wxString::FromUTF8(sitio)));
+}
+
+std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<EnlaceRecolectado>& lista, const std::wstring& carpeta,
+                                                            bool porPaquete, bool empezar)
+{
+    std::vector<uint64_t> hechos;
+    std::vector<const EnlaceRecolectado*> paginas;
+    int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
+    for (const auto& e : lista)
+    {
+        if (e.estado == Comprobacion::NoExiste) { noEstan++; continue; }   // se quedan en el recolector
+        if (e.estado == Comprobacion::Pagina || e.estado == Comprobacion::Sitio)
+        {
+            paginas.push_back(&e);
+            continue;
+        }
+        std::wstring destino = carpeta;
+        if (porPaquete)
+        {
+            destino = carpeta + L"\\" + LimpiarNombre(PaqueteDe(e));
+            SHCreateDirectoryExW(nullptr, destino.c_str(), nullptr);
+        }
+        if (enlaces::EsMagnet(e.url))
+        {
+            InfoTorrent info;
+            std::string error;
+            if (!MotorTorrent::LeerMagnet(e.url, info, error)) { fallaron++; continue; }
+            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; hechos.push_back(e.id); continue; }
             NuevoTorrent n;
-            n.magnet = url;
-            n.carpeta = d.Carpeta();
+            n.magnet = e.url;
+            n.carpeta = destino;
             n.compartir = m_ajustes.compartirTorrents;
-            n.empezar = d.EmpezarAhora();
-            if (m_torrents.Agregar(n, error)) torrents++;
+            n.empezar = empezar;
+            if (m_torrents.Agregar(n, error)) { torrents++; hechos.push_back(e.id); }
             else fallaron++;
             continue;
         }
-        bool yaEstaba = false;
-        if (AgregarEnlace(url, d.Carpeta(), "", d.EmpezarAhora(), yaEstaba)) agregadas++;
-        else if (yaEstaba) yaEstaban++;
+        if (m_motor.BuscarPorUrl(e.url)) { yaEstaban++; hechos.push_back(e.id); continue; }
+        DatosDescarga d;
+        d.url = e.url;
+        d.referer = e.referer;
+        d.carpeta = destino;
+        d.conexiones = m_ajustes.conexiones;
+        if (e.estado == Comprobacion::Archivo && !e.nombre.empty()) d.nombre = e.nombre;
+        m_motor.Agregar(d, empezar);
+        descargas++;
+        hechos.push_back(e.id);
     }
-    Registrar("varios enlaces: " + std::to_string(agregadas) + " descargas y " + std::to_string(torrents) + " torrents");
-    wxString texto = wxString::Format(L"Se agregaron %d %s", agregadas + torrents, agregadas + torrents == 1 ? L"enlace" : L"enlaces");
-    if (torrents > 0) texto += wxString::Format(L" (%d magnet)", torrents);
-    texto += L".";
-    if (yaEstaban > 0) texto += wxString::Format(L" %d ya estaban en la lista.", yaEstaban);
-    if (fallaron > 0) texto += wxString::Format(L" %d no se pudieron agregar.", fallaron);
-    if (yaEstaban > 0 || fallaron > 0) ayuda::Aviso(texto, L"Agregar varios enlaces", wxOK | wxICON_INFORMATION, this);
-    else Avisar(L"Agregar varios enlaces", texto);
+    wxWindow* padre = m_ventanaRecolector && m_ventanaRecolector->IsShown() ? (wxWindow*)m_ventanaRecolector : (wxWindow*)this;
+    if (!paginas.empty())
+    {
+        const size_t tope = 10;
+        wxString texto = wxString::Format(L"%zu de los enlaces marcados son páginas web, por ejemplo de sitios de descargas.\n\n"
+                                          L"Atarraya no se salta las esperas ni los límites de esos sitios, y los captchas los resuelves tú: "
+                                          L"se abren en tu navegador para que bajes desde ahí. Si tienes la extensión de Atarraya, la "
+                                          L"descarga llega aquí sola.\n\n¿Abrirlos en el navegador?", paginas.size());
+        if (paginas.size() > tope) texto += wxString::Format(L"\n\nSe abren los primeros %zu; los demás se quedan en el recolector.", tope);
+        wxMessageDialog p(padre, texto, L"Páginas para el navegador", wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
+        p.SetYesNoLabels(L"Abrir en el navegador", L"Ahora no");
+        if (p.ShowModal() == wxID_YES)
+        {
+            for (size_t i = 0; i < paginas.size() && i < tope; i++)
+            {
+                ayuda::AbrirEnlace(wxString::FromUTF8(paginas[i]->url));
+                hechos.push_back(paginas[i]->id);
+            }
+        }
+    }
+    Registrar("recolector: " + std::to_string(descargas) + " descargas y " + std::to_string(torrents) + " torrents a la lista");
+    if (noEstan > 0 || fallaron > 0)
+    {
+        wxString t = wxString::Format(L"Pasaron a la lista %d descargas", descargas + torrents);
+        if (yaEstaban > 0) t += wxString::Format(L" (%d ya estaban)", yaEstaban);
+        t += L".";
+        if (noEstan > 0) t += wxString::Format(L" %d ya no están en el servidor: se quedan en el recolector.", noEstan);
+        if (fallaron > 0) t += wxString::Format(L" %d no se pudieron agregar.", fallaron);
+        ayuda::Aviso(t, L"Recolector de enlaces", wxOK | wxICON_INFORMATION, padre);
+    }
     Refrescar();
+    return hechos;
 }
-
 void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
 {
     DialogoPagina d(IsShown() ? this : nullptr, m_ajustes, url, buscarYa);
@@ -1197,7 +1370,9 @@ void VentanaPrincipal::AbrirCarpeta()
 void VentanaPrincipal::CopiarEnlace()
 {
     hnd::Foto f;
-    if (BuscarFoto(PrimeraSeleccion(), f)) sistema::CopiarTexto(Ancho(f.datos.url));
+    if (!BuscarFoto(PrimeraSeleccion(), f)) return;
+    m_copiadoPorAtarraya = Ancho(f.datos.url);   // que el recolector no lo tome como un enlace nuevo
+    sistema::CopiarTexto(m_copiadoPorAtarraya);
 }
 
 void VentanaPrincipal::CambiarEnlace()
@@ -1410,14 +1585,19 @@ void VentanaPrincipal::Salir()
     m_reloj.Stop();
     if (IsShown()) GuardarGeometria();
     Hide();   // se va enseguida; los motores terminan de guardar por detrás
+    if (m_ventanaRecolector) m_ventanaRecolector->Hide();
     if (m_bandeja)
     {
         m_bandeja->RemoveIcon();
         m_bandeja.release()->Destroy();   // wx lo borra cuando termina de atender sus eventos
     }
+    if (m_oyendoPortapapeles) RemoveClipboardFormatListener((HWND)GetHWND());
+    m_oyendoPortapapeles = false;
+    m_cnl->Detener();
     m_motor.alTerminar = nullptr;
     m_torrents.alTerminar = nullptr;
     m_motor.Detener();
     m_torrents.Detener();
+    m_recolector.Detener();
     Destroy();
 }

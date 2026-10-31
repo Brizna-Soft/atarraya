@@ -72,26 +72,22 @@ private:
     bool m_empezar = true;
 };
 
-// «Agregar varios enlaces»: pegar una lista o abrir un .txt
+// «Pegar enlaces en el recolector»: una lista pegada o un .txt (no empieza nada: los enlaces van al recolector)
 class DialogoVarios : public wxDialog
 {
 public:
     DialogoVarios(wxWindow* padre, const hnd::Ajustes& ajustes);
 
     const std::vector<std::string>& Enlaces() const { return m_enlaces; }
-    std::wstring Carpeta() const;
-    bool EmpezarAhora() const { return m_empezar; }
 
 private:
     void Contar();
     void AbrirTxt();
-    void AlAceptar(bool empezar);
+    void AlAceptar();
 
     wxTextCtrl* m_texto = nullptr;
     wxStaticText* m_cuenta = nullptr;
-    wxDirPickerCtrl* m_carpeta = nullptr;
     std::vector<std::string> m_enlaces;
-    bool m_empezar = true;
 };
 
 // «Enlaces de una página»: lee la página (o la lista de Internet Archive) y deja marcar qué bajar

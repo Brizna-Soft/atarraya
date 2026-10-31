@@ -59,7 +59,7 @@ target_link_libraries(Atarraya PRIVATE
     wx::core wx::base
     CURL::libcurl
     nlohmann_json::nlohmann_json
-    bcrypt shlwapi winhttp)
+    bcrypt shlwapi winhttp ws2_32)
 if(CON_TORRENTS)
     target_compile_definitions(Atarraya PRIVATE CON_TORRENTS=1)
     target_link_libraries(Atarraya PRIVATE LibtorrentRasterbar::torrent-rasterbar crypt32 iphlpapi ws2_32 mswsock)
@@ -80,8 +80,9 @@ target_compile_definitions(prueba-motor PRIVATE ${DEFINICIONES} SIN_WX)
 target_compile_options(prueba-motor PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
 target_link_libraries(prueba-motor PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt shlwapi winhttp)
 
-add_executable(prueba-enlaces pruebas/prueba-enlaces.cpp src/enlaces.cpp src/motor.cpp src/nombres.cpp src/util.cpp)
+add_executable(prueba-enlaces pruebas/prueba-enlaces.cpp src/enlaces.cpp src/motor.cpp src/nombres.cpp src/util.cpp
+    src/clicknload.cpp src/recolector.cpp)
 target_include_directories(prueba-enlaces PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
 target_compile_definitions(prueba-enlaces PRIVATE ${DEFINICIONES} SIN_WX)
 target_compile_options(prueba-enlaces PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
-target_link_libraries(prueba-enlaces PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt shlwapi winhttp)
+target_link_libraries(prueba-enlaces PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt shlwapi winhttp ws2_32)

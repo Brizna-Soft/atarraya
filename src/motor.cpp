@@ -456,6 +456,63 @@ namespace hnd
         return true;
     }
 
+    void ComprobarEnlace(const std::string& url, const std::string& referer, InfoEnlace& r, const std::atomic<bool>* parar)
+    {
+        r = {};
+        CURL* c = curl_easy_init();
+        if (!c)
+        {
+            r.error = "No se pudo preparar la conexión.";
+            return;
+        }
+        Peticion p{ url, referer, "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " APP_NOMBRE "/" APP_VERSION };
+        Preparar(c, p, ProxyDelSistema());
+        curl_easy_setopt(c, CURLOPT_NOBODY, 1L);   // HEAD: solo las cabeceras, nunca el archivo
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
+        Cabeceras cab;
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &cab);
+        std::atomic<bool> nunca{ false };
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, parar ? const_cast<std::atomic<bool>*>(parar) : &nunca);
+        char detalle[CURL_ERROR_SIZE] = {};
+        curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detalle);
+        CURLcode res = curl_easy_perform(c);
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &r.codigo);
+        char* efectiva = nullptr;
+        curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &efectiva);
+        if (efectiva) r.urlFinal = efectiva;
+        curl_off_t largo = -1;
+        curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &largo);
+        curl_easy_cleanup(c);
+        bool ftp = EsFtp(url);
+        if (res != CURLE_OK)
+        {
+            r.error = res == CURLE_ABORTED_BY_CALLBACK ? std::string("Se canceló.") : TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));
+            return;
+        }
+        if (ftp) r.codigo = 200;
+        if (r.codigo >= 400) return;   // quien llama decide qué significa cada código
+        auto valor = [&](const char* clave) {
+            auto it = cab.v.find(clave);
+            return it == cab.v.end() ? std::string() : it->second;
+        };
+        r.tipo = valor("content-type");
+        std::string disposicion = valor("content-disposition");
+        std::string tipoBajo = r.tipo;
+        std::transform(tipoBajo.begin(), tipoBajo.end(), tipoBajo.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+        std::string dispBajo = disposicion;
+        std::transform(dispBajo.begin(), dispBajo.end(), dispBajo.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+        r.pagina = !ftp && (tipoBajo.find("text/html") != std::string::npos || tipoBajo.find("application/xhtml") != std::string::npos)
+                   && dispBajo.find("attachment") == std::string::npos;
+        r.nombre = NombreDeContentDisposition(disposicion);
+        if (r.nombre.empty()) r.nombre = NombreDeUrl(r.urlFinal.empty() ? url : r.urlFinal);
+        if (r.nombre.empty()) r.nombre = NombreDeUrl(url);
+        if (!r.nombre.empty()) r.nombre = AgregarExtension(LimpiarNombre(r.nombre), r.tipo);
+        if (!r.pagina && largo >= 0) r.tamano = largo;
+    }
+
     // Limita la velocidad total: cada conexión «gasta» fichas y espera si se acaban
     struct Motor::Limitador
     {

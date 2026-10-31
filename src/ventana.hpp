@@ -8,7 +8,9 @@
 #include <vector>
 
 #include "ajustes.hpp"
+#include "clicknload.hpp"
 #include "motor.hpp"
+#include "recolector.hpp"
 #include "torrents.hpp"
 
 class wxDataViewCtrl;
@@ -19,17 +21,18 @@ class wxUpdateUIEvent;
 class ModeloLista;
 class PanelDetalles;
 class Bandeja;
+class VentanaRecolector;
 
 class VentanaPrincipal : public wxFrame
 {
 public:
-    VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Ajustes& ajustes);
+    VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Recolector& recolector, hnd::Ajustes& ajustes);
     ~VentanaPrincipal() override;
 
     void Mostrar();                          // la trae al frente (también desde el ícono junto al reloj)
     void Pedido(const std::string& json);   // del navegador o de otra copia del programa
     void NuevaDescarga(const hnd::DatosDescarga& previa, bool delNavegador, int64_t tamanoAnunciado = -1);
-    void AgregarVarios();
+    void AbrirRecolector(bool sinFoco);                     // la ventana del recolector de enlaces
     void AbrirPagina(const std::wstring& url, bool buscarYa);
     void AbrirTorrent();                                    // elegir un .torrent
     void AbrirTorrentDe(const std::wstring& ruta);          // un .torrent que ya está en el disco
@@ -38,7 +41,15 @@ public:
     hnd::Motor& MotorDescargas() { return m_motor; }
     hnd::MotorTorrent& MotorTorrents() { return m_torrents; }
 
+protected:
+    WXLRESULT MSWWindowProc(WXUINT mensaje, WXWPARAM w, WXLPARAM l) override;   // avisos de cambios en el portapapeles
+
 private:
+    void AplicarAjustes();                                  // portapapeles y Click'n'Load, según los ajustes
+    void PortapapelesCambio();
+    void AlRecibirCnL(std::vector<std::string> enlaces, std::wstring paquete, std::string origen);
+    std::vector<uint64_t> ConfirmarRecolector(const std::vector<hnd::EnlaceRecolectado>& lista, const std::wstring& carpeta,
+                                              bool porPaquete, bool empezar);
     void CrearMenu();
     void CrearBarra();
     void Refrescar();
@@ -68,7 +79,15 @@ private:
 
     hnd::Motor& m_motor;
     hnd::MotorTorrent& m_torrents;
+    hnd::Recolector& m_recolector;
     hnd::Ajustes& m_ajustes;
+    VentanaRecolector* m_ventanaRecolector = nullptr;
+    std::unique_ptr<hnd::ServidorCnL> m_cnl;
+    wxString m_estadoCnl;
+    bool m_oyendoPortapapeles = false;
+    size_t m_ultimoPortapapeles = 0;        // huella del último texto visto (no se guarda el texto)
+    std::wstring m_copiadoPorAtarraya;      // lo que copió el propio programa: no se recolecta
+    size_t m_cuentaRecolector = (size_t)-1;
     wxDataViewCtrl* m_lista = nullptr;
     ModeloLista* m_modelo = nullptr;
     PanelDetalles* m_detalles = nullptr;

@@ -19,6 +19,7 @@
 #include "ajustes.hpp"
 #include "motor.hpp"
 #include "nombres.hpp"
+#include "recolector.hpp"
 #include "sistema.hpp"
 #include "torrents.hpp"
 #include "util.hpp"
@@ -43,6 +44,7 @@ private:
     std::unique_ptr<wxSingleInstanceChecker> m_unica;
     std::unique_ptr<hnd::Motor> m_motor;
     std::unique_ptr<hnd::MotorTorrent> m_torrents;
+    std::unique_ptr<hnd::Recolector> m_recolector;
     hnd::Ajustes m_ajustes;
     HWND m_mensajes = nullptr;
 };
@@ -125,7 +127,9 @@ bool Aplicacion::OnInit()
     m_motor->Cargar();
     m_torrents = std::make_unique<hnd::MotorTorrent>(hnd::CarpetaDatos());
     m_torrents->Cargar();
-    ventana = new VentanaPrincipal(*m_motor, *m_torrents, m_ajustes);
+    m_recolector = std::make_unique<hnd::Recolector>(hnd::CarpetaDatos() + L"\\recolector.json");
+    m_recolector->Cargar();
+    ventana = new VentanaPrincipal(*m_motor, *m_torrents, *m_recolector, m_ajustes);
 
     WNDCLASSEXW clase = { sizeof(clase) };
     clase.lpfnWndProc = AlRecibirMensaje;
@@ -149,6 +153,7 @@ int Aplicacion::OnExit()
 {
     if (m_mensajes) DestroyWindow(m_mensajes);
     m_mensajes = nullptr;
+    m_recolector.reset();
     m_torrents.reset();
     m_motor.reset();
     return wxApp::OnExit();
