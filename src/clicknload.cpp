@@ -396,7 +396,17 @@ void hnd::ServidorCnL::Bucle()
         SOCKET c = accept(escucha, reinterpret_cast<sockaddr*>(&de), &largo);
         if (c == INVALID_SOCKET) continue;
         // Solo esta PC (127.0.0.1); el socket ya escucha solo ahí, pero se comprueba igual
-        if (de.sin_family == AF_INET && ntohl(de.sin_addr.s_addr) == INADDR_LOOPBACK) Atender((uintptr_t)c);
+        if (de.sin_family == AF_INET && ntohl(de.sin_addr.s_addr) == INADDR_LOOPBACK)
+        {
+            try
+            {
+                Atender((uintptr_t)c);
+            }
+            catch (...)
+            {
+                Registrar("Click'n'Load: un pedido no se pudo leer");
+            }
+        }
         closesocket(c);
     }
 }

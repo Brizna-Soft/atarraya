@@ -354,7 +354,15 @@ void hnd::Recolector::Consultar(std::shared_ptr<std::atomic<bool>> fin)
         }
         if (id == 0) break;
         InfoEnlace info;
-        ComprobarEnlace(url, referer, info, &m_parar);
+        try
+        {
+            ComprobarEnlace(url, referer, info, &m_parar);
+        }
+        catch (...)
+        {
+            info = {};
+            info.error = "respuesta que no se pudo leer";
+        }
         std::lock_guard g(m_m);
         auto it = std::find_if(m_lista.begin(), m_lista.end(), [&](const EnlaceRecolectado& e) { return e.id == id; });
         if (it == m_lista.end()) continue;   // la persona lo quitó mientras tanto

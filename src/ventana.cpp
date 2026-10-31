@@ -1203,19 +1203,25 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     try { j = nlohmann::json::parse(texto); }
     catch (...) { Registrar("pedido con JSON no válido"); return; }
     if (!j.is_object()) return;
-    std::string tipo = j.value("tipo", "");
-    Registrar("pedido: " + tipo + " " + SoloSitio(j.value("url", "")));
+    // Cualquier programa de esta PC puede mandar un pedido: los campos que no son texto se ignoran (no lanzan errores)
+    auto campo = [&](const char* nombre) {
+        auto it = j.find(nombre);
+        return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    std::string tipo = campo("tipo");
+    std::string urlPedido = campo("url");
+    Registrar("pedido: " + tipo + (urlPedido.empty() ? std::string() : " " + (enlaces::EsMagnet(urlPedido) ? std::string("(magnet)") : SoloSitio(urlPedido))));
     if (tipo == "mostrar") { Mostrar(); return; }
     if (tipo == "torrent")
     {
         // Otra copia del programa abierta con un .torrent
-        std::wstring ruta = Ancho(j.value("ruta", ""));
+        std::wstring ruta = Ancho(campo("ruta"));
         if (ruta.size() > 8 && Minusculas(ruta.substr(ruta.size() - 8)) == L".torrent" && ExisteArchivo(ruta)) AbrirTorrentDe(ruta);
         return;
     }
     if (tipo != "descargar") return;
 
-    std::string url = j.value("url", "");
+    std::string url = urlPedido;
     if (sistema::EsMagnet(Ancho(url)))
     {
         AgregarMagnet(url, true);
@@ -1230,13 +1236,14 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         Avisar(L"Atarraya", enlaces::TextoNoPermitido);
         return;
     }
-    d.referer = j.value("referer", "");
-    d.agente = j.value("agente", "");
-    d.cookies = j.value("cookies", "");
+    d.referer = campo("referer");
+    d.agente = campo("agente");
+    d.cookies = campo("cookies");
     d.conexiones = m_ajustes.conexiones;
-    std::wstring nombre = Ancho(j.value("nombre", ""));
+    std::wstring nombre = Ancho(campo("nombre"));
     if (!nombre.empty()) d.nombre = LimpiarNombre(nombre);
-    int64_t tamano = j.value("tamano", (int64_t)-1);
+    auto t = j.find("tamano");
+    int64_t tamano = t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1;
 
     if (m_ajustes.preguntarNavegador) NuevaDescarga(d, true, tamano);
     else

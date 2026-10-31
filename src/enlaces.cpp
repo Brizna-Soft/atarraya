@@ -614,7 +614,8 @@ bool hnd::enlaces::DeInternetArchive(const std::string& texto, const std::string
         error = "Internet Archive respondió algo que no se entiende. Inténtalo más tarde.";
         return false;
     }
-    if (!j.is_object() || j.empty() || !j.contains("files") || !j["files"].is_array() || j.value("is_dark", false))
+    bool oscuro = j.is_object() && j.contains("is_dark") && ((j["is_dark"].is_boolean() && j["is_dark"].get<bool>()) || Texto(j["is_dark"]) == "true");
+    if (!j.is_object() || j.empty() || !j.contains("files") || !j["files"].is_array() || oscuro)
     {
         error = "No se encontró ese elemento en Internet Archive, o no es público.";
         return false;

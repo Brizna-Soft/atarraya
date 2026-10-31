@@ -529,7 +529,16 @@ void DialogoPagina::Buscar()
     std::thread([yo, parar, u]() {
         enlaces::Pagina p;
         std::string error;
-        bool ok = enlaces::Buscar(u, p, error, parar.get());
+        bool ok = false;
+        try
+        {
+            ok = enlaces::Buscar(u, p, error, parar.get());
+        }
+        catch (...)
+        {
+            ok = false;
+            error = "La página respondió algo que Atarraya no pudo leer.";
+        }
         wxTheApp->CallAfter([yo, parar, ok, p, error, u]() {
             if (!yo || *parar) return;
             yo->AlTerminarBusqueda(ok, p, error, u);
