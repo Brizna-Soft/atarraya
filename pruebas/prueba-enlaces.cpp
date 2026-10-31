@@ -1,20 +1,25 @@
 // Prueba de los enlaces sin ventana (no se publica).
 //
-//   prueba-enlaces             pruebas fijas (sin internet)
+//   prueba-enlaces             pruebas fijas (sin internet; con las direcciones de esta PC, sin mostrarlas)
 //   prueba-enlaces <url>       baja esa página (o la lista de Internet Archive) y muestra sus enlaces
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 
 #include <curl/curl.h>
 
 #include <cstdio>
+#include <cstring>
 #include <string>
 
 #include <bcrypt.h>
 
 #include "clicknload.hpp"
 #include "enlaces.hpp"
+#include "motor.hpp"
 #include "recolector.hpp"
+#include "redlocal.hpp"
 #include "util.hpp"
 
 using namespace hnd;
@@ -28,6 +33,146 @@ namespace
     {
         printf("%s  %s\n", ok ? "bien " : "FALLA", que);
         if (!ok) fallas++;
+    }
+
+    // Una dirección escrita («203.0.113.5» o «2001:db8::1»), como la recibe curl antes de conectar
+    sockaddr_storage Dir(const char* texto)
+    {
+        sockaddr_storage s{};
+        auto* v6 = reinterpret_cast<sockaddr_in6*>(&s);
+        auto* v4 = reinterpret_cast<sockaddr_in*>(&s);
+        if (inet_pton(AF_INET6, texto, &v6->sin6_addr) == 1) v6->sin6_family = AF_INET6;
+        else if (inet_pton(AF_INET, texto, &v4->sin_addr) == 1) v4->sin_family = AF_INET;
+        return s;
+    }
+
+    const sockaddr* P(const sockaddr_storage& s) { return reinterpret_cast<const sockaddr*>(&s); }
+
+    red::Subred Red(const char* texto, int prefijo)
+    {
+        auto s = Dir(texto);
+        red::Subred r;
+        r.v6 = s.ss_family == AF_INET6;
+        if (r.v6) memcpy(r.direccion, &reinterpret_cast<sockaddr_in6*>(&s)->sin6_addr, 16);
+        else memcpy(r.direccion, &reinterpret_cast<sockaddr_in*>(&s)->sin_addr, 4);
+        r.prefijo = prefijo;
+        return r;
+    }
+
+    bool En(const char* destino, const red::Subred& r)
+    {
+        auto s = Dir(destino);
+        return red::EnSubred(P(s), r);
+    }
+
+    bool Rango(const char* destino)
+    {
+        auto s = Dir(destino);
+        return red::EsRangoLocal(P(s));
+    }
+
+    // Las redes: prefijos de ejemplo (direcciones de documentación, que no son de nadie)
+    void Redes()
+    {
+        auto r28 = Red("203.0.113.37", 28);   // 203.0.113.32 a 203.0.113.47
+        Comprobar(En("203.0.113.32", r28) && En("203.0.113.47", r28) && !En("203.0.113.31", r28) && !En("203.0.113.48", r28),
+                  "red IPv4 /28: los dos bordes");
+        auto r24 = Red("198.51.100.20", 24);
+        Comprobar(En("198.51.100.1", r24) && En("198.51.100.254", r24) && !En("198.51.101.1", r24), "red IPv4 /24");
+        auto r32 = Red("198.51.100.20", 32);
+        Comprobar(En("198.51.100.20", r32) && !En("198.51.100.21", r32), "red IPv4 /32: solo la propia PC");
+        auto r64 = Red("2001:db8:4404:51a0:1c2d:3e4f:5a6b:7c8d", 64);
+        Comprobar(En("2001:db8:4404:51a0::1", r64) && En("2001:db8:4404:51a0:ffff:ffff:ffff:ffff", r64)
+                  && !En("2001:db8:4404:51a1::1", r64) && !En("2001:db8:4404:519f:ffff::1", r64), "red IPv6 /64");
+        auto r60 = Red("2001:db8:abcd:12f0::5", 60);   // 2001:db8:abcd:12f0:: a 2001:db8:abcd:12ff:ffff:...
+        Comprobar(En("2001:db8:abcd:12f0::", r60) && En("2001:db8:abcd:12ff:1::1", r60) && !En("2001:db8:abcd:12ef::1", r60)
+                  && !En("2001:db8:abcd:1300::1", r60), "red IPv6 /60 (el prefijo corta un byte)");
+        auto r128 = Red("2001:db8::7", 128);
+        Comprobar(En("2001:db8::7", r128) && !En("2001:db8::8", r128), "red IPv6 /128");
+        Comprobar(En("::ffff:203.0.113.40", r28) && En("64:ff9b::203.0.113.40", r28) && En("2002:cb00:7128::1", r28)
+                  && !En("::ffff:203.0.113.50", r28), "red: una IPv4 escrita como IPv6 cuenta como IPv4");
+        Comprobar(!En("203.0.113.40", r64) && !En("2001:db8:4404:51a0::1", r28), "red: IPv4 e IPv6 no se mezclan");
+
+        // La red de cada dirección de la PC, según el prefijo que da Windows
+        red::Subred t;
+        auto temporal = Dir("2001:db8:4404:51a0:aaaa::1");
+        Comprobar(red::SubredDeTarjeta(P(temporal), 128, t) && t.prefijo == 64 && En("2001:db8:4404:51a0::99", t),
+                  "red: una IPv6 pública que llega como /128 cuenta con todo su /64");
+        Comprobar(red::SubredDeTarjeta(P(temporal), 56, t) && t.prefijo == 56, "red: un prefijo IPv6 más corto se respeta");
+        auto v4 = Dir("198.51.100.20");
+        Comprobar(red::SubredDeTarjeta(P(v4), 0, t) && t.prefijo == 32 && red::SubredDeTarjeta(P(v4), 22, t) && t.prefijo == 22,
+                  "red: IPv4 sin prefijo queda solo la dirección; con prefijo, su red");
+
+        // Rangos que nunca se consultan solos
+        Comprobar(Rango("127.0.0.1") && Rango("10.1.2.3") && Rango("192.168.1.1") && Rango("100.64.0.1") && Rango("169.254.1.1")
+                  && Rango("192.0.2.1") && Rango("255.255.255.255") && !Rango("1.1.1.1") && !Rango("207.241.224.2"),
+                  "rangos IPv4");
+        Comprobar(Rango("::1") && Rango("::") && Rango("fe80::1") && Rango("fec0::1") && Rango("fd12:3456::1") && Rango("ff02::1")
+                  && Rango("::ffff:192.168.1.1") && Rango("64:ff9b::10.0.0.1") && Rango("64:ff9b:1::1") && Rango("2002:c0a8:101::1")
+                  && Rango("2001:db8::1") && Rango("2001::1") && Rango("3fff::1") && Rango("5f00::1") && Rango("100::1"),
+                  "rangos IPv6 locales y reservados");
+        Comprobar(!Rango("2606:4700:4700::1111") && !Rango("2001:4860:4860::8888") && !Rango("::ffff:1.1.1.1")
+                  && !Rango("64:ff9b::1.1.1.1") && !Rango("2002:101:101::1"), "rangos IPv6 de afuera");
+    }
+
+    // Con las direcciones de verdad de esta PC (sin mostrarlas): cada una y otra de su misma red cuentan como locales,
+    // y la consulta del recolector hacia ellas no sale
+    void RedDeEstaPc()
+    {
+        bool ok = false;
+        auto redes = red::LeerSubredesDeLaPc(&ok);
+        Comprobar(ok && !redes.empty(), "PC: Windows da sus direcciones");
+        int publicas = 0;
+        bool propias = true, vecinas = true, consultas = true;
+        for (auto& r : redes)
+        {
+            sockaddr_storage s{};
+            if (r.v6)
+            {
+                auto* a = reinterpret_cast<sockaddr_in6*>(&s);
+                a->sin6_family = AF_INET6;
+                memcpy(&a->sin6_addr, r.direccion, 16);
+            }
+            else
+            {
+                auto* a = reinterpret_cast<sockaddr_in*>(&s);
+                a->sin_family = AF_INET;
+                memcpy(&a->sin_addr, r.direccion, 4);
+            }
+            if (!red::EsDestinoLocal(P(s))) propias = false;
+            if (red::EsRangoLocal(P(s))) continue;   // a esta ya la frenaba el filtro de rangos
+            publicas++;
+            // Otra dirección de la misma red: el último byte cambiado, si el prefijo deja lugar
+            int bits = r.v6 ? 128 : 32;
+            sockaddr_storage v = s;
+            if (r.prefijo <= bits - 8)
+            {
+                uint8_t* b = r.v6 ? reinterpret_cast<sockaddr_in6*>(&v)->sin6_addr.u.Byte : reinterpret_cast<uint8_t*>(&reinterpret_cast<sockaddr_in*>(&v)->sin_addr);
+                b[bits / 8 - 1] ^= 0x5A;
+                if (!red::EsDestinoLocal(P(v))) vecinas = false;
+            }
+            // La consulta entera, como la hace el recolector (al puerto 9, que descarta todo)
+            for (const sockaddr_storage* x : { &s, &v })
+            {
+                char texto[INET6_ADDRSTRLEN] = {};
+                if (r.v6) inet_ntop(AF_INET6, &reinterpret_cast<const sockaddr_in6*>(x)->sin6_addr, texto, sizeof(texto));
+                else inet_ntop(AF_INET, &reinterpret_cast<const sockaddr_in*>(x)->sin_addr, texto, sizeof(texto));
+                std::string url = r.v6 ? "http://[" + std::string(texto) + "]:9/prueba.zip" : "http://" + std::string(texto) + ":9/prueba.zip";
+                InfoEnlace info;
+                ComprobarEnlace(url, "", info);
+                if (!info.local) consultas = false;
+            }
+        }
+        printf("   esta PC tiene %zu direcciones; %d públicas (a esas solo las frena lo nuevo)\n", redes.size(), publicas);
+        Comprobar(propias, "PC: sus direcciones cuentan como locales");
+        if (publicas)
+        {
+            Comprobar(vecinas, "PC: otra dirección de su misma red también");
+            Comprobar(consultas, "PC: la consulta del recolector hacia ellas no sale");
+        }
+        else printf("   (sin direcciones públicas: lo nuevo se probó con los prefijos de ejemplo)\n");
+        auto g4 = Dir("8.8.8.8"), g6 = Dir("2001:4860:4860::8888");
+        Comprobar(!red::EsDestinoLocal(P(g4)) && !red::EsDestinoLocal(P(g6)), "PC: una dirección de afuera no cuenta como local");
     }
 
     bool Tiene(const std::vector<Enlace>& v, const std::string& url, Tipo t)
@@ -214,6 +359,8 @@ int wmain(int argc, wchar_t** argv)
         return 0;
     }
     Fijas();
+    Redes();
+    RedDeEstaPc();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

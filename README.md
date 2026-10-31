@@ -133,9 +133,17 @@ queda en `programa\`. Con `-SinTorrents` compila mucho más rápido, sin torrent
 ## Licencia y créditos
 
 - Código de Atarraya: licencia MIT, © 2026 Brizna Soft. Hecho con ayuda de IA.
-- Usa [curl](https://curl.se), [wxWidgets](https://www.wxwidgets.org), [nlohmann/json](https://github.com/nlohmann/json),
-  [libtorrent](https://libtorrent.org) (licencia BSD), [Boost](https://www.boost.org) y [OpenSSL](https://openssl.org),
-  entre otras bibliotecas. Sus licencias están en `AVISOS-DE-TERCEROS.txt`. Nombrarlas aquí no significa que sus
-  autores respalden Atarraya.
+- Bibliotecas de código abierto que usa, con su licencia:
+  - [libtorrent](https://libtorrent.org): BSD-3-Clause.
+  - [curl](https://curl.se): licencia de curl (del tipo MIT).
+  - [wxWidgets](https://www.wxwidgets.org): wxWindows Library Licence 3.1.
+  - [nlohmann/json](https://github.com/nlohmann/json): MIT.
+  - [Boost](https://www.boost.org): Boost Software License 1.0.
+  - [OpenSSL](https://openssl.org): Apache 2.0.
+  - zlib y NanoSVG: licencia zlib.
+  - libpng: PNG Reference Library License, versión 2.
+
+  Los textos completos de esas licencias, y los de otras bibliotecas que trae la compilación, están en
+  `AVISOS-DE-TERCEROS.txt`. Nombrarlas aquí no significa que sus autores respalden Atarraya.
 - «JDownloader» y «Click'n'Load» se nombran solo para explicar con qué funciona Atarraya; no tiene relación con
   sus autores.

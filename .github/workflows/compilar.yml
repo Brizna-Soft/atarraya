@@ -60,6 +60,11 @@ jobs:
         shell: pwsh
         run: ./compilar.ps1 -Publicacion
 
+      # Sin internet: enlaces, Click'n'Load y las redes de la PC que las consultas no deben tocar
+      - name: Pruebas sin ventana
+        shell: pwsh
+        run: ./build/Release/prueba-enlaces.exe
+
       - name: Empaquetar
         shell: pwsh
         run: ./empaquetar.ps1
