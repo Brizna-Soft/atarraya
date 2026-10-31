@@ -1475,6 +1475,7 @@ void VentanaPrincipal::PedidoVideo(const std::string& formato, const std::string
         d.cookies = cookies;
         d.agente = agente;
         d.conexiones = m_ajustes.conexiones;
+        d.sinProxy = true;   // los videos de las páginas van directo, nunca por proxy (como las consultas del recolector)
         std::wstring deUrl = NombreDeUrl(url);
         std::wstring t = wxString(titulo).Strip(wxString::both).ToStdWstring();
         if (!t.empty())

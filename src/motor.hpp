@@ -71,6 +71,8 @@ namespace hnd
         // Una descarga normal cuya dirección salió de una lista de internet (un video DASH de un solo archivo): no puede
         // conectarse con esta PC ni con su red
         bool soloAfuera = false;
+        // Un video de una página (su archivo, o el archivo único de un DASH): va directo, nunca por proxy
+        bool sinProxy = false;
 
         int64_t Hecho() const;
     };
@@ -198,15 +200,16 @@ namespace hnd
     // el navegador)
     extern const char* const TextoRespondioPagina;
 
+    // El proxy de Windows que usan las descargas normales («host:puerto», sin usuario ni clave), o vacío si no hay. Los
+    // videos de las páginas y las consultas del recolector nunca lo usan.
+    std::string ProxyEnUso();
+
 #ifdef ATARRAYA_PRUEBAS
     namespace pruebas
     {
         // Solo en las pruebas: un «DNS que miente» («nombre:puerto:ip», varias separadas por comas, como CURLOPT_RESOLVE;
-        // vacío lo quita), para curl y para el filtro de la red de la casa, para ver que un nombre de afuera que lleva a
-        // esta PC se frena
+        // vacío lo quita), para ver que un nombre de afuera que lleva a esta PC se frena al conectar
         void Resolver(const std::string& reglas);
-        // Solo en las pruebas: otra respuesta solo para el filtro (un DNS que cambia de idea entre la revisión y la conexión)
-        void ResolverSoloFiltro(const std::string& reglas);
         // Solo en las pruebas: un proxy fijo («host:puerto» y sus excepciones) en vez del de Windows; vacío lo quita
         void ProxyFijo(const std::string& servidor, const std::string& excepciones = "");
         // Solo en las pruebas: un tope de memoria más chico para las partes adelantadas de un video (0 = el de siempre)

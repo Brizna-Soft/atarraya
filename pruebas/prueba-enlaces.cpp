@@ -1506,17 +1506,19 @@ namespace
         std::string mpdLargo = "<MPD mediaPresentationDuration=\"PT150000S\"><Period><BaseURL>https://cdn.ejemplo.org/" + std::string(8000, 'a')
                                + "/</BaseURL><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate duration=\"1\" media=\"$Number$.m4s\"/>"
                                  "<Representation id=\"v\" bandwidth=\"1\"/></AdaptationSet></Period></MPD>";
+        // El archivo único, entero o por rangos (como lo pide el motor)
+        auto servirUnico = [&](const std::string& r) {
+            if (r.rfind("bytes=", 0) != 0) return Http(200, "video/mp4", unico, "Accept-Ranges: bytes\r\n");
+            int64_t a = _atoi64(r.c_str() + 6);
+            std::string fin = r.substr(r.find('-') + 1);
+            int64_t b = fin.empty() ? (int64_t)unico.size() - 1 : std::min<int64_t>(_atoi64(fin.c_str()), (int64_t)unico.size() - 1);
+            return Http(206, "video/mp4", unico.substr((size_t)a, (size_t)(b - a + 1)),
+                        "Accept-Ranges: bytes\r\nContent-Range: bytes " + std::to_string(a) + "-" + std::to_string(b) + "/"
+                            + std::to_string(unico.size()) + "\r\n");
+        };
         ServidorDePrueba web(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string& r) -> std::string {
-            if (ruta == "/unico/peli.mp4")
-            {
-                if (r.rfind("bytes=", 0) != 0) return Http(200, "video/mp4", unico, "Accept-Ranges: bytes\r\n");
-                int64_t a = _atoi64(r.c_str() + 6);
-                std::string fin = r.substr(r.find('-') + 1);
-                int64_t b = fin.empty() ? (int64_t)unico.size() - 1 : std::min<int64_t>(_atoi64(fin.c_str()), (int64_t)unico.size() - 1);
-                return Http(206, "video/mp4", unico.substr((size_t)a, (size_t)(b - a + 1)),
-                            "Accept-Ranges: bytes\r\nContent-Range: bytes " + std::to_string(a) + "-" + std::to_string(b) + "/"
-                                + std::to_string(unico.size()) + "\r\n");
-            }
+            if (ruta == "/unico/peli.mp4") return servirUnico(r);
+            if (ruta == "/redir/lista.m3u8") return Http(302, "text/plain", "", "Location: /hls/lista.m3u8\r\n");
             if (ruta == "/audio/bien.m3u8")
                 return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\n/hls/seg0.ts\n#EXTINF:2,\n/hls/seg1.ts\n#EXT-X-ENDLIST\n");
             if (ruta == "/subs/cifrados.m3u8")
@@ -1802,81 +1804,77 @@ namespace
                       "videos: si el programa se cerró a mitad de una parte, al reanudar se corta en la última parte entera y el video queda bien");
         }
 
-        // 13. Con proxy, el socket solo ve al proxy: el destino real se revisa antes de cada pedido (una IP escrita, tal
-        //     cual; un nombre, buscándolo) y en cada redirección. Las excepciones del proxy van directo y pasan por el
-        //     filtro del socket. Vale para las listas, sus partes, el archivo único de un DASH y el recolector.
+        // 13. Con un proxy configurado, los videos de las páginas (sus listas, todas sus partes, su archivo único y sus
+        //     redirecciones) y las consultas del recolector nunca van por el proxy: van directo y pasan por el filtro de la
+        //     red de la casa del socket, que así ve el destino real. Las descargas normales siguen usando el proxy.
         {
-            ServidorDePrueba proxy(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string&) -> std::string {
+            ServidorDePrueba proxy(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string& r) -> std::string {
                 // Un proxy de prueba: le llegan direcciones completas («GET http://sitio/ruta»)
-                const std::string pub = "http://publico.ejemplo.org/";
-                if (ruta == pub + "redirige.m3u8") return Http(302, "text/plain", "", "Location: http://192.168.1.20/lista.m3u8\r\n");
-                if (ruta == pub + "redirige-nombre.m3u8") return Http(302, "text/plain", "", "Location: http://casa.ejemplo.org/lista.m3u8\r\n");
-                if (ruta == pub + "partes-casa.m3u8")
-                    return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\nhttp://casa.ejemplo.org/seg0.ts\n#EXT-X-ENDLIST\n");
-                if (ruta == pub + "bien.m3u8")
-                {
-                    std::string l = "#EXTM3U\n";
-                    for (int i = 0; i < 6; i++) l += "#EXTINF:2,\nseg" + std::to_string(i) + ".ts\n";
-                    return Http(200, "application/vnd.apple.mpegurl", l + "#EXT-X-ENDLIST\n");
-                }
-                if (ruta.rfind(pub + "seg", 0) == 0) return Http(200, "video/mp2t", parte(atoi(ruta.c_str() + pub.size() + 3)));
-                if (ruta == pub + "redirige.mp4") return Http(302, "text/plain", "", "Location: http://192.168.1.20/peli.mp4\r\n");
+                if (ruta == "http://normal.ejemplo.org/peli.mp4") return servirUnico(r);
                 return Http(404, "text/plain", "no existe");
             } });
             std::string puertoWeb = std::to_string(web.Puerto());
-            pruebas::ProxyFijo("127.0.0.1:" + std::to_string(proxy.Puerto()), "directo.ejemplo.org");
-            pruebas::Resolver("publico.ejemplo.org:80:93.184.216.34,casa.ejemplo.org:80:10.0.0.7,video.ejemplo-afuera.org:80:192.168.1.20,"
-                              "afuera-aqui.ejemplo.org:" + puertoWeb + ":127.0.0.1,directo.ejemplo.org:" + puertoWeb + ":127.0.0.1");
-            // El filtro cree que «directo» es de afuera (un DNS que cambia de idea); curl lo resuelve a esta PC
-            pruebas::ResolverSoloFiltro("directo.ejemplo.org:80:93.184.216.34");
+            pruebas::ProxyFijo("127.0.0.1:" + std::to_string(proxy.Puerto()));
+            // Un nombre de afuera que lleva a esta PC (un DNS que miente)
+            pruebas::Resolver("afuera-aqui.ejemplo.org:" + puertoWeb + ":127.0.0.1");
             int p0 = proxy.Pedidos(), w0 = web.Pedidos();
+            // Una lista de la casa que la persona confirmó: la lista y sus 6 partes se piden directo, ni una por el proxy
+            Foto directo = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Sin proxy");
+            int p1 = proxy.Pedidos(), w1 = web.Pedidos();
+            // Con una redirección: también directo (la redirección, la lista y sus partes)
+            Foto redir = BajarVideo(w + "/redir/lista.m3u8", "hls", "", true, carpeta, L"Sin proxy redir");
+            int p2 = proxy.Pedidos(), w2 = web.Pedidos();
+            // Una lista de internet que lleva a esta PC (por su IP, o por un nombre de afuera que resuelve aquí): se rechaza
             Foto ipCasa = BajarVideo(w + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Proxy ip");
-            Foto nombreCasa = BajarVideo("http://video.ejemplo-afuera.org/lista.m3u8", "hls", "", false, carpeta, L"Proxy nombre");
-            int p1 = proxy.Pedidos();
-            Foto redirIp = BajarVideo("http://publico.ejemplo.org/redirige.m3u8", "hls", "", false, carpeta, L"Proxy redir");
-            int p2 = proxy.Pedidos();
-            Foto redirNombre = BajarVideo("http://publico.ejemplo.org/redirige-nombre.m3u8", "hls", "", false, carpeta, L"Proxy redir2");
-            int p3 = proxy.Pedidos();
-            Foto partesCasa = BajarVideo("http://publico.ejemplo.org/partes-casa.m3u8", "hls", "", false, carpeta, L"Proxy partes");
-            int p4 = proxy.Pedidos();
-            Foto porProxy = BajarVideo("http://publico.ejemplo.org/bien.m3u8", "hls", "", false, carpeta, L"Por proxy");
-            int p5 = proxy.Pedidos();
-            Foto excepcion = BajarVideo("http://directo.ejemplo.org:" + puertoWeb + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Excepcion");
-            int p6 = proxy.Pedidos(), w6 = web.Pedidos();
-            Comprobar(ipCasa.datos.error == TextoRedLocal && nombreCasa.datos.error == TextoRedLocal && p1 == p0 && w6 == w0,
-                      "videos con proxy: una lista de internet que lleva a una IP de la casa o a un nombre que resuelve a la casa no se pide");
-            Comprobar(redirIp.datos.error == TextoRedLocal && p2 == p1 + 1 && redirNombre.datos.error == TextoRedLocal && p3 == p2 + 1,
-                      "videos con proxy: una redirección hacia la red de la casa (por IP o por nombre) se corta antes de seguirla");
-            Comprobar(partesCasa.datos.error == TextoRedLocal && p4 == p3 + 1,
-                      "videos con proxy: las partes que llevan a la casa se revisan antes de pedir una sola");
-            Comprobar(porProxy.datos.estado == Estado::Completada && leer(L"Por proxy.ts") == todo && p5 == p4 + 7,
-                      "videos con proxy: lo que es de internet se baja por el proxy como siempre (aunque el proxy esté en esta PC)");
-            Comprobar(excepcion.datos.error == TextoRedLocal && p6 == p5 && w6 == w0,
-                      "videos con proxy: una excepción del proxy va directo y el filtro del socket la frena si lleva a esta PC");
+            Foto nombreCasa = BajarVideo("http://afuera-aqui.ejemplo.org:" + puertoWeb + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Proxy nombre");
+            int p3 = proxy.Pedidos(), w3 = web.Pedidos();
+            // La ventana «Bajar video» también lee la lista directo
+            std::string texto, urlFinal, errorLista;
+            bool local = false;
+            bool leida = BajarLista(w + "/hls/lista.m3u8", "", "", "", texto, urlFinal, local, errorLista);
+            int p4 = proxy.Pedidos(), w4 = web.Pedidos();
+            Comprobar(directo.datos.estado == Estado::Completada && leer(L"Sin proxy.ts") == todo && p1 == p0 && w1 == w0 + 7
+                          && redir.datos.estado == Estado::Completada && leer(L"Sin proxy redir.ts") == todo && p2 == p1 && w2 == w1 + 8
+                          && ipCasa.datos.error == TextoRedLocal && nombreCasa.datos.error == TextoRedLocal && p3 == p2 && w3 == w2
+                          && leida && local && p4 == p3 && w4 == w3 + 1,
+                      "videos con proxy configurado: la lista y sus partes se piden sin proxy (directo) y un destino de la casa se rechaza");
 
-            // El archivo único de un DASH (descarga normal con «soloAfuera») por proxy
+            // El archivo único de un DASH (y el archivo de un video de la página): directo; si sale de una lista de
+            // internet y lleva a esta PC, se rechaza sin conectar
             DatosDescarga u;
-            u.nombre = L"Unico proxy.mp4";
+            u.nombre = L"Unico sin proxy.mp4";
             u.nombreFijo = true;
+            u.sinProxy = true;
+            u.url = w + "/unico/peli.mp4";
+            Foto unicoDirecto = Bajar(u, carpeta);
+            int p5 = proxy.Pedidos(), w5 = web.Pedidos();
+            u.nombre = L"Unico casa.mp4";
             u.soloAfuera = true;
-            u.url = "http://casa.ejemplo.org/peli.mp4";
+            u.url = "http://afuera-aqui.ejemplo.org:" + puertoWeb + "/unico/peli.mp4";
             Foto unicoCasa = Bajar(u, carpeta);
-            int p7 = proxy.Pedidos();
-            u.url = "http://publico.ejemplo.org/redirige.mp4";
-            Foto unicoRedir = Bajar(u, carpeta);
-            int p8 = proxy.Pedidos();
-            Comprobar(unicoCasa.datos.error == TextoRedLocal && p7 == p6 && unicoRedir.datos.error == TextoRedLocal && p8 == p7 + 1,
-                      "videos con proxy: el archivo único de un DASH tampoco va a la casa (ni directo ni por una redirección)");
+            int p6 = proxy.Pedidos(), w6 = web.Pedidos();
+            Comprobar(unicoDirecto.datos.estado == Estado::Completada && leer(L"Unico sin proxy.mp4") == unico && p5 == p4 && w5 > w4
+                          && unicoCasa.datos.error == TextoRedLocal && p6 == p5 && w6 == w5,
+                      "videos con proxy configurado: el archivo único de un DASH va directo, y si lleva a la casa se rechaza");
 
-            // El recolector consulta sin proxy (así su filtro del socket ve el destino real), aunque haya uno
+            // Una descarga normal (agregada a mano) sigue usando el proxy, como antes
+            DatosDescarga n;
+            n.nombre = L"Normal por proxy.mp4";
+            n.nombreFijo = true;
+            n.url = "http://normal.ejemplo.org/peli.mp4";
+            Foto normal = Bajar(n, carpeta);
+            int p7 = proxy.Pedidos(), w7 = web.Pedidos();
+            Comprobar(normal.datos.estado == Estado::Completada && leer(L"Normal por proxy.mp4") == unico && p7 > p6 && w7 == w6,
+                      "descargas normales con proxy configurado: siguen usando el proxy, como antes");
+
+            // El recolector consulta sin proxy, y no consulta direcciones de la casa
             InfoEnlace a, b;
             ComprobarEnlace(w + "/unico/peli.mp4", "", a);
             ComprobarEnlace("http://afuera-aqui.ejemplo.org:" + puertoWeb + "/unico/peli.mp4", "", b);
-            Comprobar(a.local && b.local && proxy.Pedidos() == p8 && web.Pedidos() == w6,
-                      "recolector con proxy: no consulta direcciones de la casa (ni por IP ni por un nombre que lleva aquí)");
+            Comprobar(a.local && b.local && proxy.Pedidos() == p7 && web.Pedidos() == w7,
+                      "recolector con proxy configurado: consulta sin proxy y no consulta direcciones de la casa");
             pruebas::ProxyFijo("");
             pruebas::Resolver("");
-            pruebas::ResolverSoloFiltro("");
         }
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);

@@ -30,7 +30,6 @@ namespace hnd::flujos
     extern const char* const TextoEnVivo;
     extern const char* const TextoVariasPartes;  // DASH con más de un período
     extern const char* const TextoRedLocal;      // la lista pide partes de esta PC o de la red de la casa
-    extern const char* const TextoSinComprobar;  // con proxy: no se pudo buscar a dónde lleva una dirección
     extern const char* const TextoDemasiadas;    // más partes o más bytes que los topes: no se baja (nunca a medias)
 
     // Una dirección de la lista, completa: relativa a la de la lista (ya con sus redirecciones), como un navegador

@@ -172,7 +172,13 @@ DatosDescarga DialogoAgregar::Datos() const
 {
     DatosDescarga d = m_previa;
     std::string url = Utf8(m_url->GetValue().Strip(wxString::both).ToStdWstring());
-    if (url != d.url) { d.cookies.clear(); d.referer.clear(); }   // otra dirección: las cookies no corresponden
+    // Otra dirección: las cookies no corresponden, y ya no es el video de la página (una descarga normal, con el proxy)
+    if (url != d.url)
+    {
+        d.cookies.clear();
+        d.referer.clear();
+        d.sinProxy = false;
+    }
     d.url = url;
     d.carpeta = m_carpeta->GetPath().ToStdWstring();
     std::wstring nombre = m_nombre->GetValue().Strip(wxString::both).ToStdWstring();
@@ -1105,6 +1111,7 @@ std::vector<DatosDescarga> DialogoVideo::Descargas() const
             d.nombre = n + flujos::ExtensionDash(rep);
             d.nombreFijo = true;
             d.soloAfuera = !base.flujoLocal;
+            d.sinProxy = true;   // como todo lo de un video de una página: directo, nunca por proxy
         }
         else
         {
@@ -1158,6 +1165,16 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
     filaSubida->Add(subida, 0, wxALIGN_CENTER_VERTICAL);
     filaSubida->Add(Nota(this, L"0 = sin límite", FromDIP(200)), 0, wxALIGN_CENTER_VERTICAL | wxLEFT, FromDIP(8));
     rejilla->Add(filaSubida);
+
+    // El proxy es el de Windows (no se cambia aquí). Solo se muestra «host:puerto», nunca un usuario o una clave.
+    std::string proxy = ProxyEnUso();
+    rejilla->Add(Etiqueta(this, L"Proxy:"), 0, wxALIGN_TOP);
+    auto* columnaProxy = new wxBoxSizer(wxVERTICAL);
+    columnaProxy->Add(new wxStaticText(this, wxID_ANY, proxy.empty() ? wxString(L"Ninguno (si pones uno en Windows, las descargas lo usan)")
+                                                                     : L"El de Windows: " + wxString::FromUTF8(proxy)));
+    columnaProxy->Add(Nota(this, L"Los videos de las páginas y las consultas del recolector no usan el proxy.", FromDIP(380)), 0, wxTOP,
+                      FromDIP(2));
+    rejilla->Add(columnaProxy, 1, wxEXPAND);
     caja->Add(rejilla, 0, wxEXPAND | wxALL, borde);
 
     auto* preguntar = new wxCheckBox(this, wxID_ANY, L"Preguntar antes de bajar lo que llega del navegador");

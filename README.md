@@ -168,7 +168,9 @@ Qué hace Atarraya con cada uno:
   «(audio)». **No los une**: para juntarlos hace falta un programa aparte, como FFmpeg, que Atarraya no trae.
 - **Antes de bajar nada**, Atarraya lee todas las listas que va a usar (la de la calidad, la del audio y las de los
   subtítulos) y revisa todas sus partes. Si el video está en tu red (esta PC u otro aparato de tu casa), te pregunta
-  antes de bajarlo; una lista de internet nunca puede hacer que Atarraya se conecte a tu red.
+  antes de bajarlo; una lista de internet nunca puede hacer que Atarraya se conecte a tu red. Por eso los videos de las
+  páginas (y las consultas del recolector) no usan el proxy de Windows: van directo, y así Atarraya ve a dónde se
+  conecta de verdad. Las demás descargas sí lo usan.
 - **Si el programa se cierra de golpe**, al abrirlo sigue desde la última parte que quedó entera.
 
 Lo que no baja:

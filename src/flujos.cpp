@@ -16,9 +16,6 @@ const char* const hnd::flujos::TextoEnVivo = "Es una transmisión en vivo: Atarr
 const char* const hnd::flujos::TextoVariasPartes = "Este video DASH viene en varios períodos: Atarraya todavía no lo baja.";
 const char* const hnd::flujos::TextoRedLocal =
     "La lista del video pide archivos de esta PC o de la red de tu casa: Atarraya no los baja.";
-const char* const hnd::flujos::TextoSinComprobar =
-    "Con el proxy de Windows, Atarraya no pudo comprobar a dónde lleva una dirección del video (no pudo buscar su nombre): "
-    "no la baja.";
 const char* const hnd::flujos::TextoDemasiadas =
     "La lista del video es demasiado grande (más de 150.000 partes, más de 16 MB o direcciones demasiado largas): Atarraya "
     "no la baja, para no llenar la memoria.";
