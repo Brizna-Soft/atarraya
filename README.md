@@ -7,7 +7,7 @@ recoger tus datos.
 
 Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 
-![Atarraya bajando una ISO en 8 partes a la vez](docs/captura.png)
+![Atarraya bajando el torrent de Debian junto a cinco descargas terminadas](docs/captura.png)
 
 ## Descargar
 
