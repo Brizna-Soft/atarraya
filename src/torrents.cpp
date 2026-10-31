@@ -151,6 +151,7 @@ namespace
         bool hayEstado = false;
         std::vector<uint8_t> mapa;
         Reloj::time_point ultimoResumen = Reloj::now();
+        Reloj::time_point ultimoArranque{};   // para no hacer caso a un error viejo justo después de reanudar
     };
 
     void Huellas(const lt::info_hash_t& ih, std::string& v1, std::string& v2)
@@ -366,6 +367,7 @@ struct hnd::MotorTorrent::Datos
         e.h.unset_flags(lt::torrent_flags::auto_managed);
         e.h.clear_error();
         e.h.resume();
+        e.ultimoArranque = Reloj::now();
     }
 
     void Arrancar(Entrada& e)
@@ -442,7 +444,8 @@ struct hnd::MotorTorrent::Datos
         e.mapa = Mapa(st.pieces);
         if (st.errc)
         {
-            if (e.estado != Estado::Error)
+            bool corre = e.estado == Estado::Iniciando || e.estado == Estado::Descargando || e.estado == Estado::Compartiendo;
+            if (corre && Reloj::now() - e.ultimoArranque > std::chrono::seconds(3))
             {
                 e.error = TextoErrorTorrent(st.errc);
                 Registrar("torrent " + std::to_string(e.id - BaseIdTorrent) + ": error: " + e.error);
@@ -451,6 +454,10 @@ struct hnd::MotorTorrent::Datos
             return;
         }
         if (st.flags & lt::torrent_flags::paused) return;   // el estado lo pone el programa
+        // Los avisos de libtorrent llegan con atraso: si el programa ya lo pausó (o no lo arrancó), un aviso viejo de
+        // «está bajando» no cambia nada
+        bool corriendo = e.estado == Estado::Iniciando || e.estado == Estado::Descargando || e.estado == Estado::Compartiendo;
+        if (!corriendo) return;
         // Un magnet que espera la elección corre solo para traer los datos; al llegar se pausa (metadata_received_alert)
         if (e.eligeArchivos && st.has_metadata) return;
         if (st.state == lt::torrent_status::checking_files || st.state == lt::torrent_status::checking_resume_data
