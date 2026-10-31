@@ -368,6 +368,12 @@ void hnd::ServidorCnL::Detener()
     if (!m_activo && !m_hilo.joinable()) return;
     m_parar = true;
     if (m_hilo.joinable()) m_hilo.join();
+    // Las conexiones en curso ven «m_parar» en menos de un quinto de segundo
+    for (auto& t : m_trabajos)
+    {
+        if (t.t.joinable()) t.t.join();
+    }
+    m_trabajos.clear();
     if (m_escucha != ~(uintptr_t)0)
     {
         closesocket((SOCKET)m_escucha);
@@ -388,6 +394,16 @@ void hnd::ServidorCnL::Bucle()
         FD_SET(escucha, &f);
         timeval espera = { 0, 300000 };
         int r = select(0, &f, nullptr, nullptr, &espera);
+        // Las conexiones que ya terminaron
+        for (auto it = m_trabajos.begin(); it != m_trabajos.end();)
+        {
+            if (*it->fin)
+            {
+                if (it->t.joinable()) it->t.join();
+                it = m_trabajos.erase(it);
+            }
+            else ++it;
+        }
         if (r <= 0)
         {
             if (r < 0) Sleep(100);
@@ -397,9 +413,21 @@ void hnd::ServidorCnL::Bucle()
         int largo = sizeof(de);
         SOCKET c = accept(escucha, reinterpret_cast<sockaddr*>(&de), &largo);
         if (c == INVALID_SOCKET) continue;
-        // Solo esta PC (127.0.0.1); el socket ya escucha solo ahí, pero se comprueba igual
-        if (de.sin_family == AF_INET && ntohl(de.sin_addr.s_addr) == INADDR_LOOPBACK)
+        // Solo esta PC (127.0.0.1; el socket ya escucha solo ahí), como mucho 4 a la vez y 120 conexiones por minuto
+        int64_t ahora = (int64_t)(GetTickCount64() / 1000);
+        m_conexiones.erase(std::remove_if(m_conexiones.begin(), m_conexiones.end(), [&](int64_t t) { return ahora - t >= 60; }),
+                           m_conexiones.end());
+        bool local = de.sin_family == AF_INET && ntohl(de.sin_addr.s_addr) == INADDR_LOOPBACK;
+        if (!local || m_trabajos.size() >= 4 || m_conexiones.size() >= 120)
         {
+            closesocket(c);
+            continue;
+        }
+        m_conexiones.push_back(ahora);
+        Trabajo t;
+        t.fin = std::make_shared<std::atomic<bool>>(false);
+        auto fin = t.fin;
+        t.t = std::thread([this, c, fin]() {
             try
             {
                 Atender((uintptr_t)c);
@@ -408,27 +436,45 @@ void hnd::ServidorCnL::Bucle()
             {
                 Registrar("Click'n'Load: un pedido no se pudo leer");
             }
-        }
-        closesocket(c);
+            closesocket(c);
+            *fin = true;
+        });
+        m_trabajos.push_back(std::move(t));
     }
+}
+
+int hnd::ServidorCnL::Recibir(uintptr_t conexion, char* buf, int largo, uint64_t limite)
+{
+    SOCKET s = (SOCKET)conexion;
+    while (!m_parar && GetTickCount64() < limite)
+    {
+        fd_set f;
+        FD_ZERO(&f);
+        FD_SET(s, &f);
+        timeval espera = { 0, 200000 };
+        int r = select(0, &f, nullptr, nullptr, &espera);
+        if (r < 0) return -1;
+        if (r == 0) continue;
+        int n = recv(s, buf, largo, 0);
+        return n > 0 ? n : -1;
+    }
+    return -1;
 }
 
 void hnd::ServidorCnL::Atender(uintptr_t conexion)
 {
     SOCKET s = (SOCKET)conexion;
     DWORD espera = 5000;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&espera), sizeof(espera));
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&espera), sizeof(espera));
-    ULONGLONG limite = GetTickCount64() + 10000;
-
+    uint64_t limite = GetTickCount64() + 5000;   // todo el pedido tiene que llegar en 5 segundos
     // 1. Cabeceras
     std::string datos;
     size_t finCabeceras = std::string::npos;
     char buf[4096];
     while (finCabeceras == std::string::npos)
     {
-        if (datos.size() > MaxCabeceras || GetTickCount64() > limite) { Enviar(s, { 431, "text/plain; charset=utf-8", "failed\r\n" }); return; }
-        int n = recv(s, buf, sizeof(buf), 0);
+        if (datos.size() > MaxCabeceras) { Enviar(s, { 431, "text/plain; charset=utf-8", "failed\r\n" }); return; }
+        int n = Recibir(conexion, buf, sizeof(buf), limite);
         if (n <= 0) return;
         datos.append(buf, (size_t)n);
         finCabeceras = datos.find("\r\n\r\n");
@@ -490,19 +536,21 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
     if (largo > MaxCuerpo) { Enviar(s, { 413, "text/plain; charset=utf-8", "failed\r\n" }); return; }
     while (cuerpo.size() < largo)
     {
-        if (GetTickCount64() > limite) return;
-        int n = recv(s, buf, sizeof(buf), 0);
+        int n = Recibir(conexion, buf, sizeof(buf), limite);
         if (n <= 0) return;
         cuerpo.append(buf, (size_t)n);
     }
     cuerpo.resize(largo);
 
-    // 4. Tope de pedidos por minuto
-    int64_t ahora = (int64_t)(GetTickCount64() / 1000);
-    m_recientes.erase(std::remove_if(m_recientes.begin(), m_recientes.end(), [&](int64_t t) { return ahora - t >= 60; }),
-                      m_recientes.end());
-    if ((int)m_recientes.size() >= MaxPorMinuto) { Enviar(s, { 429, "text/plain; charset=utf-8", "failed\r\n" }); return; }
-    m_recientes.push_back(ahora);
+    // 4. Tope de envíos por minuto (las conexiones ya tienen su propio tope)
+    {
+        std::lock_guard g(m_m);
+        int64_t ahora = (int64_t)(GetTickCount64() / 1000);
+        m_recientes.erase(std::remove_if(m_recientes.begin(), m_recientes.end(), [&](int64_t t) { return ahora - t >= 60; }),
+                          m_recientes.end());
+        if ((int)m_recientes.size() >= MaxPorMinuto) { Enviar(s, { 429, "text/plain; charset=utf-8", "failed\r\n" }); return; }
+        m_recientes.push_back(ahora);
+    }
 
     std::string tipo = Bajo(h["content-type"]);
     if (!tipo.empty() && tipo.rfind("application/x-www-form-urlencoded", 0) != 0)

@@ -77,6 +77,11 @@ namespace hnd
 
         bool Archivos(uint64_t id, InfoTorrent& info);                  // con lo bajado de cada archivo
         bool ElegirArchivos(uint64_t id, const std::vector<bool>& bajar);
+        // Archivos que ya existen en la carpeta con el mismo nombre (si se bajara ahí, se dañarían)
+        static std::vector<std::wstring> Choques(const InfoTorrent& info, const std::wstring& carpeta, const std::vector<bool>& bajar);
+        std::vector<std::wstring> Choques(uint64_t id, const std::vector<bool>& bajar);
+        // Otra carpeta para un torrent que todavía no bajó nada (espera que la persona elija los archivos)
+        bool CambiarCarpeta(uint64_t id, const std::wstring& carpeta);
         void Compartir(uint64_t id, bool si);
 
         std::vector<Foto> Fotos();
@@ -89,6 +94,8 @@ namespace hnd
         // Avisos para la persona (por ejemplo, archivos que no se pudieron mandar a la Papelera)
         std::vector<std::wstring> Avisos();
 
+        // Lee los avisos de libtorrent (para que la cola compartida vea los estados al día)
+        void Recoger();
         // Llamar cada medio segundo: avisos de libtorrent, cola, velocidades y guardar
         void Tick();
         // Al cerrar: guarda el estado de cada torrent y cierra la sesión

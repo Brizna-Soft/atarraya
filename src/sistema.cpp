@@ -102,7 +102,10 @@ std::wstring hnd::sistema::TextoDelPortapapeles()
 std::wstring hnd::sistema::TodoElPortapapeles(size_t maximo)
 {
     std::wstring r;
-    if (!OpenClipboard(nullptr)) return r;
+    // El programa que acaba de copiar puede tenerlo abierto un momento: se reintenta un poco antes de rendirse
+    bool abierto = false;
+    for (int i = 0; i < 6 && !(abierto = OpenClipboard(nullptr) != FALSE); i++) Sleep(25);
+    if (!abierto) return r;
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
     if (h)
     {

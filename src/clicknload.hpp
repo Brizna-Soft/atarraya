@@ -24,6 +24,8 @@
 #include <cstdint>
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -49,6 +51,13 @@ namespace hnd
     private:
         void Bucle();
         void Atender(uintptr_t conexion);
+        int Recibir(uintptr_t conexion, char* buf, int largo, uint64_t limite);   // -1 si se cortó o venció el plazo
+
+        struct Trabajo
+        {
+            std::thread t;
+            std::shared_ptr<std::atomic<bool>> fin;
+        };
 
         uintptr_t m_escucha = ~(uintptr_t)0;
         uint16_t m_puerto = 9666;
@@ -56,7 +65,10 @@ namespace hnd
         std::atomic<bool> m_parar{ false };
         std::atomic<bool> m_activo{ false };
         AlRecibir m_alRecibir;
-        std::vector<int64_t> m_recientes;   // cuándo llegaron los últimos pedidos (para el tope por minuto)
+        std::vector<Trabajo> m_trabajos;     // una conexión cada uno, como mucho 4 a la vez
+        std::vector<int64_t> m_conexiones;   // cuándo llegaron las últimas conexiones (tope por minuto)
+        std::mutex m_m;
+        std::vector<int64_t> m_recientes;    // cuándo llegaron los últimos envíos de enlaces (tope por minuto)
     };
 
     namespace cnl

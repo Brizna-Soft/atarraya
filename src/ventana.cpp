@@ -107,6 +107,32 @@ namespace
         return TextoEstado(d.estado);
     }
 
+    // Un torrent tendría archivos con el mismo nombre que otros que ya están en la carpeta. Devuelve 0 = cancelar,
+    // 1 = usar los que ya están (si son de este mismo torrent), 2 = guardar en una carpeta aparte.
+    int PreguntarChoques(wxWindow* padre, const std::vector<std::wstring>& choques)
+    {
+        std::wstring ejemplo = choques.front().substr(choques.front().find_last_of(L'\\') + 1);
+        wxString texto = choques.size() == 1
+            ? wxString(L"En la carpeta elegida ya hay un archivo con el mismo nombre que uno del torrent: «") + ejemplo + L"»."
+            : wxString::Format(L"En la carpeta elegida ya hay %zu archivos con el mismo nombre que los del torrent, por ejemplo «%s».",
+                               choques.size(), ejemplo);
+        texto += L"\n\nSi son de este mismo torrent (de una descarga anterior), Atarraya los revisa y sigue desde ahí. "
+                 L"Si son otros archivos, se dañarían. ¿Qué hacemos?";
+        wxMessageDialog d(padre, texto, L"Archivos con el mismo nombre", wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxICON_WARNING);
+        d.SetYesNoCancelLabels(L"Guardar en una carpeta aparte", L"Usar los que ya están", L"Cancelar");
+        int r = d.ShowModal();
+        return r == wxID_YES ? 2 : r == wxID_NO ? 1 : 0;
+    }
+
+    // Una carpeta nueva dentro de «base», con el nombre del torrent (y un número si ya existe)
+    std::wstring CarpetaAparte(const std::wstring& base, const std::wstring& nombre)
+    {
+        std::wstring n = LimpiarNombre(nombre);
+        std::wstring c = base + L"\\" + n;
+        for (int i = 1; ExisteArchivo(c) || ExisteCarpeta(c); i++) c = base + L"\\" + n + L" (" + std::to_wstring(i) + L")";
+        return SHCreateDirectoryExW(nullptr, c.c_str(), nullptr) == ERROR_SUCCESS ? c : std::wstring();
+    }
+
     wxBitmapBundle IconoFila(bool torrent)
     {
         static wxBitmapBundle archivo, iman;
@@ -660,12 +686,18 @@ bool VentanaPrincipal::BuscarFoto(uint64_t id, hnd::Foto& f)
 
 void VentanaPrincipal::Refrescar()
 {
-    // 1. Cola compartida: «Descargas a la vez» cuenta las descargas normales y los torrents que bajan (los que solo
-    //    comparten no ocupan lugar). Las que esperan arrancan en el orden en que se agregaron.
+    // 1. Estados al día: lo que terminó desde la última vez ya no ocupa lugar
+    m_motor.Recoger();
+    m_torrents.Recoger();
+    auto actuales = m_motor.Fotos();
+    for (auto& f : m_torrents.Fotos()) actuales.push_back(std::move(f));
+
+    // 2. Cola compartida: «Descargas a la vez» cuenta las descargas normales y los torrents que bajan (los que solo
+    //    comparten no ocupan lugar). Las que esperan arrancan en el orden en que se agregaron, sean del tipo que sean.
     int activasHttp = 0, activosTorrent = 0;
     double velHttp = 0, velTorrent = 0;
     std::vector<std::pair<int64_t, uint64_t>> cola;
-    for (auto& f : m_modelo->filas)
+    for (auto& f : actuales)
     {
         if (Activa(f)) (f.torrent ? activosTorrent : activasHttp)++;
         (f.torrent ? velTorrent : velHttp) += f.velocidad;
@@ -683,18 +715,22 @@ void VentanaPrincipal::Refrescar()
     m_motor.maxSimultaneas = activasHttp + nuevasHttp;
     m_torrents.maxSimultaneas = activosTorrent + nuevosTorrent;
 
-    // 2. Límite de bajada en total: si bajan las dos clases a la vez, cada una deja lugar a la otra
+    // 3. Límite de bajada en total. Si bajan las dos clases a la vez, se reparte un solo presupuesto: la mitad para
+    //    cada una, y lo que una no usa pasa a la otra. La suma nunca pasa del límite.
     int64_t limite = (int64_t)m_ajustes.limiteKB * 1024;
     int64_t limHttp = limite, limTorrent = limite;
-    if (limite > 0 && activasHttp > 0 && activosTorrent > 0)
+    if (limite > 0 && (activasHttp + nuevasHttp) > 0 && (activosTorrent + nuevosTorrent) > 0)
     {
-        limHttp = std::max<int64_t>(limite / 10, limite - (int64_t)std::min<double>(velTorrent, limite / 2.0));
-        limTorrent = std::max<int64_t>(limite / 10, limite - (int64_t)std::min<double>(velHttp, limite / 2.0));
+        int64_t mitad = limite / 2, piso = std::max<int64_t>(1, limite / 10);
+        limHttp = mitad;
+        if (velHttp < mitad * 0.8) limHttp = std::max<int64_t>(piso, (int64_t)(velHttp * 1.25));
+        else if (velTorrent < mitad * 0.8) limHttp = limite - std::max<int64_t>(piso, (int64_t)(velTorrent * 1.25));
+        limHttp = std::clamp<int64_t>(limHttp, piso, limite - piso);
+        limTorrent = limite - limHttp;
     }
     m_motor.limiteBytesSeg = limHttp;
     m_torrents.limiteBajada = limTorrent;
     m_torrents.limiteSubida = (int64_t)m_ajustes.limiteSubidaKB * 1024;
-
     m_motor.Tick();
     m_torrents.Tick();
     m_recolector.Tick();
@@ -1024,6 +1060,7 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
             n.magnet = e.url;
             n.carpeta = destino;
             n.compartir = m_ajustes.compartirTorrents;
+            n.elegirDespues = m_ajustes.elegirArchivosMagnet;
             n.empezar = empezar;
             if (m_torrents.Agregar(n, error)) { torrents++; hechos.push_back(e.id); }
             else fallaron++;
@@ -1093,6 +1130,7 @@ void VentanaPrincipal::AbrirPagina(const std::wstring& url, bool buscarYa)
             n.magnet = e.url;
             n.carpeta = d.Carpeta();
             n.compartir = m_ajustes.compartirTorrents;
+            n.elegirDespues = m_ajustes.elegirArchivosMagnet;
             n.empezar = d.EmpezarAhora();
             if (m_torrents.Agregar(n, error)) agregadas++;
             continue;
@@ -1159,6 +1197,7 @@ void VentanaPrincipal::AgregarMagnet(const std::string& magnet, bool delNavegado
         n.magnet = magnet;
         n.carpeta = m_ajustes.CarpetaEfectiva();
         n.compartir = m_ajustes.compartirTorrents;
+        n.elegirDespues = m_ajustes.elegirArchivosMagnet;
         if (!m_torrents.Agregar(n, error)) Avisar(L"Nuevo torrent", wxString::FromUTF8(error), true);
         Refrescar();
         return;
@@ -1190,6 +1229,25 @@ void VentanaPrincipal::AgregarTorrent(const InfoTorrent& info, const std::string
     m_ajustes.compartirTorrents = n.compartir;
     if (datos.empty()) m_ajustes.elegirArchivosMagnet = n.elegirDespues;
     m_ajustes.Guardar();
+    // Que no pise archivos que ya están con el mismo nombre (en un magnet se revisa cuando llegan los datos)
+    if (!datos.empty())
+    {
+        auto choques = MotorTorrent::Choques(info, n.carpeta, n.bajar);
+        if (!choques.empty())
+        {
+            int r = PreguntarChoques(IsShown() ? this : nullptr, choques);
+            if (r == 0) return;
+            if (r == 2)
+            {
+                n.carpeta = CarpetaAparte(n.carpeta, info.nombre);
+                if (n.carpeta.empty())
+                {
+                    ayuda::Aviso(L"No se pudo crear la carpeta aparte.", L"Nuevo torrent", wxOK | wxICON_WARNING, IsShown() ? this : nullptr);
+                    return;
+                }
+            }
+        }
+    }
     std::string error;
     if (!m_torrents.Agregar(n, error))
     {
@@ -1468,7 +1526,28 @@ void VentanaPrincipal::ElegirArchivos(uint64_t id)
     Mostrar();
     DialogoTorrent d(this, m_ajustes, info, DialogoTorrent::Modo::Elegir);
     if (d.ShowModal() != wxID_OK) return;
-    if (!m_torrents.ElegirArchivos(id, d.Elegidos()))
+    auto elegidos = d.Elegidos();
+    hnd::Foto f;
+    if (m_torrents.Buscar(id, f) && f.eligeArchivos)
+    {
+        // Todavía no bajó nada: si choca con archivos que ya están, se pregunta antes de empezar
+        auto choques = m_torrents.Choques(id, elegidos);
+        if (!choques.empty())
+        {
+            int r = PreguntarChoques(this, choques);
+            if (r == 0) return;   // sigue esperando la elección
+            if (r == 2)
+            {
+                std::wstring nueva = CarpetaAparte(f.datos.carpeta, info.nombre);
+                if (nueva.empty() || !m_torrents.CambiarCarpeta(id, nueva))
+                {
+                    ayuda::Aviso(L"No se pudo usar una carpeta aparte para este torrent.", L"Elegir los archivos", wxOK | wxICON_WARNING, this);
+                    return;
+                }
+            }
+        }
+    }
+    if (!m_torrents.ElegirArchivos(id, elegidos))
         ayuda::Aviso(L"No se pudo cambiar la elección de archivos.", L"Elegir los archivos", wxOK | wxICON_WARNING, this);
     Refrescar();
 }

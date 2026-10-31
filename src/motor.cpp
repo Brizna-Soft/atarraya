@@ -940,6 +940,21 @@ namespace hnd
         return 0;
     }
 
+    void Motor::Recoger()
+    {
+        std::lock_guard g(m_lista);
+        for (auto& x : m_descargas)
+        {
+            if (x->termino)
+            {
+                if (x->hilo.joinable()) x->hilo.join();
+                x->termino = false;
+                x->enMarcha = false;
+                m_sucio = true;
+            }
+        }
+    }
+
     void Motor::Tick()
     {
         std::vector<Foto> terminadas;

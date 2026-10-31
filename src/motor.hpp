@@ -122,6 +122,8 @@ namespace hnd
         // ¿Ya está en la lista esta dirección sin terminar? Devuelve su id o 0
         uint64_t BuscarPorUrl(const std::string& url);
 
+        // Recoge las conexiones que terminaron (para que la cola compartida vea los estados al día)
+        void Recoger();
         // Llamar cada medio segundo: arranca las de la cola, mide velocidades, avisa y guarda
         void Tick();
         // Al cerrar: pausa todo, espera a las conexiones y guarda
