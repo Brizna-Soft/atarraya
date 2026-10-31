@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 
+#include "util.hpp"
+
 namespace hnd
 {
     // «Compartiendo» solo lo usan los torrents: terminó y sigue subiendo a otras personas
@@ -54,6 +56,9 @@ namespace hnd
         // «grupo»: cuando terminan todas, Jícaro puede descomprimirlas. Vacío = una descarga suelta.
         std::wstring paquete;
         std::string grupo;
+        // El archivo que quedó al terminar (se lee cuando Windows ya lo marcó como bajado de internet): «Borrar las
+        // partes» solo manda a la Papelera un archivo que sigue siendo este
+        IdentidadArchivo identidad;
 
         int64_t Hecho() const;
     };
@@ -126,6 +131,10 @@ namespace hnd
         bool HayActivas();
         // ¿Ya está en la lista esta dirección sin terminar? Devuelve su id o 0
         uint64_t BuscarPorUrl(const std::string& url);
+        // Paquetes (para Jícaro): una descarga que pasa a un grupo, o todas las de un grupo que pasan a otro
+        void CambiarGrupo(uint64_t id, const std::wstring& paquete, const std::string& grupo);
+        void UnirGrupos(const std::string& viejo, const std::string& nuevo, const std::wstring& paquete);
+        void FijarIdentidad(uint64_t id, const IdentidadArchivo& identidad);
 
         // Recoge las conexiones que terminaron (para que la cola compartida vea los estados al día)
         void Recoger();

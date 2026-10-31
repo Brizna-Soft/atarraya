@@ -75,6 +75,8 @@ namespace hnd
         int Terminar(uint64_t descarga, bool ok);
         // La persona la saltó, o quitó su descarga de la lista
         void Saltar(int i);
+        // Las partes de un grupo pasan a otro (dos paquetes que resultaron ser uno). true si cambió alguna.
+        bool CambiarGrupo(const std::string& viejo, const std::string& nuevo);
 
         // Para devolver al recolector las que no bajaron sin perder ninguna, en este orden:
         //   1. GuardarEnRecolector(Sobrantes(), recolector): las pone en el recolector y lo guarda.

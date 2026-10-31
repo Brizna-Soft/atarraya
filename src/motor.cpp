@@ -978,6 +978,41 @@ namespace hnd
         return 0;
     }
 
+    void Motor::CambiarGrupo(uint64_t id, const std::wstring& paquete, const std::string& grupo)
+    {
+        std::lock_guard g(m_lista);
+        auto x = Encontrar(id);
+        if (!x) return;
+        std::lock_guard g2(x->m);
+        x->d.paquete = paquete;
+        x->d.grupo = grupo;
+        m_sucio = true;
+    }
+
+    void Motor::UnirGrupos(const std::string& viejo, const std::string& nuevo, const std::wstring& paquete)
+    {
+        if (viejo.empty() || viejo == nuevo) return;
+        std::lock_guard g(m_lista);
+        for (auto& x : m_descargas)
+        {
+            std::lock_guard g2(x->m);
+            if (x->d.grupo != viejo) continue;
+            x->d.grupo = nuevo;
+            x->d.paquete = paquete;
+            m_sucio = true;
+        }
+    }
+
+    void Motor::FijarIdentidad(uint64_t id, const IdentidadArchivo& identidad)
+    {
+        std::lock_guard g(m_lista);
+        auto x = Encontrar(id);
+        if (!x) return;
+        std::lock_guard g2(x->m);
+        x->d.identidad = identidad;
+        m_sucio = true;
+    }
+
     void Motor::Recoger()
     {
         std::lock_guard g(m_lista);
@@ -1136,6 +1171,9 @@ namespace hnd
                     { "estado", NombreEstado(e) }, { "error", d.error }, { "conexiones", d.conexiones },
                     { "agregada", d.agregada }, { "terminada", d.terminada }, { "segmentos", segs },
                     { "paquete", Utf8(d.paquete) }, { "grupo", d.grupo },
+                    { "identidad", d.identidad.Valida() ? json{ { "volumen", d.identidad.volumen }, { "indice", d.identidad.indice },
+                                                                { "tamano", d.identidad.tamano }, { "modificado", d.identidad.modificado } }
+                                                        : json() },
                 });
             }
         }
@@ -1180,6 +1218,13 @@ namespace hnd
                 d.terminada = j.value("terminada", (int64_t)0);
                 d.paquete = Ancho(j.value("paquete", ""));
                 d.grupo = j.value("grupo", "");
+                if (auto i = j.find("identidad"); i != j.end() && i->is_object())
+                {
+                    d.identidad.volumen = i->value("volumen", (uint32_t)0);
+                    d.identidad.indice = i->value("indice", (uint64_t)0);
+                    d.identidad.tamano = i->value("tamano", (int64_t)-1);
+                    d.identidad.modificado = i->value("modificado", (int64_t)0);
+                }
                 for (auto& s : j.value("segmentos", json::array()))
                 {
                     if (s.is_array() && s.size() == 3)

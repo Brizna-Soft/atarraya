@@ -262,22 +262,125 @@ bool hnd::jicaro::EsVolumenRar(const std::wstring& ruta)
     return ok && EsVolumenRar(std::string(b, n));
 }
 
-std::vector<std::wstring> hnd::jicaro::ArchivosDelPaquete(const std::string& grupo, const std::wstring& carpeta,
-                                                          const std::vector<Foto>& descargas, const std::vector<Parte>& cola)
+std::vector<hnd::jicaro::ParteBajada> hnd::jicaro::ArchivosDelPaquete(const std::string& grupo, const std::vector<Foto>& descargas,
+                                                                     const std::vector<Parte>& cola)
 {
-    std::vector<std::wstring> r;
+    std::vector<ParteBajada> r;
     if (grupo.empty()) return r;
     for (const auto& p : cola)
     {
         if (p.grupo == grupo && p.estado != EstadoParte::Lista) return {};
     }
-    std::wstring bajo = Minusculas(carpeta);
     for (const auto& f : descargas)
     {
         if (f.datos.grupo != grupo) continue;
         if (f.datos.estado != Estado::Completada) return {};
-        if (!f.datos.nombre.empty() && Minusculas(f.datos.carpeta) == bajo) r.push_back(f.datos.carpeta + L"\\" + f.datos.nombre);
+        if (!f.datos.nombre.empty()) r.push_back({ f.datos.id, f.datos.carpeta + L"\\" + f.datos.nombre, f.datos.identidad });
     }
+    return r;
+}
+
+std::vector<hnd::jicaro::Plan> hnd::jicaro::Planear(const std::vector<ParteBajada>& propias, const std::wstring& paquete)
+{
+    std::vector<std::wstring> rutas;
+    std::map<std::wstring, const ParteBajada*> porRuta;
+    for (const auto& p : propias)
+    {
+        rutas.push_back(p.ruta);
+        porRuta.emplace(Minusculas(p.ruta), &p);
+    }
+    std::vector<Plan> r;
+    for (const auto& c : Comprimidos(rutas))
+    {
+        Plan plan;
+        plan.nombre = NombreDeCarpeta(paquete, c.nombre);
+        plan.carpeta = CarpetaDe(c.Primera());
+        plan.primera = c.Primera();
+        for (const auto& ruta : c.partes)
+        {
+            auto it = porRuta.find(Minusculas(ruta));
+            if (it != porRuta.end()) plan.partes.push_back(*it->second);
+        }
+        r.push_back(std::move(plan));
+    }
+    return r;
+}
+
+hnd::jicaro::Borrado hnd::jicaro::BorrarPartes(const std::vector<ParteBajada>& partes,
+                                               const std::function<bool(const std::wstring&)>& aPapelera)
+{
+    Borrado r;
+    for (const auto& p : partes)
+    {
+        if (GetFileAttributesW(p.ruta.c_str()) == INVALID_FILE_ATTRIBUTES)
+        {
+            DWORD e = GetLastError();
+            if (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND)
+            {
+                r.faltaban++;
+                continue;
+            }
+        }
+        // Tiene que ser el mismo archivo que quedó al terminar de bajarlo; si no (o si no se puede saber), no se toca
+        IdentidadArchivo ahora;
+        if (!p.identidad.Valida() || !LeerIdentidad(p.ruta, ahora) || !(ahora == p.identidad))
+        {
+            r.distintas++;
+            continue;
+        }
+        if (aPapelera(p.ruta)) r.mandadas++;
+        else r.fallaron++;
+    }
+    return r;
+}
+
+std::string hnd::jicaro::Tanda::Final(std::string grupo) const
+{
+    for (int i = 0; i < 64; i++)
+    {
+        auto it = std::find_if(m_uniones.begin(), m_uniones.end(), [&](const Une& u) { return u.viejo == grupo; });
+        if (it == m_uniones.end()) break;
+        grupo = it->nuevo;
+    }
+    return grupo;
+}
+
+void hnd::jicaro::Tanda::Sumar(const std::wstring& paquete, uint64_t descarga, const std::string& grupoQueTenia)
+{
+    std::string tenia = grupoQueTenia.empty() ? std::string() : Final(grupoQueTenia);
+    auto it = m_grupos.find(paquete);
+    if (it == m_grupos.end())
+    {
+        // El paquete toma el grupo que ya tenía esa descarga; si era suelta, uno nuevo para las dos
+        std::string g = tenia.empty() ? NuevoId() : tenia;
+        m_grupos[paquete] = g;
+        if (tenia.empty()) m_entran.push_back({ descarga, g, paquete });
+        return;
+    }
+    std::string g = Final(it->second);
+    if (tenia == g) return;
+    if (tenia.empty()) m_entran.push_back({ descarga, g, paquete });
+    else m_uniones.push_back({ tenia, g, paquete });   // las de su grupo pasan a este: un solo paquete
+}
+
+std::string hnd::jicaro::Tanda::Grupo(const std::wstring& paquete)
+{
+    auto& g = m_grupos[paquete];
+    if (g.empty()) g = NuevoId();
+    return Final(g);
+}
+
+std::vector<hnd::jicaro::Tanda::Entra> hnd::jicaro::Tanda::Entran() const
+{
+    std::vector<Entra> r = m_entran;
+    for (auto& e : r) e.grupo = Final(e.grupo);
+    return r;
+}
+
+std::vector<hnd::jicaro::Tanda::Une> hnd::jicaro::Tanda::Uniones() const
+{
+    std::vector<Une> r = m_uniones;
+    for (auto& u : r) u.nuevo = Final(u.nuevo);
     return r;
 }
 

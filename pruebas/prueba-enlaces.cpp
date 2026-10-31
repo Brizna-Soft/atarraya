@@ -887,12 +887,30 @@ namespace
                 f.datos.estado = e;
                 return f;
             };
+            // En la misma carpeta: el paquete g1, OTRO paquete (g2) con una parte que se llama igual que las de g1, una
+            // suelta del mismo comprimido y otras que no tienen que ver
             std::vector<Foto> lista = { foto(1, "g1", L"peli.part1.rar", Estado::Completada), foto(2, "g1", L"peli.part2.rar", Estado::Completada),
                                         foto(3, "otro", L"otra.zip", Estado::Error), foto(4, "", L"suelto.zip", Estado::Descargando),
-                                        foto(5, "g1", L"peli.part3.rar", Estado::Completada, L"D:\\Otra") };
-            auto listas = ArchivosDelPaquete("g1", L"C:\\descargas", lista, {});
-            Comprobar(listas.size() == 2 && listas[0] == d + L"peli.part1.rar" && listas[1] == d + L"peli.part2.rar",
-                      "jícaro: un paquete terminado da sus archivos (los de otros grupos y otras carpetas no cuentan)");
+                                        foto(5, "g2", L"peli.part3.rar", Estado::Completada), foto(6, "", L"peli.part4.rar", Estado::Completada) };
+            lista[0].datos.identidad.tamano = 100;
+            auto listas = ArchivosDelPaquete("g1", lista, {});
+            Comprobar(listas.size() == 2 && listas[0].descarga == 1 && listas[0].ruta == d + L"peli.part1.rar" && listas[0].identidad.tamano == 100
+                          && listas[1].descarga == 2 && listas[1].ruta == d + L"peli.part2.rar",
+                      "jícaro: un paquete terminado da solo sus descargas (por id), con el archivo que era cada una");
+            auto planes = Planear(listas, L"Peli de prueba");
+            bool soloLasSuyas = planes.size() == 1 && planes[0].primera == d + L"peli.part1.rar" && planes[0].nombre == L"Peli de prueba"
+                                && planes[0].carpeta == L"C:\\Descargas" && planes[0].partes.size() == 2;
+            for (const auto& plan : planes)
+                for (const auto& p : plan.partes) soloLasSuyas = soloLasSuyas && (p.descarga == 1 || p.descarga == 2);
+            Comprobar(soloLasSuyas, "jícaro: otro paquete en la misma carpeta (con una parte que se llama igual) no entra: ni a Jícaro ni a «Borrar las partes»");
+            auto deG2 = Planear(ArchivosDelPaquete("g2", lista, {}), L"Páginas de ejemplo.org");
+            Comprobar(deG2.size() == 1 && deG2[0].partes.size() == 1 && deG2[0].partes[0].descarga == 5 && deG2[0].nombre == L"peli",
+                      "jícaro: y al revés: el otro paquete solo tiene la suya");
+            auto enDos = lista;
+            enDos[1].datos.carpeta = L"D:\\Otra";
+            auto planesEnDos = Planear(ArchivosDelPaquete("g1", enDos, {}), L"Peli");
+            Comprobar(planesEnDos.size() == 2 && planesEnDos[0].partes.size() == 1 && planesEnDos[1].partes.size() == 1,
+                      "jícaro: partes del mismo paquete en dos carpetas: cada carpeta va por su lado");
             auto conError = lista;
             conError[1].datos.estado = Estado::Error;
             auto bajando = lista;
@@ -904,11 +922,32 @@ namespace
             lista3.estado = EstadoParte::Lista;
             Parte deOtro = esperando;
             deOtro.grupo = "otro";
-            Comprobar(ArchivosDelPaquete("g1", L"C:\\Descargas", conError, {}).empty() && ArchivosDelPaquete("g1", L"C:\\Descargas", bajando, {}).empty()
-                          && ArchivosDelPaquete("g1", L"C:\\Descargas", lista, { lista3, esperando }).empty()
-                          && ArchivosDelPaquete("g1", L"C:\\Descargas", lista, { lista3, deOtro }).size() == 2
-                          && ArchivosDelPaquete("", L"C:\\Descargas", lista, {}).empty(),
+            Comprobar(ArchivosDelPaquete("g1", conError, {}).empty() && ArchivosDelPaquete("g1", bajando, {}).empty()
+                          && ArchivosDelPaquete("g1", lista, { lista3, esperando }).empty()
+                          && ArchivosDelPaquete("g1", lista, { lista3, deOtro }).size() == 2 && ArchivosDelPaquete("", lista, {}).empty(),
                       "jícaro: falta algo si una del grupo falló, sigue bajando o tiene una parte sin bajar en «de una en una»");
+
+            // Una parte que ya estaba bajando cuando llegó el paquete entra a su grupo: Jícaro espera también a esa
+            jicaro::Tanda tanda;
+            tanda.Sumar(L"Peli", 7, "");          // suelta, bajando
+            tanda.Sumar(L"Serie", 8, "viejo");    // ya era de otro paquete
+            tanda.Sumar(L"Juego", 9, "A");
+            tanda.Sumar(L"Juego", 10, "B");       // dos paquetes que resultan ser uno
+            std::string gPeli = tanda.Grupo(L"Peli");
+            auto entran = tanda.Entran();
+            auto uniones = tanda.Uniones();
+            Comprobar(gPeli.size() == 16 && tanda.Grupo(L"Peli") == gPeli && tanda.Grupo(L"Serie") == "viejo" && tanda.Grupo(L"Juego") == "A"
+                          && entran.size() == 1 && entran[0].descarga == 7 && entran[0].grupo == gPeli && entran[0].paquete == L"Peli"
+                          && uniones.size() == 1 && uniones[0].viejo == "B" && uniones[0].nuevo == "A" && uniones[0].paquete == L"Juego"
+                          && tanda.Grupo(L"Otro") != gPeli && tanda.Grupo(L"Otro").size() == 16,
+                      "jícaro: una parte que ya estaba bajando entra al grupo de su paquete (y dos grupos del mismo paquete quedan en uno)");
+            std::vector<Foto> conLaQueBajaba = { foto(20, gPeli.c_str(), L"peli.part1.rar", Estado::Completada),
+                                                 foto(7, gPeli.c_str(), L"peli.part2.rar", Estado::Descargando) };
+            bool espera = ArchivosDelPaquete(gPeli, conLaQueBajaba, {}).empty();
+            conLaQueBajaba[1].datos.estado = Estado::Completada;
+            auto alFinal = ArchivosDelPaquete(gPeli, conLaQueBajaba, {});
+            Comprobar(espera && alFinal.size() == 2 && Planear(alFinal, L"Peli").size() == 1,
+                      "jícaro: el paquete espera a la que ya estaba bajando y después se descomprime una sola vez, con las dos");
         }
 
         // 4. La orden: cada ruta entre comillas, y Windows la lee igual
@@ -1017,13 +1056,34 @@ namespace
                 x.paquete = L"Película ñ";
                 x.grupo = NuevoId();
                 id = m.Agregar(x, false);
+                // La identidad del archivo al terminar, y una descarga que ya estaba y entra a otro paquete
+                IdentidadArchivo ident;
+                ident.volumen = 0x1234ABCD;
+                ident.indice = 0x0005000000001234ULL;
+                ident.tamano = 15360;
+                ident.modificado = 134000000000000000LL;
+                m.FijarIdentidad(id, ident);
+                DatosDescarga suelta;
+                suelta.url = "http://127.0.0.1:9/peli.part2.rar";
+                suelta.carpeta = b;
+                uint64_t idSuelta = m.Agregar(suelta, false);
+                DatosDescarga deOtro = suelta;
+                deOtro.url = "http://127.0.0.1:9/peli.part3.rar";
+                deOtro.grupo = "otrogrupo0000000";
+                uint64_t idOtro = m.Agregar(deOtro, false);
+                m.CambiarGrupo(idSuelta, L"Película ñ", x.grupo);
+                m.UnirGrupos("otrogrupo0000000", x.grupo, L"Película ñ");
                 m.Guardar();
                 Motor otro(b + L"\\descargas.json");
                 otro.Cargar();
-                Foto f;
+                Foto f, fs2, fs3;
                 Comprobar(otro.Buscar(id, f) && f.datos.paquete == L"Película ñ" && f.datos.grupo == x.grupo && x.grupo.size() == 16
                               && x.grupo != NuevoId(),
                           "jícaro: cada descarga guarda su paquete y su grupo (16 letras al azar)");
+                Comprobar(f.datos.identidad == ident && otro.Buscar(idSuelta, fs2) && !fs2.datos.identidad.Valida(),
+                          "jícaro: cada descarga guarda la identidad de su archivo (volumen, número, tamaño y fecha)");
+                Comprobar(fs2.datos.grupo == x.grupo && otro.Buscar(idOtro, fs3) && fs3.datos.grupo == x.grupo && fs3.datos.paquete == L"Película ñ",
+                          "jícaro: la que ya estaba (suelta o de otro grupo) queda guardada en el grupo del paquete");
             }
             {
                 DeUnaEnUna q(b + L"\\de-una-en-una.json");
@@ -1031,12 +1091,89 @@ namespace
                 p.url = "https://ddownload.com/abc123/peli.part1.rar";
                 p.paquete = L"Peli";
                 p.grupo = "0123456789abcdef";
-                bool guardada = q.Agregar({ p });
+                Parte p2 = p;
+                p2.url = "https://ddownload.com/def456/peli.part2.rar";
+                p2.grupo = "otrogrupo0000000";
+                bool guardada = q.Agregar({ p, p2 });
+                bool cambio = q.CambiarGrupo("otrogrupo0000000", "0123456789abcdef") && !q.CambiarGrupo("no-esta", "0123456789abcdef");
+                q.Guardar();
                 DeUnaEnUna otra(b + L"\\de-una-en-una.json");
                 otra.Cargar();
-                Comprobar(guardada && otra.Partes().size() == 1 && otra.Partes()[0].grupo == "0123456789abcdef",
-                          "jícaro: cada parte de «de una en una» guarda su grupo");
+                Comprobar(guardada && cambio && otra.Partes().size() == 2 && otra.Partes()[0].grupo == "0123456789abcdef"
+                              && otra.Partes()[1].grupo == "0123456789abcdef",
+                          "jícaro: cada parte de «de una en una» guarda su grupo (también si pasa a otro)");
             }
+            fs::remove_all(b, ec);
+        }
+
+        // 8. «Borrar las partes» solo manda a la Papelera las que siguen siendo el archivo que bajó Atarraya
+        {
+            namespace fs = std::filesystem;
+            std::wstring b = (fs::temp_directory_path() / (L"atarraya-prueba-borrar-" + std::to_wstring(GetCurrentProcessId()))).wstring();
+            std::error_code ec;
+            fs::remove_all(b, ec);
+            fs::create_directories(b, ec);
+            auto fijarFecha = [](const std::wstring& ruta, int64_t fecha) {
+                HANDLE h = CreateFileW(ruta.c_str(), FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING, 0, nullptr);
+                FILETIME ft = { (DWORD)(fecha & 0xFFFFFFFF), (DWORD)(fecha >> 32) };
+                bool ok = h != INVALID_HANDLE_VALUE && SetFileTime(h, nullptr, nullptr, &ft);
+                if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+                return ok;
+            };
+            std::vector<ParteBajada> partes;
+            for (int i = 1; i <= 4; i++)
+            {
+                ParteBajada p;
+                p.descarga = (uint64_t)i;
+                p.ruta = b + L"\\juego.part" + std::to_wstring(i) + L".rar";
+                EscribirSeguro(p.ruta, std::string(1000, (char)('A' + i)));
+                LeerIdentidad(p.ruta, p.identidad);
+                partes.push_back(p);
+            }
+            // Parte 2: reemplazada por OTRO archivo del mismo tamaño, y con la misma fecha
+            EscribirSeguro(partes[1].ruta, std::string(1000, 'X'));
+            bool mismaFecha = fijarFecha(partes[1].ruta, partes[1].identidad.modificado);
+            IdentidadArchivo reemplazo;
+            LeerIdentidad(partes[1].ruta, reemplazo);
+            // Parte 3: el mismo archivo, cambiado por dentro (mismo tamaño) y con otra fecha
+            {
+                HANDLE h = CreateFileW(partes[2].ruta.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+                std::string otro(1000, 'Y');
+                DWORD n = 0;
+                if (h != INVALID_HANDLE_VALUE)
+                {
+                    WriteFile(h, otro.data(), (DWORD)otro.size(), &n, nullptr);
+                    CloseHandle(h);
+                }
+                fijarFecha(partes[2].ruta, partes[2].identidad.modificado + 10000000);   // 1 s después
+            }
+            // Parte 4: sin la identidad de cuando terminó (no se puede saber si es la misma)
+            partes[3].identidad = {};
+            // Parte 5: ya no está
+            ParteBajada falta = partes[0];
+            falta.descarga = 5;
+            falta.ruta = b + L"\\juego.part5.rar";
+            partes.push_back(falta);
+            std::vector<std::wstring> aLaPapelera;
+            auto r = BorrarPartes(partes, [&](const std::wstring& ruta) {
+                aLaPapelera.push_back(ruta);
+                return DeleteFileW(ruta.c_str()) != 0;   // en la prueba, sin Papelera: es un archivo de la prueba
+            });
+            Comprobar(mismaFecha && reemplazo.tamano == partes[1].identidad.tamano && reemplazo.modificado == partes[1].identidad.modificado
+                          && reemplazo.volumen == partes[1].identidad.volumen && reemplazo.indice != partes[1].identidad.indice,
+                      "jícaro: una parte reemplazada por otro archivo del mismo tamaño y fecha tiene otro número de archivo");
+            Comprobar(r.mandadas == 1 && r.distintas == 3 && r.faltaban == 1 && r.fallaron == 0 && aLaPapelera.size() == 1
+                          && aLaPapelera[0] == partes[0].ruta && !ExisteArchivo(partes[0].ruta) && ExisteArchivo(partes[1].ruta)
+                          && ExisteArchivo(partes[2].ruta) && ExisteArchivo(partes[3].ruta),
+                      "jícaro: «Borrar las partes» no toca una parte reemplazada (mismo tamaño), una cambiada ni una sin identidad; avisa cuántas");
+            auto otraVez = BorrarPartes({ partes[1] }, [](const std::wstring&) { return false; });
+            IdentidadArchivo actual;
+            LeerIdentidad(partes[1].ruta, actual);
+            ParteBajada laDeAhora = partes[1];
+            laDeAhora.identidad = actual;
+            auto falla = BorrarPartes({ laDeAhora }, [](const std::wstring&) { return false; });
+            Comprobar(otraVez.distintas == 1 && falla.fallaron == 1 && falla.mandadas == 0 && ExisteArchivo(partes[1].ruta),
+                      "jícaro: si coincide pero Windows no la manda a la Papelera, se cuenta aparte y se queda");
             fs::remove_all(b, ec);
         }
     }

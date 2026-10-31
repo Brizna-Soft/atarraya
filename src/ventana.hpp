@@ -89,9 +89,9 @@ private:
 
     // «De una en una»: páginas de sitios de descargas, de a una en el navegador
     // Pone las páginas en la cola (y abre la primera si «abrir»). false si la persona prefirió dejarlas en el recolector.
-    // «grupos»: el grupo de cada paquete en esta tanda (lo comparten con las descargas directas del mismo paquete).
+    // «tanda»: los grupos de los paquetes de esta tanda (los comparten con las descargas directas del mismo paquete).
     bool EmpezarDeUnaEnUna(const std::vector<const hnd::EnlaceRecolectado*>& sitios, const std::wstring& carpeta, bool porPaquete,
-                           bool abrir, wxWindow* padre, std::map<std::wstring, std::string>* grupos = nullptr);
+                           bool abrir, wxWindow* padre, hnd::jicaro::Tanda* tanda = nullptr);
     void CrearBarraSitios(wxWindow* padre);
     void ActualizarBarraSitios();
     void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
@@ -115,9 +115,9 @@ private:
     // vez; las partes nunca se borran solas.
     struct TrabajoJicaro
     {
-        std::wstring nombre;                                    // el del paquete o el del comprimido, para mostrar
+        std::wstring nombre;                             // el del paquete o el del comprimido, para mostrar
         std::wstring exe, primera, destino;
-        std::vector<std::pair<std::wstring, int64_t>> partes;   // las que bajó Atarraya y su tamaño al abrir Jícaro
+        std::vector<hnd::jicaro::ParteBajada> partes;    // solo las de este paquete (por id), con el archivo que eran
     };
     struct ResultadoJicaro
     {
@@ -128,6 +128,10 @@ private:
     };
     // Si con esta descarga terminó todo su paquete, lo que hay que descomprimir (vacío si falta algo o ya se hizo)
     std::vector<TrabajoJicaro> PrepararJicaro(const hnd::DatosDescarga& d);
+    // Las que ya estaban en la lista y entran a un paquete de la tanda (y los grupos que se juntan)
+    void AplicarTanda(const hnd::jicaro::Tanda& tanda);
+    // Al terminar una descarga (ya marcada como bajada de internet): qué archivo quedó, para «Borrar las partes»
+    void GuardarIdentidad(uint64_t descarga, const std::wstring& ruta);
     void EncolarJicaro(std::vector<TrabajoJicaro> trabajos);
     void SiguienteJicaro();
     void AlTerminarJicaro(unsigned long codigo);

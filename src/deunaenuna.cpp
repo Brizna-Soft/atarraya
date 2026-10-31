@@ -330,6 +330,19 @@ void hnd::DeUnaEnUna::Saltar(int i)
         p.estado = EstadoParte::Saltada;
 }
 
+bool hnd::DeUnaEnUna::CambiarGrupo(const std::string& viejo, const std::string& nuevo)
+{
+    bool cambio = false;
+    if (viejo.empty() || viejo == nuevo) return false;
+    for (auto& p : m_partes)
+    {
+        if (p.grupo != viejo) continue;
+        p.grupo = nuevo;
+        cambio = true;
+    }
+    return cambio;
+}
+
 std::vector<hnd::Parte> hnd::DeUnaEnUna::Sobrantes() const
 {
     std::vector<Parte> vuelven;

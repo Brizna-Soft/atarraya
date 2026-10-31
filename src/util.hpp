@@ -29,6 +29,21 @@ namespace hnd
     bool ExisteArchivo(const std::wstring& ruta);
     bool ExisteCarpeta(const std::wstring& ruta);
     int64_t TamanoArchivo(const std::wstring& ruta); // -1 si no existe
+
+    // Lo que identifica a un archivo en el disco: su volumen, su número de archivo (en NTFS no se repite, aunque otro
+    // archivo tome su nombre), su tamaño y su fecha de modificación
+    struct IdentidadArchivo
+    {
+        uint32_t volumen = 0;
+        uint64_t indice = 0;
+        int64_t tamano = -1;
+        int64_t modificado = 0;   // FILETIME
+        bool Valida() const { return tamano >= 0; }
+        bool operator==(const IdentidadArchivo&) const = default;
+    };
+    // Con GetFileInformationByHandle. No sigue enlaces: si en esa ruta ahora hay un enlace, lee el del enlace. Falso si no
+    // existe, si es una carpeta o si no se puede abrir.
+    bool LeerIdentidad(const std::wstring& ruta, IdentidadArchivo& identidad);
     int64_t EspacioLibre(const std::wstring& carpeta); // -1 si no se sabe
 
     // Escribe a un archivo temporal y lo cambia por el bueno: nunca deja el archivo a medias

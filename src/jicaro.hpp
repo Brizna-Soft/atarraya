@@ -10,11 +10,15 @@
 //
 // No usa wxWidgets (lo usan también las pruebas).
 
+#include <cstdint>
+#include <functional>
+#include <map>
 #include <string>
 #include <vector>
 
 #include "deunaenuna.hpp"
 #include "motor.hpp"
+#include "util.hpp"
 
 namespace hnd::jicaro
 {
@@ -51,11 +55,62 @@ namespace hnd::jicaro
     bool EsVolumenRar(const std::wstring& ruta);
     bool EsVolumenRar(const std::string& inicio);
 
-    // Los archivos de un paquete que terminó de bajar: los de las descargas de su «grupo» en «carpeta». Vacío si
-    // todavía falta algo: una descarga del grupo que no terminó bien, o una parte suya en la cola de «de una en una»
-    // que todavía no se baja.
-    std::vector<std::wstring> ArchivosDelPaquete(const std::string& grupo, const std::wstring& carpeta,
-                                                 const std::vector<Foto>& descargas, const std::vector<Parte>& cola);
+    // Una parte que bajó Atarraya: su descarga (por id), dónde quedó y qué archivo era al terminar
+    struct ParteBajada
+    {
+        uint64_t descarga = 0;
+        std::wstring ruta;
+        IdentidadArchivo identidad;
+    };
+    // Las partes de un paquete que terminó de bajar: solo las descargas de su «grupo» (su propia lista, por id, que se
+    // guarda con cada descarga). Vacío si todavía falta algo: una descarga del grupo que no terminó bien, o una parte
+    // suya en la cola de «de una en una» que todavía no se baja.
+    std::vector<ParteBajada> ArchivosDelPaquete(const std::string& grupo, const std::vector<Foto>& descargas,
+                                                const std::vector<Parte>& cola);
+
+    // Lo que hay que descomprimir de un paquete: un comprimido por vez, armado solo con las partes del paquete (nunca
+    // con archivos de otro, aunque estén en la misma carpeta y se llamen igual)
+    struct Plan
+    {
+        std::wstring nombre;              // para la carpeta: el del paquete o el del comprimido
+        std::wstring carpeta;             // donde están sus partes
+        std::wstring primera;             // la que se le pasa a Jícaro
+        std::vector<ParteBajada> partes;  // las de este comprimido, en orden: lo único que «Borrar las partes» puede tocar
+    };
+    std::vector<Plan> Planear(const std::vector<ParteBajada>& propias, const std::wstring& paquete);
+
+    // «Borrar las partes»: manda a la Papelera solo las que siguen siendo el mismo archivo que bajó Atarraya (mismo
+    // volumen, número de archivo, tamaño y fecha). Las que no coinciden (o no se pueden revisar) se quedan donde están.
+    struct Borrado
+    {
+        size_t mandadas = 0;    // a la Papelera
+        size_t distintas = 0;   // ya no son el archivo que bajó Atarraya: no se tocaron
+        size_t fallaron = 0;    // eran las mismas, pero Windows no las pudo mandar a la Papelera
+        size_t faltaban = 0;    // ya no estaban
+    };
+    Borrado BorrarPartes(const std::vector<ParteBajada>& partes, const std::function<bool(const std::wstring&)>& aPapelera);
+
+    // Los grupos de una tanda de enlaces que llegan juntos (del recolector o de una página). Cada paquete tiene un
+    // grupo. Si una descarga del paquete ya estaba en la lista sin terminar (bajando, en pausa o con error), entra al
+    // grupo, para que Jícaro espere también a esa; si ya era de otro grupo, los dos quedan en uno, así Jícaro corre una
+    // sola vez por paquete. Primero se suman las que ya estaban; después se piden los grupos de las nuevas.
+    class Tanda
+    {
+    public:
+        void Sumar(const std::wstring& paquete, uint64_t descarga, const std::string& grupoQueTenia);
+        std::string Grupo(const std::wstring& paquete);   // uno nuevo si el paquete todavía no tiene
+        // Lo que hay que cambiar en la lista: descargas sueltas que entran a un grupo, y grupos que pasan a otro
+        struct Entra { uint64_t descarga; std::string grupo; std::wstring paquete; };
+        struct Une { std::string viejo, nuevo; std::wstring paquete; };
+        std::vector<Entra> Entran() const;
+        std::vector<Une> Uniones() const;
+
+    private:
+        std::string Final(std::string grupo) const;   // siguiendo las uniones
+        std::map<std::wstring, std::string> m_grupos;
+        std::vector<Entra> m_entran;
+        std::vector<Une> m_uniones;
+    };
 
     // El nombre de la carpeta: el del paquete, salvo que sea uno de los que pone Atarraya cuando no sabe cuál es
     // («Páginas de ...», «Enlaces de ...»): entonces el del comprimido

@@ -134,6 +134,23 @@ int64_t hnd::TamanoArchivo(const std::wstring& ruta)
     return ((int64_t)d.nFileSizeHigh << 32) | d.nFileSizeLow;
 }
 
+bool hnd::LeerIdentidad(const std::wstring& ruta, IdentidadArchivo& identidad)
+{
+    identidad = {};
+    HANDLE h = CreateFileW(ruta.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    BY_HANDLE_FILE_INFORMATION i = {};
+    BOOL ok = GetFileInformationByHandle(h, &i);
+    CloseHandle(h);
+    if (!ok || (i.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) return false;
+    identidad.volumen = i.dwVolumeSerialNumber;
+    identidad.indice = ((uint64_t)i.nFileIndexHigh << 32) | i.nFileIndexLow;
+    identidad.tamano = ((int64_t)i.nFileSizeHigh << 32) | i.nFileSizeLow;
+    identidad.modificado = ((int64_t)i.ftLastWriteTime.dwHighDateTime << 32) | i.ftLastWriteTime.dwLowDateTime;
+    return true;
+}
+
 int64_t hnd::EspacioLibre(const std::wstring& carpeta)
 {
     ULARGE_INTEGER libre;

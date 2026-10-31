@@ -86,13 +86,15 @@ Desde la 0.2.2, si tienes [Jícaro](https://brizna-soft.github.io/programas/jica
 Brizna Soft, Atarraya le pide que descomprima lo que bajaste en cuanto termina:
 
 - **Cuándo:** cuando terminan todas las partes de un paquete (de «de una en una», del recolector o de **De una
-  página**) o un .rar, .zip o .7z suelto. Si una parte falla o todavía no se baja, espera. Las partes que bajas
-  sueltas desde el navegador no se descomprimen solas, porque Atarraya no sabe si ya están todas.
+  página**) o un .rar, .zip o .7z suelto. Si una parte falla o todavía no se baja, espera; también a una que ya se
+  estaba bajando cuando llegó el paquete. Las partes que bajas sueltas desde el navegador no se descomprimen solas,
+  porque Atarraya no sabe si ya están todas.
 - **Dónde:** en una carpeta nueva con el nombre del paquete, al lado de las partes. Si ya existe, usa «nombre (2)».
 - **Qué te dice:** arriba de la lista ves cómo terminó: listo, faltan partes, tiene contraseña, cancelado o no se
   pudo. Jícaro muestra los detalles en su propia ventana.
 - **Las partes no se borran solas.** Cuando Jícaro termina bien, Atarraya te ofrece **Borrar las partes**: van a la
-  Papelera, y solo si lo pulsas.
+  Papelera, y solo si lo pulsas. Solo manda las de ese paquete que siguen siendo los mismos archivos que bajó; si
+  alguna cambió o la reemplazaron, la deja donde está y te avisa.
 
 Atarraya busca Jícaro en `%LOCALAPPDATA%\Programs\Jicaro`. Si lo tienes en otra carpeta, elígelo en **Ajustes** con
 **Elegir...**; ahí también se apaga, con la casilla **Descomprimir con Jícaro al terminar**. Si no encuentra Jícaro,
