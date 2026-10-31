@@ -201,9 +201,14 @@ namespace hnd
 #ifdef ATARRAYA_PRUEBAS
     namespace pruebas
     {
-        // Solo en las pruebas: un «DNS que miente» («nombre:puerto:ip», como CURLOPT_RESOLVE; vacío lo quita), para ver
-        // que un nombre de afuera que lleva a esta PC se frena al conectar
-        void Resolver(const std::string& regla);
+        // Solo en las pruebas: un «DNS que miente» («nombre:puerto:ip», varias separadas por comas, como CURLOPT_RESOLVE;
+        // vacío lo quita), para curl y para el filtro de la red de la casa, para ver que un nombre de afuera que lleva a
+        // esta PC se frena
+        void Resolver(const std::string& reglas);
+        // Solo en las pruebas: otra respuesta solo para el filtro (un DNS que cambia de idea entre la revisión y la conexión)
+        void ResolverSoloFiltro(const std::string& reglas);
+        // Solo en las pruebas: un proxy fijo («host:puerto» y sus excepciones) en vez del de Windows; vacío lo quita
+        void ProxyFijo(const std::string& servidor, const std::string& excepciones = "");
         // Solo en las pruebas: un tope de memoria más chico para las partes adelantadas de un video (0 = el de siempre)
         void TopeDeMemoria(size_t bytes);
     }

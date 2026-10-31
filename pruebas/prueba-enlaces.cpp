@@ -1362,6 +1362,13 @@ namespace
             " </Period>\n</MPD>\n";
         auto dash = LeerDash(mpd, "https://sitio.org/ver/manifiesto.mpd");
         int mv = MejorRepresentacion(dash.videos), ma = MejorRepresentacion(dash.audios);
+        // Al leer el manifiesto no se arma ninguna dirección: solo se cuentan las partes
+        bool sinArmar = dash.videos.size() == 2 && dash.videos[1].trozos.empty() && dash.videos[1].partes == 3 && dash.audios.size() == 1
+                        && dash.audios[0].trozos.empty() && dash.audios[0].partes == 4;
+        size_t bytesDash = 0;
+        bool armadas = sinArmar && ArmarTrozos(dash.videos[1], bytesDash) && ArmarTrozos(dash.audios[0], bytesDash) && bytesDash > 0
+                       && dash.videos[0].trozos.empty();
+        Comprobar(sinArmar && armadas, "videos: DASH: al leer el manifiesto solo se cuentan las partes; se arman las de lo que se baja");
         Comprobar(dash.valido && !dash.protegido && !dash.enVivo && !dash.variasPartes && std::abs(dash.duracion - 10.5) < 1e-6
                       && dash.videos.size() == 2 && dash.audios.size() == 1 && mv == 1 && dash.videos[1].trozos.size() == 3
                       && dash.videos[1].inicio.url == "https://cdn.ejemplo.org/dash/v1080/init.mp4"
@@ -1380,6 +1387,9 @@ namespace
                             "</Representation></AdaptationSet><AdaptationSet mimeType=\"audio/mp4\"><Representation id=\"2\" bandwidth=\"64000\">"
                             "<BaseURL>a.m4a</BaseURL><SegmentBase indexRange=\"0-100\"/></Representation></AdaptationSet></Period></MPD>";
         auto dl = LeerDash(lista, "http://h.org/m.mpd");
+        size_t bytesLista = 0;
+        if (!dl.videos.empty()) ArmarTrozos(dl.videos[0], bytesLista);
+        if (!dl.audios.empty()) ArmarTrozos(dl.audios[0], bytesLista);
         Comprobar(dl.valido && dl.videos.size() == 1 && dl.videos[0].inicio.url == "http://h.org/v.webm" && dl.videos[0].inicio.desde == 0
                       && dl.videos[0].inicio.largo == 500 && dl.videos[0].trozos.size() == 2 && dl.videos[0].trozos[0].desde == 500
                       && dl.videos[0].trozos[1].url == "http://h.org/p2.webm" && ExtensionDash(dl.videos[0]) == L".webm"
@@ -1492,6 +1502,10 @@ namespace
         std::string enorme = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n";
         for (size_t i = 0; i <= MaximoPartes; i++) enorme += "#EXTINF:1,\ns" + std::to_string(i) + ".ts\n";
         enorme += "#EXT-X-ENDLIST\n";
+        // Un DASH con 150.000 partes de direcciones de 8 KB (más de 1 GB si se armaran todas)
+        std::string mpdLargo = "<MPD mediaPresentationDuration=\"PT150000S\"><Period><BaseURL>https://cdn.ejemplo.org/" + std::string(8000, 'a')
+                               + "/</BaseURL><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate duration=\"1\" media=\"$Number$.m4s\"/>"
+                                 "<Representation id=\"v\" bandwidth=\"1\"/></AdaptationSet></Period></MPD>";
         ServidorDePrueba web(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string& r) -> std::string {
             if (ruta == "/unico/peli.mp4")
             {
@@ -1511,6 +1525,7 @@ namespace
                 return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"es\",DEFAULT=YES,"
                             "URI=\"/cifrada/lista.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"a\"\n/hls/lista.m3u8\n");
             if (ruta == "/enorme/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", enorme);
+            if (ruta == "/largas/manifiesto.mpd") return Http(200, "application/dash+xml", mpdLargo);
             if (ruta == "/hls/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaHls);
             if (ruta == "/cmaf/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaCmaf);
             if (ruta == "/cmaf/init.mp4") return Http(200, "video/mp4", init);
@@ -1683,11 +1698,44 @@ namespace
             auto repetida = LeerDash("<MPD mediaPresentationDuration=\"PT10S\"><Period><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate "
                                      "media=\"$Time$.m4s\"><SegmentTimeline><S t=\"0\" d=\"1\" r=\"1000000000\"/></SegmentTimeline></SegmentTemplate>"
                                      "<Representation id=\"v\" bandwidth=\"1\"/></AdaptationSet></Period></MPD>", "https://h.org/m.mpd");
+            size_t bytesSola = 0;
+            bool solaBien = !sola.demasiadas && sola.videos.size() == 1 && sola.videos[0].partes == 80000 && sola.videos[0].trozos.empty()
+                            && ArmarTrozos(sola.videos[0], bytesSola) && sola.videos[0].trozos.size() == 80000;
             Comprobar(!lj.demasiadas && lj.trozos.size() == MaximoPartes && le.demasiadas && le.trozos.empty() && pesada.demasiadas
                           && durMucho.demasiadas && durMucho.videos.empty() && suma.demasiadas && suma.videos.empty() && suma.audios.empty()
-                          && !sola.demasiadas && sola.videos.size() == 1 && sola.videos[0].trozos.size() == 80000
-                          && repetida.demasiadas && LeerDash(std::string(MaximoLista + 1, ' '), "").demasiadas,
+                          && solaBien && repetida.demasiadas && LeerDash(std::string(MaximoLista + 1, ' '), "").demasiadas,
                       "videos: una lista o un manifiesto de más de 150.000 partes (sumando todas las representaciones) o de más de 16 MB se rechaza");
+            sola = {};
+
+            // Direcciones muy largas: 150.000 partes de 8 KB pasarían de 1 GB. El manifiesto se lee sin armarlas (solo la
+            // receta) y, al armar las de lo que se baja, se deja de armar apenas pasan de 32 MB: el video no se baja.
+            std::string larga = "https://cdn.ejemplo.org/" + std::string(8000, 'a') + "/";
+            auto largas = LeerDash("<MPD mediaPresentationDuration=\"PT150000S\"><Period><BaseURL>" + larga + "</BaseURL><AdaptationSet "
+                                   "mimeType=\"video/mp4\"><SegmentTemplate duration=\"1\" media=\"$Number$.m4s\"/><Representation id=\"v\" "
+                                   "bandwidth=\"1\"/></AdaptationSet></Period></MPD>", "https://h.org/m.mpd");
+            size_t bytesLargas = 0;
+            bool leidas = largas.valido && !largas.demasiadas && largas.videos.size() == 1 && largas.videos[0].partes == MaximoPartes
+                          && largas.videos[0].trozos.empty();
+            bool frenadas = leidas && !ArmarTrozos(largas.videos[0], bytesLargas) && largas.videos[0].trozos.empty()
+                            && largas.videos[0].trozos.capacity() == 0 && bytesLargas > MaximoBytesDirecciones
+                            && bytesLargas <= MaximoBytesDirecciones + larga.size() + 64 + sizeof(Trozo);
+            // Lo mismo en HLS (una lista con una dirección base muy larga) y en un manifiesto con muchas representaciones largas
+            std::string listaLarga = "#EXTM3U\n";
+            for (int i = 0; i < 10000; i++) listaLarga += "#EXTINF:1,\ns" + std::to_string(i) + ".ts\n";
+            auto hlsLarga = LeerHls(listaLarga, larga + "index.m3u8");
+            // 900 calidades (menos que el tope de 1000), cada una con su base de 40 KB y su inicio: lo guardado pasa de 32 MB
+            std::string muchas = "<MPD mediaPresentationDuration=\"PT10S\"><Period><BaseURL>https://cdn.ejemplo.org/" + std::string(40000, 'b')
+                                 + "/</BaseURL><AdaptationSet mimeType=\"video/mp4\">"
+                                   "<SegmentTemplate duration=\"1\" initialization=\"i-$RepresentationID$.mp4\" media=\"$Number$.m4s\"/>";
+            for (int i = 0; i < 900; i++) muchas += "<Representation id=\"r" + std::to_string(i) + "\" bandwidth=\"1\"/>";
+            muchas += "</AdaptationSet></Period></MPD>";
+            auto dashMuchas = LeerDash(muchas, "https://h.org/m.mpd");
+            Comprobar(frenadas && hlsLarga.demasiadas && hlsLarga.trozos.empty() && dashMuchas.demasiadas && dashMuchas.videos.empty(),
+                      "videos: un DASH con plantilla de muchas partes y direcciones largas no pasa de 32 MB de direcciones (se rechaza con aviso)");
+            int antesLargo = web.Pedidos();
+            Foto largoMotor = BajarVideo(w + "/largas/manifiesto.mpd", "dash", "video:v", true, carpeta, L"Largas");
+            Comprobar(largoMotor.datos.estado == Estado::Error && largoMotor.datos.error == TextoDemasiadas && web.Pedidos() == antesLargo + 1,
+                      "videos: el motor rechaza ese DASH sin pedir ni una parte");
             int antesEnorme = web.Pedidos();
             Foto grande = BajarVideo(w + "/enorme/lista.m3u8", "hls", "", true, carpeta, L"Enorme");
             Comprobar(grande.datos.estado == Estado::Error && grande.datos.error == TextoDemasiadas && web.Pedidos() == antesEnorme + 1
@@ -1752,6 +1800,83 @@ namespace
             Comprobar(corte.datos.estado == Estado::Completada && leer(L"Corte.ts") == todo && corte.datos.flujoBytes == (int64_t)todo.size()
                           && raro.datos.estado == Estado::Completada && leer(L"Raro.ts") == todo,
                       "videos: si el programa se cerró a mitad de una parte, al reanudar se corta en la última parte entera y el video queda bien");
+        }
+
+        // 13. Con proxy, el socket solo ve al proxy: el destino real se revisa antes de cada pedido (una IP escrita, tal
+        //     cual; un nombre, buscándolo) y en cada redirección. Las excepciones del proxy van directo y pasan por el
+        //     filtro del socket. Vale para las listas, sus partes, el archivo único de un DASH y el recolector.
+        {
+            ServidorDePrueba proxy(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string&) -> std::string {
+                // Un proxy de prueba: le llegan direcciones completas («GET http://sitio/ruta»)
+                const std::string pub = "http://publico.ejemplo.org/";
+                if (ruta == pub + "redirige.m3u8") return Http(302, "text/plain", "", "Location: http://192.168.1.20/lista.m3u8\r\n");
+                if (ruta == pub + "redirige-nombre.m3u8") return Http(302, "text/plain", "", "Location: http://casa.ejemplo.org/lista.m3u8\r\n");
+                if (ruta == pub + "partes-casa.m3u8")
+                    return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\nhttp://casa.ejemplo.org/seg0.ts\n#EXT-X-ENDLIST\n");
+                if (ruta == pub + "bien.m3u8")
+                {
+                    std::string l = "#EXTM3U\n";
+                    for (int i = 0; i < 6; i++) l += "#EXTINF:2,\nseg" + std::to_string(i) + ".ts\n";
+                    return Http(200, "application/vnd.apple.mpegurl", l + "#EXT-X-ENDLIST\n");
+                }
+                if (ruta.rfind(pub + "seg", 0) == 0) return Http(200, "video/mp2t", parte(atoi(ruta.c_str() + pub.size() + 3)));
+                if (ruta == pub + "redirige.mp4") return Http(302, "text/plain", "", "Location: http://192.168.1.20/peli.mp4\r\n");
+                return Http(404, "text/plain", "no existe");
+            } });
+            std::string puertoWeb = std::to_string(web.Puerto());
+            pruebas::ProxyFijo("127.0.0.1:" + std::to_string(proxy.Puerto()), "directo.ejemplo.org");
+            pruebas::Resolver("publico.ejemplo.org:80:93.184.216.34,casa.ejemplo.org:80:10.0.0.7,video.ejemplo-afuera.org:80:192.168.1.20,"
+                              "afuera-aqui.ejemplo.org:" + puertoWeb + ":127.0.0.1,directo.ejemplo.org:" + puertoWeb + ":127.0.0.1");
+            // El filtro cree que «directo» es de afuera (un DNS que cambia de idea); curl lo resuelve a esta PC
+            pruebas::ResolverSoloFiltro("directo.ejemplo.org:80:93.184.216.34");
+            int p0 = proxy.Pedidos(), w0 = web.Pedidos();
+            Foto ipCasa = BajarVideo(w + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Proxy ip");
+            Foto nombreCasa = BajarVideo("http://video.ejemplo-afuera.org/lista.m3u8", "hls", "", false, carpeta, L"Proxy nombre");
+            int p1 = proxy.Pedidos();
+            Foto redirIp = BajarVideo("http://publico.ejemplo.org/redirige.m3u8", "hls", "", false, carpeta, L"Proxy redir");
+            int p2 = proxy.Pedidos();
+            Foto redirNombre = BajarVideo("http://publico.ejemplo.org/redirige-nombre.m3u8", "hls", "", false, carpeta, L"Proxy redir2");
+            int p3 = proxy.Pedidos();
+            Foto partesCasa = BajarVideo("http://publico.ejemplo.org/partes-casa.m3u8", "hls", "", false, carpeta, L"Proxy partes");
+            int p4 = proxy.Pedidos();
+            Foto porProxy = BajarVideo("http://publico.ejemplo.org/bien.m3u8", "hls", "", false, carpeta, L"Por proxy");
+            int p5 = proxy.Pedidos();
+            Foto excepcion = BajarVideo("http://directo.ejemplo.org:" + puertoWeb + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Excepcion");
+            int p6 = proxy.Pedidos(), w6 = web.Pedidos();
+            Comprobar(ipCasa.datos.error == TextoRedLocal && nombreCasa.datos.error == TextoRedLocal && p1 == p0 && w6 == w0,
+                      "videos con proxy: una lista de internet que lleva a una IP de la casa o a un nombre que resuelve a la casa no se pide");
+            Comprobar(redirIp.datos.error == TextoRedLocal && p2 == p1 + 1 && redirNombre.datos.error == TextoRedLocal && p3 == p2 + 1,
+                      "videos con proxy: una redirección hacia la red de la casa (por IP o por nombre) se corta antes de seguirla");
+            Comprobar(partesCasa.datos.error == TextoRedLocal && p4 == p3 + 1,
+                      "videos con proxy: las partes que llevan a la casa se revisan antes de pedir una sola");
+            Comprobar(porProxy.datos.estado == Estado::Completada && leer(L"Por proxy.ts") == todo && p5 == p4 + 7,
+                      "videos con proxy: lo que es de internet se baja por el proxy como siempre (aunque el proxy esté en esta PC)");
+            Comprobar(excepcion.datos.error == TextoRedLocal && p6 == p5 && w6 == w0,
+                      "videos con proxy: una excepción del proxy va directo y el filtro del socket la frena si lleva a esta PC");
+
+            // El archivo único de un DASH (descarga normal con «soloAfuera») por proxy
+            DatosDescarga u;
+            u.nombre = L"Unico proxy.mp4";
+            u.nombreFijo = true;
+            u.soloAfuera = true;
+            u.url = "http://casa.ejemplo.org/peli.mp4";
+            Foto unicoCasa = Bajar(u, carpeta);
+            int p7 = proxy.Pedidos();
+            u.url = "http://publico.ejemplo.org/redirige.mp4";
+            Foto unicoRedir = Bajar(u, carpeta);
+            int p8 = proxy.Pedidos();
+            Comprobar(unicoCasa.datos.error == TextoRedLocal && p7 == p6 && unicoRedir.datos.error == TextoRedLocal && p8 == p7 + 1,
+                      "videos con proxy: el archivo único de un DASH tampoco va a la casa (ni directo ni por una redirección)");
+
+            // El recolector consulta sin proxy (así su filtro del socket ve el destino real), aunque haya uno
+            InfoEnlace a, b;
+            ComprobarEnlace(w + "/unico/peli.mp4", "", a);
+            ComprobarEnlace("http://afuera-aqui.ejemplo.org:" + puertoWeb + "/unico/peli.mp4", "", b);
+            Comprobar(a.local && b.local && proxy.Pedidos() == p8 && web.Pedidos() == w6,
+                      "recolector con proxy: no consulta direcciones de la casa (ni por IP ni por un nombre que lleva aquí)");
+            pruebas::ProxyFijo("");
+            pruebas::Resolver("");
+            pruebas::ResolverSoloFiltro("");
         }
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);

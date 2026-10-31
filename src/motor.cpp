@@ -14,6 +14,7 @@
 #include <cctype>
 #include <chrono>
 #include <cstdlib>
+#include <cstring>
 #include <map>
 #include <set>
 
@@ -41,6 +42,16 @@ namespace
         std::string servidor, excepciones;
     };
 
+#ifdef ATARRAYA_PRUEBAS
+    // Solo en las pruebas (ver hnd::pruebas): se fijan antes de bajar y no cambian mientras se baja
+    curl_slist* g_resolverPrueba = nullptr;
+    std::map<std::string, std::string> g_dnsPrueba;       // nombre -> IP: lo que «resuelve» el filtro de la red de la casa
+    std::map<std::string, std::string> g_dnsSoloFiltro;   // si no está vacío, el filtro usa este (un DNS que cambia de idea)
+    std::atomic<size_t> g_memoriaPrueba{ 0 };
+    bool g_proxyFijo = false;
+    Proxy g_proxyPrueba;
+#endif
+
     struct Peticion
     {
         std::string url, referer, cookies, agente;
@@ -53,12 +64,38 @@ namespace
         return bajo.rfind("ftp://", 0) == 0 || bajo.rfind("ftps://", 0) == 0;
     }
 
-    // Proxy configurado en Windows (si hay uno fijo). Los scripts PAC no se usan.
+    // Un proxy de las variables de entorno (curl las usaría solo; así el filtro de la red de la casa sabe que hay proxy)
+    void ProxyDeVariables(Proxy& p)
+    {
+        auto leer = [](const char* nombre) {
+            char* valor = nullptr;
+            size_t n = 0;
+            std::string r;
+            if (_dupenv_s(&valor, &n, nombre) == 0 && valor) r = valor;
+            free(valor);
+            return r;
+        };
+        for (const char* v : { "https_proxy", "http_proxy", "all_proxy" })
+        {
+            p.servidor = leer(v);
+            if (!p.servidor.empty()) break;
+        }
+        if (!p.servidor.empty()) p.excepciones = leer("no_proxy");
+    }
+
+    // Proxy configurado en Windows (si hay uno fijo; los scripts PAC no se usan) o, si no, en las variables de entorno
     Proxy ProxyDelSistema()
     {
+#ifdef ATARRAYA_PRUEBAS
+        if (g_proxyFijo) return g_proxyPrueba;
+#endif
         Proxy p;
         WINHTTP_CURRENT_USER_IE_PROXY_CONFIG c = {};
-        if (!WinHttpGetIEProxyConfigForCurrentUser(&c)) return p;
+        if (!WinHttpGetIEProxyConfigForCurrentUser(&c))
+        {
+            ProxyDeVariables(p);
+            return p;
+        }
         if (c.lpszProxy)
         {
             std::string s = hnd::Utf8(c.lpszProxy);
@@ -103,14 +140,9 @@ namespace
         if (c.lpszAutoConfigUrl) GlobalFree(c.lpszAutoConfigUrl);
         if (c.lpszProxy) GlobalFree(c.lpszProxy);
         if (c.lpszProxyBypass) GlobalFree(c.lpszProxyBypass);
+        if (p.servidor.empty()) ProxyDeVariables(p);
         return p;
     }
-
-#ifdef ATARRAYA_PRUEBAS
-    // Solo en las pruebas (ver hnd::pruebas): se fijan antes de bajar y no cambian mientras se baja
-    curl_slist* g_resolverPrueba = nullptr;
-    std::atomic<size_t> g_memoriaPrueba{ 0 };
-#endif
 
     void Preparar(CURL* c, const Peticion& p, const Proxy& proxy)
     {
@@ -150,6 +182,68 @@ namespace
             curl_easy_setopt(c, CURLOPT_PROXY, proxy.servidor.c_str());
             if (!proxy.excepciones.empty()) curl_easy_setopt(c, CURLOPT_NOPROXY, proxy.excepciones.c_str());
         }
+        else curl_easy_setopt(c, CURLOPT_PROXY, "");   // nunca un proxy que Atarraya no sepa (curl leería el del entorno)
+    }
+
+    hnd::red::Destino Revisar(const sockaddr* a)
+    {
+        try
+        {
+            return hnd::red::RevisarDestino(a);
+        }
+        catch (...)
+        {
+            return hnd::red::Destino::SinRevisar;
+        }
+    }
+
+    // ¿A dónde lleva el sitio de una dirección? Para los pedidos por proxy, donde el socket solo ve al proxy: una IP
+    // escrita se revisa tal cual; un nombre se busca como lo buscaría esta PC y se revisan todas sus direcciones (con
+    // los rangos privados y las redes de la PC, como el filtro del socket). Si el nombre no se puede buscar, no se sabe.
+    hnd::red::Destino DestinoDeHost(const std::string& url)
+    {
+        using hnd::red::Destino;
+        if (hnd::enlaces::DireccionLocal(url)) return Destino::Local;
+        std::string host = hnd::enlaces::Sitio(url);
+        if (host.empty()) return Destino::Local;
+        if (host.size() > 2 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
+#ifdef ATARRAYA_PRUEBAS
+        if (auto it = g_dnsSoloFiltro.find(host); it != g_dnsSoloFiltro.end()) host = it->second;
+        else if (auto it2 = g_dnsPrueba.find(host); it2 != g_dnsPrueba.end()) host = it2->second;
+#endif
+        sockaddr_storage ss{};
+        if (inet_pton(AF_INET, host.c_str(), &reinterpret_cast<sockaddr_in*>(&ss)->sin_addr) == 1)
+        {
+            ss.ss_family = AF_INET;
+            return Revisar(reinterpret_cast<sockaddr*>(&ss));
+        }
+        if (inet_pton(AF_INET6, host.c_str(), &reinterpret_cast<sockaddr_in6*>(&ss)->sin6_addr) == 1)
+        {
+            ss.ss_family = AF_INET6;
+            return Revisar(reinterpret_cast<sockaddr*>(&ss));
+        }
+        addrinfo pista{};
+        pista.ai_family = AF_UNSPEC;
+        pista.ai_socktype = SOCK_STREAM;
+        addrinfo* r = nullptr;
+        if (getaddrinfo(host.c_str(), nullptr, &pista, &r) != 0 || !r) return Destino::SinRevisar;
+        Destino peor = Destino::Afuera;
+        for (auto* a = r; a && peor != Destino::Local; a = a->ai_next)
+        {
+            Destino d = Revisar(a->ai_addr);
+            if (d != Destino::Afuera) peor = d;
+        }
+        freeaddrinfo(r);
+        return peor;
+    }
+
+    // ¿A dónde lleva una redirección? Las relativas se quedan en el mismo sitio, que ya se revisó.
+    hnd::red::Destino DestinoDeRedireccion(const std::string& destino)
+    {
+        std::string d = destino;
+        if (d.rfind("//", 0) == 0) d = "http:" + d;
+        if (d.find("://") == std::string::npos) return hnd::red::Destino::Afuera;
+        return DestinoDeHost(d);
     }
 
     struct Cabeceras
@@ -157,6 +251,10 @@ namespace
         long codigo = 0;
         std::map<std::string, std::string> v;   // claves en minúsculas, solo de la última respuesta
         bool sitioNoPermitido = false;          // una redirección llevaba a YouTube: se cortó
+        // Por proxy y sin poder ir a la red de la casa: cada redirección se revisa ANTES de seguirla (el socket solo ve
+        // al proxy). Si llevaba a esta PC o a su red, se cortó aquí.
+        bool revisarRedirecciones = false;
+        hnd::red::Destino redireccion = hnd::red::Destino::Afuera;
     };
 
     // ¿Una redirección («Location:») lleva a un sitio que no permite bajar sus videos? Las relativas se quedan en el
@@ -194,6 +292,15 @@ namespace
                 {
                     c->sitioNoPermitido = true;
                     return 0;   // curl corta aquí: no sigue la redirección
+                }
+                if (clave == "location" && c->revisarRedirecciones)
+                {
+                    auto d = DestinoDeRedireccion(c->v[clave]);
+                    if (d != hnd::red::Destino::Afuera)
+                    {
+                        c->redireccion = d;
+                        return 0;   // tampoco se sigue
+                    }
                 }
             }
         }
@@ -233,29 +340,92 @@ namespace
         return socket(a->family, a->socktype, a->protocol);
     }
 
+    // Las direcciones del proxy («host:puerto», «http://usuario:clave@host:puerto», «[::1]:8080»...), para dejar
+    // conectar con él aunque esté en la red de la casa (el destino real se revisa antes de cada pedido)
+    std::vector<sockaddr_storage> DireccionesDelProxy(const Proxy& proxy)
+    {
+        std::vector<sockaddr_storage> r;
+        std::string s = proxy.servidor;
+        if (s.empty()) return r;
+        std::string puerto = "1080";   // el de curl si no se dice
+        auto esquema = s.find("://");
+        if (esquema != std::string::npos)
+        {
+            std::string tipo = s.substr(0, esquema);
+            std::transform(tipo.begin(), tipo.end(), tipo.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+            if (tipo == "https") puerto = "443";
+            s = s.substr(esquema + 3);
+        }
+        auto arroba = s.rfind('@');
+        if (arroba != std::string::npos) s = s.substr(arroba + 1);
+        auto barra = s.find('/');
+        if (barra != std::string::npos) s = s.substr(0, barra);
+        std::string host = s;
+        if (!s.empty() && s[0] == '[')
+        {
+            auto cierre = s.find(']');
+            host = s.substr(1, cierre == std::string::npos ? std::string::npos : cierre - 1);
+            if (cierre != std::string::npos && cierre + 1 < s.size() && s[cierre + 1] == ':') puerto = s.substr(cierre + 2);
+        }
+        else if (auto dp = s.rfind(':'); dp != std::string::npos)
+        {
+            host = s.substr(0, dp);
+            puerto = s.substr(dp + 1);
+        }
+        addrinfo pista{};
+        pista.ai_family = AF_UNSPEC;
+        pista.ai_socktype = SOCK_STREAM;
+        addrinfo* res = nullptr;
+        if (host.empty() || getaddrinfo(host.c_str(), puerto.c_str(), &pista, &res) != 0) return r;
+        for (auto* a = res; a; a = a->ai_next)
+        {
+            sockaddr_storage ss{};
+            memcpy(&ss, a->ai_addr, std::min(sizeof(ss), (size_t)a->ai_addrlen));
+            r.push_back(ss);
+        }
+        freeaddrinfo(res);
+        return r;
+    }
+
+    bool EsDelProxy(const std::vector<sockaddr_storage>& proxy, const sockaddr* a)
+    {
+        for (const auto& p : proxy)
+        {
+            if (p.ss_family != a->sa_family) continue;
+            if (a->sa_family == AF_INET)
+            {
+                auto* x = reinterpret_cast<const sockaddr_in*>(&p);
+                auto* y = reinterpret_cast<const sockaddr_in*>(a);
+                if (x->sin_port == y->sin_port && x->sin_addr.s_addr == y->sin_addr.s_addr) return true;
+            }
+            else if (a->sa_family == AF_INET6)
+            {
+                auto* x = reinterpret_cast<const sockaddr_in6*>(&p);
+                auto* y = reinterpret_cast<const sockaddr_in6*>(a);
+                if (x->sin6_port == y->sin6_port && memcmp(&x->sin6_addr, &y->sin6_addr, sizeof(x->sin6_addr)) == 0) return true;
+            }
+        }
+        return false;
+    }
+
     // Videos por partes: a dónde se conectó cada pedido. Si la lista vino de internet, sus partes no pueden pedir nada
-    // de esta PC ni de su red (una lista no elige a qué aparatos de la casa se conecta Atarraya). Con proxy no se puede
-    // saber (la conexión va al proxy) y no se revisa.
+    // de esta PC ni de su red (una lista no elige a qué aparatos de la casa se conecta Atarraya). Con proxy, la conexión
+    // al proxy sí (el destino real se revisa antes de cada pedido y en cada redirección); lo demás (las excepciones del
+    // proxy, que van directo) se revisa aquí como siempre.
     struct DestinoVisto
     {
         bool soloAfuera = false;   // no deja conectar con esta PC ni con su red
         bool local = false;        // se conectó (o quiso) con esta PC o su red
         bool sinRedes = false;     // no se supo cuáles son las redes de la PC
+        std::vector<sockaddr_storage> proxy;   // las direcciones del proxy
     };
 
     curl_socket_t AbrirMirando(void* u, curlsocktype tipo, curl_sockaddr* a)
     {
         auto* v = static_cast<DestinoVisto*>(u);
-        if (tipo == CURLSOCKTYPE_IPCXN)
+        if (tipo == CURLSOCKTYPE_IPCXN && !EsDelProxy(v->proxy, &a->addr))
         {
-            auto destino = hnd::red::Destino::SinRevisar;
-            try
-            {
-                destino = hnd::red::RevisarDestino(&a->addr);
-            }
-            catch (...)
-            {
-            }
+            auto destino = Revisar(&a->addr);
             if (destino == hnd::red::Destino::Local) v->local = true;
             if (destino == hnd::red::Destino::SinRevisar) v->sinRedes = true;
             if (v->soloAfuera && destino != hnd::red::Destino::Afuera) return CURL_SOCKET_BAD;
@@ -263,14 +433,24 @@ namespace
         return socket(a->family, a->socktype, a->protocol);
     }
 
-    // Con «soloAfuera» (y sin proxy), la conexión no puede ir a esta PC ni a su red
-    void MirarDestino(CURL* c, const Proxy& proxy, DestinoVisto& visto)
+    // Mira cada conexión (con «soloAfuera», ninguna va a esta PC ni a su red; con proxy, deja la del proxy). Sin
+    // «soloAfuera» solo hace falta con «siempre» (para saber si una lista era de la casa).
+    void MirarDestino(CURL* c, const Proxy& proxy, DestinoVisto& visto, bool siempre = false)
     {
-        if (visto.soloAfuera && proxy.servidor.empty())
+        if (!visto.soloAfuera && !siempre)
         {
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, nullptr);
+            return;
         }
+        if (!proxy.servidor.empty() && visto.proxy.empty()) visto.proxy = DireccionesDelProxy(proxy);
+        curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
+        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
+    }
+
+    // Un error de red de la casa en español: «Local» (esta PC o su red) o «SinRevisar» (no se pudo comprobar)
+    std::string TextoDeDestino(hnd::red::Destino d)
+    {
+        return d == hnd::red::Destino::Local ? hnd::flujos::TextoRedLocal : hnd::flujos::TextoSinComprobar;
     }
 
     int AlProgresar(void* u, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
@@ -291,6 +471,7 @@ namespace
         std::string disposicion;    // Content-Disposition, tal cual
         bool noPermitido = false;   // una redirección llevaba a YouTube
         bool redLocal = false;      // con «soloAfuera»: quiso conectar con esta PC o su red (no se dejó)
+        hnd::red::Destino redireccion = hnd::red::Destino::Afuera;   // por proxy: una redirección que se cortó
     };
 
     // Pide el primer byte para saber el tamaño, el nombre y si se puede partir/reanudar.
@@ -306,6 +487,7 @@ namespace
         visto.soloAfuera = soloAfuera;
         MirarDestino(c, proxy, visto);
         Cabeceras cab;
+        cab.revisarRedirecciones = soloAfuera && !proxy.servidor.empty();
         char error[CURL_ERROR_SIZE] = {};
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, error);
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
@@ -325,6 +507,7 @@ namespace
         if (efectiva) s.urlFinal = efectiva;
         s.errorCurl = error[0] ? error : curl_easy_strerror(s.res);
         s.redLocal = soloAfuera && (visto.local || visto.sinRedes) && s.res != CURLE_OK;
+        s.redireccion = cab.redireccion;
 
         auto valor = [&](const char* clave) {
             auto it = cab.v.find(clave);
@@ -515,6 +698,18 @@ namespace
             error = hnd::flujos::TextoRedLocal;
             return false;
         }
+        // Por proxy el socket solo ve al proxy: el sitio de destino se revisa antes del pedido (y cada redirección, al
+        // llegar). Una IP escrita, tal cual; un nombre, buscándolo.
+        bool porProxy = !proxy.servidor.empty();
+        if (soloAfuera && porProxy)
+        {
+            auto d = DestinoDeHost(p.url);
+            if (d != hnd::red::Destino::Afuera)
+            {
+                error = TextoDeDestino(d);
+                return false;
+            }
+        }
         CURL* c = curl_easy_init();
         if (!c)
         {
@@ -529,15 +724,12 @@ namespace
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, AlRecibirMemoria);
         curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
         Cabeceras cab;
+        cab.revisarRedirecciones = soloAfuera && porProxy;
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
         curl_easy_setopt(c, CURLOPT_HEADERDATA, &cab);
         DestinoVisto visto;
         visto.soloAfuera = soloAfuera;
-        if (proxy.servidor.empty())
-        {
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
-        }
+        MirarDestino(c, proxy, visto, true);
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
         curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
         curl_easy_setopt(c, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(&parar));
@@ -551,9 +743,12 @@ namespace
         if (efectiva) urlFinal = efectiva;
         curl_easy_cleanup(c);
         local = visto.local;
+        // Por proxy, ¿la lista era de esta PC o de su red? (para que la ventana pregunte antes de bajar de ahí)
+        if (porProxy && !soloAfuera && !local) local = DestinoDeHost(urlFinal.empty() ? p.url : urlFinal) == hnd::red::Destino::Local;
         auto it = cab.v.find("content-type");
         std::string tipo = it == cab.v.end() ? std::string() : it->second;
         if (cab.sitioNoPermitido) error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
+        else if (cab.redireccion != hnd::red::Destino::Afuera) error = TextoDeDestino(cab.redireccion);
         else if (soloAfuera && (visto.local || visto.sinRedes) && res != CURLE_OK) error = hnd::flujos::TextoRedLocal;
         else if (m.excedido) error = hnd::flujos::TextoDemasiadas;
         else if (res == CURLE_ABORTED_BY_CALLBACK) error = "Se canceló.";
@@ -583,10 +778,46 @@ namespace
 namespace hnd
 {
 #ifdef ATARRAYA_PRUEBAS
-    void pruebas::Resolver(const std::string& regla)
+    namespace
+    {
+        // «nombre:puerto:ip,nombre:puerto:ip» → nombre -> ip (y, si hace falta, la lista para CURLOPT_RESOLVE)
+        void LeerReglas(const std::string& reglas, std::map<std::string, std::string>& dns, curl_slist** paraCurl)
+        {
+            dns.clear();
+            size_t desde = 0;
+            while (desde < reglas.size())
+            {
+                auto fin = reglas.find(',', desde);
+                std::string regla = reglas.substr(desde, fin == std::string::npos ? std::string::npos : fin - desde);
+                auto dp1 = regla.find(':');
+                auto dp2 = dp1 == std::string::npos ? std::string::npos : regla.find(':', dp1 + 1);
+                if (dp2 != std::string::npos)
+                {
+                    dns[regla.substr(0, dp1)] = regla.substr(dp2 + 1);
+                    if (paraCurl) *paraCurl = curl_slist_append(*paraCurl, regla.c_str());
+                }
+                if (fin == std::string::npos) break;
+                desde = fin + 1;
+            }
+        }
+    }
+
+    void pruebas::Resolver(const std::string& reglas)
     {
         if (g_resolverPrueba) curl_slist_free_all(g_resolverPrueba);
-        g_resolverPrueba = regla.empty() ? nullptr : curl_slist_append(nullptr, regla.c_str());
+        g_resolverPrueba = nullptr;
+        LeerReglas(reglas, g_dnsPrueba, &g_resolverPrueba);
+    }
+
+    void pruebas::ResolverSoloFiltro(const std::string& reglas)
+    {
+        LeerReglas(reglas, g_dnsSoloFiltro, nullptr);
+    }
+
+    void pruebas::ProxyFijo(const std::string& servidor, const std::string& excepciones)
+    {
+        g_proxyPrueba = Proxy{ servidor, excepciones };
+        g_proxyFijo = !servidor.empty();
     }
 
     void pruebas::TopeDeMemoria(size_t bytes)
@@ -1547,6 +1778,16 @@ namespace hnd
             terminar(Estado::Error, flujos::TextoRedLocal);
             return;
         }
+        // Por proxy el socket solo ve al proxy: el sitio de destino se revisa antes (y cada redirección, al llegar)
+        if (soloAfuera && !x->proxy.servidor.empty())
+        {
+            auto d = DestinoDeHost(p.url);
+            if (d != red::Destino::Afuera)
+            {
+                terminar(Estado::Error, TextoDeDestino(d));
+                return;
+            }
+        }
 
         // 1. Preguntar al servidor (con reintentos si la conexión falla)
         Sondeo s;
@@ -1560,6 +1801,11 @@ namespace hnd
                 error = Utf8(enlaces::TextoNoPermitido);
                 break;
             }
+            if (s.redireccion != red::Destino::Afuera)
+            {
+                error = TextoDeDestino(s.redireccion);
+                break;
+            }
             if (s.redLocal)
             {
                 error = flujos::TextoRedLocal;
@@ -1569,6 +1815,11 @@ namespace hnd
             if (!ftp && (s.codigo == 400 || s.codigo == 405 || s.codigo == 501 || (s.codigo == 416 && s.tamano < 0)))
             {
                 Sondeo entero = Sondear(p, x->proxy, x->parar, false, soloAfuera);
+                if (entero.redireccion != red::Destino::Afuera)
+                {
+                    error = TextoDeDestino(entero.redireccion);
+                    break;
+                }
                 if (entero.redLocal)
                 {
                     error = flujos::TextoRedLocal;
@@ -1878,8 +2129,9 @@ namespace hnd
             trozos = std::move(l.trozos);
             extension = flujos::ExtensionHls(l);
             // Todas las listas que se usan se leen ANTES de bajar una sola parte: si alguna está cifrada (o en vivo, o no
-            // se puede leer), el video no se baja; y las partes de todas juntas no pueden pasar el tope
+            // se puede leer), el video no se baja; y las partes de todas juntas (y sus direcciones) no pueden pasar el tope
             size_t total = trozos.size() + (inicio.url.empty() ? 0 : 1);
+            size_t bytesTotal = l.bytes;
             if (error.empty() && otras.size() > flujos::MaximoListasJuntas) error = flujos::TextoDemasiadas;
             for (size_t k = 0; error.empty() && k < otras.size(); k++)
             {
@@ -1903,6 +2155,7 @@ namespace hnd
                 else if (o.cifrada) error = flujos::TextoProtegido;
                 else if (o.enVivo) error = flujos::TextoEnVivo;
                 else if ((total += o.trozos.size() + (o.inicio.url.empty() ? 0 : 1)) > flujos::MaximoPartes) error = flujos::TextoDemasiadas;
+                else if ((bytesTotal += o.bytes) > flujos::MaximoBytesDirecciones) error = flujos::TextoDemasiadas;
             }
         }
         else if (d0.formato == "dash")
@@ -1924,9 +2177,15 @@ namespace hnd
                 if (i < 0) error = audio ? "El video DASH no trae audio." : "El video DASH no trae video.";
                 else
                 {
-                    inicio = lista[i].inicio;
-                    trozos = lista[i].trozos;
-                    extension = flujos::ExtensionDash(lista[i]);
+                    // Solo se arman las direcciones de esta representación, con el tope de bytes
+                    size_t bytes = 0;
+                    if (!flujos::ArmarTrozos(lista[i], bytes)) error = flujos::TextoDemasiadas;
+                    else
+                    {
+                        inicio = lista[i].inicio;
+                        trozos = std::move(lista[i].trozos);
+                        extension = flujos::ExtensionDash(lista[i]);
+                    }
                 }
             }
         }
@@ -1942,6 +2201,37 @@ namespace hnd
         std::vector<flujos::Trozo> partes;
         if (!inicio.url.empty()) partes.push_back(inicio);
         partes.insert(partes.end(), trozos.begin(), trozos.end());
+        trozos.clear();
+        trozos.shrink_to_fit();
+        // Por proxy el socket solo ve al proxy: antes de pedir una sola parte se revisa a dónde lleva cada sitio de las
+        // partes (una IP escrita, tal cual; un nombre, buscándolo). Las redirecciones se revisan al llegar.
+        bool porProxy = !x->proxy.servidor.empty();
+        std::vector<sockaddr_storage> direccionesProxy = DireccionesDelProxy(x->proxy);
+        if (partesSoloAfuera && porProxy)
+        {
+            std::map<std::string, red::Destino> sitios;
+            for (const auto& tr : partes)
+            {
+                std::string sitio = enlaces::Sitio(tr.url);
+                if (sitios.count(sitio)) continue;
+                if (sitios.size() >= 64)
+                {
+                    error = "La lista del video pide archivos de demasiados sitios distintos para revisarlos con el proxy: Atarraya no la baja.";
+                    break;
+                }
+                auto d = sitios[sitio] = DestinoDeHost(tr.url);
+                if (d != red::Destino::Afuera)
+                {
+                    error = TextoDeDestino(d);
+                    break;
+                }
+            }
+            if (!error.empty())
+            {
+                terminar(Estado::Error, error);
+                return;
+            }
+        }
 
         // 3. Nombre, archivo parcial y desde dónde seguir
         std::set<std::wstring> ocupados;
@@ -2092,14 +2382,11 @@ namespace hnd
                     curl_easy_setopt(c, CURLOPT_WRITEDATA, &k);
                     curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
                     curl_easy_setopt(c, CURLOPT_HEADERDATA, &k.cab);
+                    k.cab.revisarRedirecciones = partesSoloAfuera && porProxy;
                     DestinoVisto visto;
                     visto.soloAfuera = partesSoloAfuera;
-                    if (x->proxy.servidor.empty())
-                    {
-                        curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
-                        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
-                    }
-                    else curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, nullptr);
+                    visto.proxy = direccionesProxy;
+                    MirarDestino(c, x->proxy, visto, true);
                     curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
                     curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
                     curl_easy_setopt(c, CURLOPT_XFERINFODATA, &x->parar);
@@ -2152,6 +2439,7 @@ namespace hnd
                     if (k.pagina) { x->FijarError(TextoRespondioPagina); break; }
                     if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
                     if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
+                    if (k.cab.redireccion != red::Destino::Afuera) { x->FijarError(TextoDeDestino(k.cab.redireccion)); break; }
                     if (visto.soloAfuera && (visto.local || visto.sinRedes)) { x->FijarError(flujos::TextoRedLocal); break; }
                     if (k.rangoIgnorado) { x->FijarError("El servidor no deja bajar este video por trozos."); break; }
                     if (codigo >= 400 && !(codigo == 408 || codigo == 429 || codigo >= 500)) { x->FijarError(TextoErrorHttp(codigo)); break; }
@@ -2261,8 +2549,9 @@ namespace hnd
         }
         Preparar(c, p, x->proxy);
         // Si su dirección salió de una lista de internet, ninguna conexión (ni las de una redirección) va a esta PC ni a
-        // su red
+        // su red; por proxy, cada redirección se revisa al llegar
         MirarDestino(c, x->proxy, visto);
+        bool revisarRedirecciones = visto.soloAfuera && !x->proxy.servidor.empty();
         char errorCurl[CURL_ERROR_SIZE] = {};
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errorCurl);
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
@@ -2323,6 +2612,7 @@ namespace hnd
             // 2. Bajarlo
             Conexion k;
             k.x = x.get();
+            k.cab.revisarRedirecciones = revisarRedirecciones;
             k.c = c;
             k.archivo = archivo;
             k.indice = indice;
@@ -2360,6 +2650,7 @@ namespace hnd
             if (x->parar) break;
             if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
             if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
+            if (k.cab.redireccion != red::Destino::Afuera) { x->FijarError(TextoDeDestino(k.cab.redireccion)); break; }
             if (visto.soloAfuera && (visto.local || visto.sinRedes) && res != CURLE_OK) { x->FijarError(flujos::TextoRedLocal); break; }
             if (k.rangoIgnorado) { x->sinRangos = true; x->parar = true; break; }
 

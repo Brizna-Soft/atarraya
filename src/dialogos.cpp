@@ -934,6 +934,8 @@ void DialogoVideo::Revisar()
     // subtítulos, que todavía no se leyeron. Si no: las partes que ya se conocen (de la lista o del manifiesto).
     std::vector<std::string> listas;
     std::vector<std::pair<flujos::Trozo, std::vector<flujos::Trozo>>> conocidas;
+    size_t bytesConocidos = 0;
+    std::vector<flujos::Representacion> representaciones;   // DASH: sus direcciones se arman en el hilo, con el tope
     if (m_pedido.formato == "hls")
     {
         if (m_hls.maestra)
@@ -943,14 +945,18 @@ void DialogoVideo::Revisar()
             listas.push_back(m_hls.variantes[v].url);
             for (const auto& u : flujos::ListasJuntas(m_hls, v)) listas.push_back(u);
         }
-        else conocidas.push_back({ m_hls.inicio, m_hls.trozos });
+        else
+        {
+            conocidas.push_back({ m_hls.inicio, m_hls.trozos });
+            bytesConocidos = m_hls.bytes;
+        }
     }
     else
     {
         int v = m_ordenCalidad.empty() ? -1 : Elegida(m_calidad, m_ordenCalidad);
         int a = m_ordenAudio.empty() ? -1 : Elegida(m_audio, m_ordenAudio);
-        if (v >= 0) conocidas.push_back({ m_dash.videos[v].inicio, m_dash.videos[v].trozos });
-        if (a >= 0) conocidas.push_back({ m_dash.audios[a].inicio, m_dash.audios[a].trozos });
+        if (v >= 0) representaciones.push_back(m_dash.videos[v]);
+        if (a >= 0) representaciones.push_back(m_dash.audios[a]);
     }
     m_revisando = true;
     m_descargar->Disable();
@@ -963,9 +969,9 @@ void DialogoVideo::Revisar()
     Pedido p = m_pedido;
     auto parar = m_parar;
     DialogoVideo* yo = this;
-    std::thread([yo, parar, p, listas, conocidas, soloAfuera]() {
+    std::thread([yo, parar, p, listas, conocidas, bytesConocidos, representaciones, soloAfuera]() mutable {
         std::string error;
-        size_t total = 0;
+        size_t total = 0, bytes = bytesConocidos;
         try
         {
             if (listas.size() > flujos::MaximoListasJuntas + 1) error = flujos::TextoDemasiadas;
@@ -975,7 +981,7 @@ void DialogoVideo::Revisar()
                 bool local = false;
                 if (!BajarLista(listas[k], p.referer, p.cookies, p.agente, texto, urlFinal, local, error, parar.get(), soloAfuera)) break;
                 auto l = flujos::LeerHls(texto, urlFinal.empty() ? listas[k] : urlFinal);
-                if (l.demasiadas) error = flujos::TextoDemasiadas;
+                if (l.demasiadas || (bytes += l.bytes) > flujos::MaximoBytesDirecciones) error = flujos::TextoDemasiadas;
                 else if (!l.valida || l.maestra) error = "Una de las listas del video no es una lista HLS.";
                 else if (l.cifrada) error = flujos::TextoProtegido;   // también si es la del audio o la de los subtítulos
                 else if (l.enVivo) error = flujos::TextoEnVivo;
@@ -990,6 +996,20 @@ void DialogoVideo::Revisar()
                 if (!error.empty()) break;
                 error = flujos::RevisarTrozos(inicio, trozos, soloAfuera);
                 total += trozos.size() + (inicio.url.empty() ? 0 : 1);
+            }
+            // DASH: se arman las direcciones de lo elegido (el video y el audio), de una en una y con el tope de bytes
+            for (auto& r : representaciones)
+            {
+                if (!error.empty()) break;
+                if (!flujos::ArmarTrozos(r, bytes))
+                {
+                    error = flujos::TextoDemasiadas;
+                    break;
+                }
+                error = flujos::RevisarTrozos(r.inicio, r.trozos, soloAfuera);
+                total += r.trozos.size() + (r.inicio.url.empty() ? 0 : 1);
+                r.trozos.clear();
+                r.trozos.shrink_to_fit();
             }
             if (error.empty() && total > flujos::MaximoPartes) error = flujos::TextoDemasiadas;
         }

@@ -21,12 +21,16 @@ namespace hnd::flujos
     constexpr size_t MaximoLista = 16u * 1024 * 1024;        // bytes de una lista HLS o de un manifiesto DASH
     constexpr size_t MaximoEnMemoria = 128u * 1024 * 1024;   // bytes de las partes adelantadas que esperan su turno
     constexpr size_t MaximoListasJuntas = 40;                // listas de audio y subtítulos que se revisan con una calidad
+    // Bytes que ocupan las direcciones de las partes de un video (todas sus listas, o las representaciones que se bajan).
+    // Pocas partes con direcciones muy largas (o con una base muy larga) también llenan la memoria.
+    constexpr size_t MaximoBytesDirecciones = 32u * 1024 * 1024;
 
     // Textos para la persona
     extern const char* const TextoProtegido;     // DRM o cifrado
     extern const char* const TextoEnVivo;
     extern const char* const TextoVariasPartes;  // DASH con más de un período
     extern const char* const TextoRedLocal;      // la lista pide partes de esta PC o de la red de la casa
+    extern const char* const TextoSinComprobar;  // con proxy: no se pudo buscar a dónde lleva una dirección
     extern const char* const TextoDemasiadas;    // más partes o más bytes que los topes: no se baja (nunca a medias)
 
     // Una dirección de la lista, completa: relativa a la de la lista (ya con sus redirecciones), como un navegador
@@ -65,7 +69,8 @@ namespace hnd::flujos
         bool maestra = false;       // trae calidades (EXT-X-STREAM-INF), no partes
         bool cifrada = false;       // EXT-X-KEY o EXT-X-SESSION-KEY, con cualquier método
         bool enVivo = false;        // sin EXT-X-ENDLIST ni EXT-X-PLAYLIST-TYPE:VOD
-        bool demasiadas = false;    // más de MaximoPartes partes o más de MaximoLista bytes: no se baja (sin partes)
+        bool demasiadas = false;    // pasa de MaximoPartes partes, de MaximoLista bytes o de MaximoBytesDirecciones: no se baja (sin partes)
+        size_t bytes = 0;           // lo que ocupan sus direcciones (para el tope de MaximoBytesDirecciones por video)
         std::vector<Variante> variantes;
         std::vector<AudioAparte> audios;
         std::vector<Subtitulos> subtitulos;
@@ -81,6 +86,23 @@ namespace hnd::flujos
     std::vector<std::string> ListasJuntas(const ListaHls& maestra, int variante);
 
     // ---- DASH ----
+    // Las direcciones de las partes NO se arman al leer el manifiesto (con muchas partes y direcciones largas no
+    // cabrían en memoria): cada representación guarda cómo armarlas, y se arman solo las de la que se baja (ArmarTrozos)
+    struct Tramo
+    {
+        int64_t t = 0;
+        bool conT = false;          // trae su propio «t»
+        int64_t d = 0, repetir = 0; // duración de cada parte y cuántas veces más se repite
+    };
+    struct Receta
+    {
+        enum class Tipo { Ninguna, Numeros, LineaDeTiempo, Lista } tipo = Tipo::Ninguna;
+        std::string base, media;    // la BaseURL de la representación y la plantilla de sus partes
+        int64_t numero = 1;         // el primer $Number$
+        int64_t duracion = 0;       // Numeros: la duración de cada parte
+        std::vector<Tramo> tramos;  // LineaDeTiempo
+        std::vector<std::pair<std::string, std::string>> lista;   // Lista (SegmentList): media y mediaRange, sin resolver
+    };
     struct Representacion
     {
         std::string id;
@@ -89,8 +111,10 @@ namespace hnd::flujos
         int ancho = 0, alto = 0;
         std::string mime, codecs;
         Trozo inicio;               // segmento de inicio (url vacía si no hay)
-        std::vector<Trozo> trozos;
+        std::vector<Trozo> trozos;  // vacío hasta ArmarTrozos (un archivo único ya trae el suyo)
+        size_t partes = 0;          // cuántas partes tiene, aunque todavía no estén armadas
         bool unArchivo = false;     // SegmentBase o solo BaseURL: todo es un archivo (trozos tiene ese)
+        Receta receta;
     };
     struct ManifiestoDash
     {
@@ -105,6 +129,10 @@ namespace hnd::flujos
     ManifiestoDash LeerDash(const std::string& xml, const std::string& url);
     int MejorRepresentacion(const std::vector<Representacion>& r);   // -1 si no hay
     int BuscarRepresentacion(const std::vector<Representacion>& r, const std::string& id);   // -1 si no está
+    // Arma las direcciones de las partes de una representación (en r.trozos), de una en una, y suma lo que ocupan a
+    // «bytes» (el inicio también cuenta). Falso si «bytes» pasa de MaximoBytesDirecciones: se deja de armar enseguida,
+    // r.trozos queda vacío y el video no se baja (TextoDemasiadas).
+    bool ArmarTrozos(Representacion& r, size_t& bytes);
 
     // ¿Las partes se pueden bajar? Solo http y https, nada de YouTube ni de sitios con DRM y, con «soloAfuera» (la
     // lista es de internet), nada de esta PC ni de la red de la casa. El problema en español, o vacío si se pueden.

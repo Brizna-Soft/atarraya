@@ -16,8 +16,12 @@ const char* const hnd::flujos::TextoEnVivo = "Es una transmisión en vivo: Atarr
 const char* const hnd::flujos::TextoVariasPartes = "Este video DASH viene en varios períodos: Atarraya todavía no lo baja.";
 const char* const hnd::flujos::TextoRedLocal =
     "La lista del video pide archivos de esta PC o de la red de tu casa: Atarraya no los baja.";
+const char* const hnd::flujos::TextoSinComprobar =
+    "Con el proxy de Windows, Atarraya no pudo comprobar a dónde lleva una dirección del video (no pudo buscar su nombre): "
+    "no la baja.";
 const char* const hnd::flujos::TextoDemasiadas =
-    "La lista del video es demasiado grande (más de 150.000 partes o de 16 MB): Atarraya no la baja, para no llenar la memoria.";
+    "La lista del video es demasiado grande (más de 150.000 partes, más de 16 MB o direcciones demasiado largas): Atarraya "
+    "no la baja, para no llenar la memoria.";
 
 namespace
 {
@@ -505,10 +509,12 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
     }
     std::string t = texto;
     if (Empieza(t, "\xEF\xBB\xBF")) t = t.substr(3);   // BOM de UTF-8
-    // Calidades, audios, subtítulos y partes cuentan para el tope: pasado el tope la lista no se baja (nunca a medias)
+    // Calidades, audios, subtítulos y partes cuentan para el tope, y también lo que ocupan sus direcciones (una base muy
+    // larga hace largas todas las partes): pasado un tope la lista no se baja (nunca a medias)
     size_t elementos = 0;
-    auto cabe = [&]() {
-        if (++elementos <= MaximoPartes) return true;
+    auto cabe = [&](size_t largo = 0) {
+        l.bytes += largo + sizeof(Trozo);
+        if (++elementos <= MaximoPartes && l.bytes <= MaximoBytesDirecciones) return true;
         l.demasiadas = true;
         l.trozos.clear();
         l.trozos.shrink_to_fit();
@@ -556,18 +562,20 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
             {
                 auto a = Atributos(valor);
                 std::string tipo = Bajo(a["type"]);
-                if (l.demasiadas || a["uri"].empty() || (tipo != "audio" && tipo != "subtitles") || !cabe()) continue;
+                if (l.demasiadas || a["uri"].empty() || (tipo != "audio" && tipo != "subtitles")) continue;
+                std::string direccion = Resolver(url, a["uri"]);
+                if (!cabe(direccion.size())) continue;
                 if (tipo == "audio")
                 {
                     AudioAparte au;
-                    au.url = Resolver(url, a["uri"]);
+                    au.url = std::move(direccion);
                     au.grupo = a["group-id"];
                     au.nombre = a["name"];
                     au.idioma = a["language"];
                     au.porDefecto = Bajo(a["default"]) == "yes";
                     l.audios.push_back(std::move(au));
                 }
-                else l.subtitulos.push_back({ Resolver(url, a["uri"]), a["group-id"] });
+                else l.subtitulos.push_back({ std::move(direccion), a["group-id"] });
             }
             else if (etiqueta == "#EXTINF")
             {
@@ -603,9 +611,10 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
         {
             esperaVariante = false;
             l.maestra = true;
-            if (l.demasiadas || !cabe()) continue;
+            if (l.demasiadas) continue;
             Variante v;
             v.url = Resolver(url, linea);
+            if (!cabe(v.url.size())) continue;
             v.banda = Numero(pendiente["bandwidth"]);
             if (v.banda <= 0) v.banda = Numero(pendiente["average-bandwidth"]);
             std::string res = pendiente["resolution"];
@@ -621,14 +630,14 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
             l.variantes.push_back(std::move(v));
             continue;
         }
-        if (l.demasiadas || !cabe())
+        Trozo tr;
+        if (!l.demasiadas) tr.url = Resolver(url, linea);
+        if (l.demasiadas || !cabe(tr.url.size()))
         {
             rangoDesde = rangoLargo = -1;
             esperaParte = false;
             continue;
         }
-        Trozo tr;
-        tr.url = Resolver(url, linea);
         if (rangoLargo > 0)
         {
             // Sin «@desde», el rango sigue donde terminó el anterior del mismo archivo (si es otro, desde el principio)
@@ -735,19 +744,28 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
 
     std::string baseMpd = BaseDe(mpd, url);
     std::string basePeriodo = BaseDe(periodo, baseMpd);
-    // Las partes de todas las representaciones cuentan juntas para el tope. Se cuentan ANTES de armarlas: pasado el
-    // tope, el manifiesto no se baja (nunca a medias) y no se arma ni una más.
-    size_t total = 0;
+    // Las partes de todas las representaciones cuentan juntas para el tope, sin armarlas (solo se arman las de la
+    // representación que se baja, con ArmarTrozos). Lo que sí se guarda de cada representación (su base, su plantilla,
+    // su inicio, su línea de tiempo o su lista) también tiene un tope de bytes: pasado un tope, el manifiesto no se
+    // baja (nunca a medias).
+    size_t total = 0, guardados = 0, representaciones = 0;
+    auto demasiado = [&]() {
+        m.demasiadas = true;
+        m.videos.clear();
+        m.audios.clear();
+        return false;
+    };
     auto cabenMas = [&](double cuantas) {
         if (cuantas >= 0 && (double)total + cuantas <= (double)MaximoPartes)
         {
             total += (size_t)cuantas;
             return true;
         }
-        m.demasiadas = true;
-        m.videos.clear();
-        m.audios.clear();
-        return false;
+        return demasiado();
+    };
+    auto cabeGuardar = [&](size_t bytes) {
+        guardados += bytes;
+        return guardados <= MaximoBytesDirecciones || demasiado();
     };
     for (const Nodo* conjunto : periodo->Hijos("AdaptationSet"))
     {
@@ -765,6 +783,11 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
             r.video = EsVideo(r.mime, tipo, r.codecs);
             r.audio = !r.video && EsAudio(r.mime, tipo, r.codecs);
             if (!r.video && !r.audio) continue;   // subtítulos, imágenes...
+            if (++representaciones > 1000)   // ningún video trae tantas calidades
+            {
+                demasiado();
+                return m;
+            }
             std::string base = BaseDe(rep, baseConjunto);
 
             Plantillas p;
@@ -781,41 +804,32 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
                     if (!cabenMas(1)) return m;
                     r.inicio.url = Resolver(base, Plantilla(ini, r.id, numero, r.banda, 0));
                 }
-                std::string media = p.Valor("media");
+                r.receta.base = base;
+                r.receta.media = p.Valor("media");
+                r.receta.numero = numero;
                 if (p.lineaDeTiempo)
                 {
                     int64_t finPeriodo = (int64_t)std::llround(duracionPeriodo * (double)escala);
                     // Cada <S> trae una duración «d» y «r» repeticiones más (r=-1: hasta el final del período)
-                    struct Tramo { int64_t t; bool conT; int64_t d, repetir; };
-                    std::vector<Tramo> tramos;
                     double cuantas = 0;
                     int64_t t = 0;
                     constexpr int64_t Absurdo = 1000000000000LL;   // más que esto en «t» o «d» no es un video: ahí termina
                     for (const Nodo* s : p.lineaDeTiempo->Hijos("S"))
                     {
-                        Tramo tm{ 0, false, Numero(s->Valor("d")), Numero(s->Valor("r"), 0) };
+                        Tramo tm;
+                        tm.d = Numero(s->Valor("d"));
+                        tm.repetir = Numero(s->Valor("r"), 0);
                         if (auto* v = s->Atributo("t")) { tm.t = Numero(*v); tm.conT = true; t = tm.t; }
                         if (tm.d <= 0 || tm.d > Absurdo || t < 0 || t > Absurdo * 1000) break;
                         if (tm.repetir < 0) tm.repetir = finPeriodo > t ? (finPeriodo - t + tm.d - 1) / tm.d - 1 : 0;
                         cuantas += (double)tm.repetir + 1;
-                        tramos.push_back(tm);
+                        r.receta.tramos.push_back(tm);
                         if (cuantas > (double)MaximoPartes) break;   // ya no cabe: no hace falta seguir contando
                         t += tm.d * (tm.repetir + 1);
                     }
                     if (!cabenMas(cuantas)) return m;
-                    t = 0;
-                    for (const auto& tm : tramos)
-                    {
-                        if (tm.conT) t = tm.t;
-                        for (int64_t k = 0; k <= tm.repetir; k++)
-                        {
-                            Trozo tr;
-                            tr.url = Resolver(base, Plantilla(media, r.id, numero, r.banda, t));
-                            r.trozos.push_back(std::move(tr));
-                            t += tm.d;
-                            numero++;
-                        }
-                    }
+                    r.receta.tipo = Receta::Tipo::LineaDeTiempo;
+                    r.partes = (size_t)cuantas;
                 }
                 else
                 {
@@ -824,14 +838,13 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
                     {
                         double cuantas = std::ceil(duracionPeriodo * (double)escala / (double)d - 1e-9);
                         if (!cabenMas(cuantas)) return m;
-                        for (int64_t k = 0; k < (int64_t)cuantas; k++)
-                        {
-                            Trozo tr;
-                            tr.url = Resolver(base, Plantilla(media, r.id, numero + k, r.banda, k * d));
-                            r.trozos.push_back(std::move(tr));
-                        }
+                        r.receta.tipo = Receta::Tipo::Numeros;
+                        r.receta.duracion = d;
+                        r.partes = (size_t)cuantas;
                     }
                 }
+                if (!cabeGuardar(r.receta.base.size() + r.receta.media.size() + r.inicio.url.size() + r.receta.tramos.size() * sizeof(Tramo)))
+                    return m;
             }
             else if (p.lista)
             {
@@ -844,29 +857,94 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
                     r.inicio.url = fuente.empty() ? base : Resolver(base, fuente);
                     RangoDash(ini->Valor("range"), r.inicio.desde, r.inicio.largo);
                 }
+                r.receta.tipo = Receta::Tipo::Lista;
+                r.receta.base = base;
+                size_t bytes = base.size() + r.inicio.url.size();
                 for (const Nodo* su : segmentos)
                 {
-                    Trozo tr;
-                    std::string media = su->Valor("media");
-                    tr.url = media.empty() ? base : Resolver(base, media);
-                    RangoDash(su->Valor("mediaRange"), tr.desde, tr.largo);
-                    r.trozos.push_back(std::move(tr));
+                    r.receta.lista.emplace_back(su->Valor("media"), su->Valor("mediaRange"));
+                    bytes += r.receta.lista.back().first.size() + r.receta.lista.back().second.size() + sizeof(r.receta.lista.back());
                 }
+                if (!cabeGuardar(bytes)) return m;
+                r.partes = segmentos.size();
             }
             else
             {
-                // SegmentBase o solo BaseURL: el medio entero es un archivo
-                if (!cabenMas(1)) return m;
+                // SegmentBase o solo BaseURL: el medio entero es un archivo (esa sola dirección ya queda armada)
+                if (!cabenMas(1) || !cabeGuardar(base.size())) return m;
                 r.unArchivo = true;
                 Trozo tr;
                 tr.url = base;
                 r.trozos.push_back(std::move(tr));
+                r.partes = 1;
             }
-            if (r.trozos.empty()) continue;
+            if (r.partes == 0) continue;
             (r.video ? m.videos : m.audios).push_back(std::move(r));
         }
     }
     return m;
+}
+
+bool hnd::flujos::ArmarTrozos(Representacion& r, size_t& bytes)
+{
+    auto fallar = [&]() {
+        r.trozos.clear();
+        r.trozos.shrink_to_fit();
+        return false;
+    };
+    // Cada dirección se cuenta apenas se arma: pasado el tope se deja de armar (en memoria no queda más que eso)
+    auto cabe = [&](const Trozo& t) {
+        bytes += t.url.size() + sizeof(Trozo);
+        return bytes <= MaximoBytesDirecciones;
+    };
+    if (!r.inicio.url.empty() && !cabe(r.inicio)) return fallar();
+    const Receta& k = r.receta;
+    if (r.unArchivo || k.tipo == Receta::Tipo::Ninguna)
+    {
+        for (const auto& t : r.trozos)
+            if (!cabe(t)) return fallar();
+        return true;
+    }
+    r.trozos.clear();
+    if (k.tipo == Receta::Tipo::Numeros)
+    {
+        for (size_t i = 0; i < r.partes; i++)
+        {
+            Trozo tr;
+            tr.url = Resolver(k.base, Plantilla(k.media, r.id, k.numero + (int64_t)i, r.banda, (int64_t)i * k.duracion));
+            if (!cabe(tr)) return fallar();
+            r.trozos.push_back(std::move(tr));
+        }
+    }
+    else if (k.tipo == Receta::Tipo::LineaDeTiempo)
+    {
+        int64_t t = 0, numero = k.numero;
+        for (const auto& tm : k.tramos)
+        {
+            if (tm.conT) t = tm.t;
+            for (int64_t i = 0; i <= tm.repetir && r.trozos.size() < r.partes; i++)
+            {
+                Trozo tr;
+                tr.url = Resolver(k.base, Plantilla(k.media, r.id, numero, r.banda, t));
+                if (!cabe(tr)) return fallar();
+                r.trozos.push_back(std::move(tr));
+                t += tm.d;
+                numero++;
+            }
+        }
+    }
+    else
+    {
+        for (const auto& [media, rango] : k.lista)
+        {
+            Trozo tr;
+            tr.url = media.empty() ? k.base : Resolver(k.base, media);
+            RangoDash(rango, tr.desde, tr.largo);
+            if (!cabe(tr)) return fallar();
+            r.trozos.push_back(std::move(tr));
+        }
+    }
+    return true;
 }
 
 int hnd::flujos::MejorRepresentacion(const std::vector<Representacion>& r)
