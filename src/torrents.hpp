@@ -102,6 +102,8 @@ namespace hnd
         void Detener();
 
         int maxSimultaneas = 3;      // torrents bajando a la vez (los que comparten no cuentan)
+        bool conPermisos = false;    // si es verdadero, solo arrancan los de «permitidos» (los reparte la ventana)
+        std::vector<uint64_t> permitidos;
         int64_t limiteBajada = 0;    // bytes por segundo; 0 = sin límite
         int64_t limiteSubida = 0;
         // Cuando un torrent termina: su foto y sus archivos (para marcarlos como bajados de internet)

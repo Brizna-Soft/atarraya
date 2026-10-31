@@ -153,6 +153,7 @@ namespace
         Reloj::time_point ultimoResumen = Reloj::now();
         Reloj::time_point ultimoArranque{};   // para no hacer caso a un error viejo justo después de reanudar
         bool decidir = false;      // magnet: al llegar los datos se decide qué bajar (nada se baja antes)
+        Reloj::time_point ultimaDecision{};   // cuándo se cambió qué bajar (los avisos de antes no cuentan)
         int pendientesResumen = 0; // datos de reanudación pedidos y sin llegar
     };
 
@@ -493,8 +494,9 @@ struct hnd::MotorTorrent::Datos
             if (e.estado != Estado::Compartiendo) e.estado = Estado::Iniciando;
             return;
         }
-        // Con todo en «no bajar» (magnet recién llegado) libtorrent lo da por terminado: eso no cuenta
-        if (st.is_finished && st.total_wanted > 0)
+        // Con todo en «no bajar» (magnet recién llegado) libtorrent lo da por terminado: eso no cuenta. Pero una elección
+        // ya confirmada de solo archivos vacíos sí termina (pasados unos segundos desde la decisión).
+        if (st.is_finished && (st.total_wanted > 0 || Reloj::now() - e.ultimaDecision > std::chrono::seconds(3)))
         {
             if (e.estado != Estado::Compartiendo || e.terminada == 0) Terminar(e, motor);
             return;
@@ -560,6 +562,7 @@ struct hnd::MotorTorrent::Datos
                                 todos.push_back(ti->files().pad_file_at(i) ? lt::dont_download : lt::default_priority);
                         }
                         e->h.prioritize_files(todos);
+                        e->ultimaDecision = Reloj::now();
                     }
                 }
                 if (e->eligeArchivos)
@@ -1006,7 +1009,16 @@ bool hnd::MotorTorrent::ElegirArchivos(uint64_t id, const std::vector<bool>& baj
         prioridades.push_back(si ? lt::default_priority : lt::dont_download);
     }
     if (!alguno) return false;
-    bool hayQueBajar = elegido > e->hecho;
+    // ¿Falta algo de la nueva selección? Se mira archivo por archivo (comparar totales falla al cambiar unos por otros)
+    std::vector<std::int64_t> progreso;
+    e->h.file_progress(progreso, lt::torrent_handle::piece_granularity);
+    bool hayQueBajar = false;
+    for (auto i : fs.file_range())
+    {
+        int k = static_cast<int>(i);
+        if (prioridades[(size_t)k] != lt::dont_download && (k >= (int)progreso.size() || progreso[(size_t)k] < fs.file_size(i)))
+            hayQueBajar = true;
+    }
     // Si compartía y ahora hay algo nuevo que bajar, vuelve a la cola: así respeta «descargas a la vez»
     if (hayQueBajar && e->estado == Estado::Compartiendo)
     {
@@ -1014,6 +1026,7 @@ bool hnd::MotorTorrent::ElegirArchivos(uint64_t id, const std::vector<bool>& baj
         e->estado = Estado::EnCola;
     }
     e->h.prioritize_files(prioridades);
+    e->ultimaDecision = Reloj::now();
     bool eraPendiente = e->eligeArchivos;
     e->eligeArchivos = false;
     e->decidir = false;
@@ -1063,14 +1076,23 @@ bool hnd::MotorTorrent::CambiarCarpeta(uint64_t id, const std::wstring& carpeta)
     atp.save_path = Utf8(carpeta);
     atp.flags &= ~lt::torrent_flags::auto_managed;
     atp.flags |= lt::torrent_flags::paused | lt::torrent_flags::default_dont_download;
+    lt::add_torrent_params antes = atp;   // por si hay que volver a la carpeta de antes
+    antes.save_path = Utf8(e->carpeta);
     m->ses->remove_torrent(e->h);
     lt::error_code ec;
     lt::torrent_handle nuevo = m->ses->add_torrent(std::move(atp), ec);
     if (ec)
     {
-        e->h = {};
-        e->estado = Estado::Error;
-        e->error = "No se pudo cambiar la carpeta del torrent (" + TextoDeSistema(ec.message()) + "). Quítalo y vuelve a agregarlo.";
+        // No se pudo: vuelve como estaba, en pausa y esperando la elección
+        lt::error_code ec2;
+        e->h = m->ses->add_torrent(std::move(antes), ec2);
+        e->hayEstado = false;
+        if (ec2)
+        {
+            e->h = {};
+            e->estado = Estado::Error;
+            e->error = "No se pudo cambiar la carpeta del torrent (" + TextoDeSistema(ec.message()) + "). Quítalo y vuelve a agregarlo.";
+        }
         m->sucio = true;
         return false;
     }
@@ -1234,7 +1256,8 @@ void hnd::MotorTorrent::Tick()
     for (auto& e : m->lista)
     {
         bool corre = e->estado == Estado::Iniciando || e->estado == Estado::Descargando || e->estado == Estado::Compartiendo;
-        if (corre && e->hayEstado && e->st.errc && e->h.is_valid() && Reloj::now() - e->ultimoArranque > std::chrono::seconds(3))
+        bool trabado = e->st.is_finished && e->estado != Estado::Compartiendo && Reloj::now() - e->ultimaDecision > std::chrono::seconds(3);
+        if (corre && e->hayEstado && (e->st.errc || trabado) && e->h.is_valid() && Reloj::now() - e->ultimoArranque > std::chrono::seconds(3))
         {
             e->st = e->h.status(lt::torrent_handle::query_name | lt::torrent_handle::query_pieces);
             m->Actualizar(*e, *this);
@@ -1264,9 +1287,18 @@ void hnd::MotorTorrent::Tick()
     {
         if (e->estado == Estado::Iniciando || e->estado == Estado::Descargando) bajando++;
     }
+    if (conPermisos)
+    {
+        for (uint64_t id : permitidos)
+        {
+            Entrada* e = m->Encontrar(id);
+            if (e && e->estado == Estado::EnCola && !EsperaEleccion(*e) && e->h.is_valid()) m->Arrancar(*e);
+        }
+        permitidos.clear();
+    }
     for (auto& e : m->lista)
     {
-        if (e->estado == Estado::EnCola && !EsperaEleccion(*e) && e->h.is_valid() && bajando < maxSimultaneas)
+        if (!conPermisos && e->estado == Estado::EnCola && !EsperaEleccion(*e) && e->h.is_valid() && bajando < maxSimultaneas)
         {
             m->Arrancar(*e);
             bajando++;

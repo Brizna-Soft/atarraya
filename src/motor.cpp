@@ -189,13 +189,18 @@ namespace
         return t * n;
     }
 
-    // ¿Es una dirección de esta PC, de la red de la casa o reservada? (IPv4, IPv6 y IPv4 escrita dentro de IPv6)
+    // ¿Es una dirección de esta PC, de la red de la casa, reservada o especial? (registros de IANA de IPv4 e IPv6)
     bool EsIpv4Local(uint32_t ip)
     {
-        uint32_t a = ip >> 24, b = (ip >> 16) & 0xFF;
+        uint32_t a = ip >> 24, b = (ip >> 16) & 0xFF, c = (ip >> 8) & 0xFF;
         return a == 0 || a == 10 || a == 127 || (a == 169 && b == 254) || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168)
-            || (a == 100 && b >= 64 && b <= 127) || (a == 192 && b == 0 && ((ip >> 8) & 0xFF) == 0) || (a == 198 && (b == 18 || b == 19))
-            || a >= 224;
+            || (a == 100 && b >= 64 && b <= 127)          // CGNAT
+            || (a == 192 && b == 0 && (c == 0 || c == 2))  // 192.0.0.0/24 y documentación 192.0.2.0/24
+            || (a == 192 && b == 88 && c == 99)            // 6to4 relé
+            || (a == 198 && (b == 18 || b == 19))          // pruebas de rendimiento
+            || (a == 198 && b == 51 && c == 100)           // documentación
+            || (a == 203 && b == 0 && c == 113)            // documentación
+            || a >= 224;                                   // multidifusión y reservadas
     }
 
     bool EsIpLocal(const sockaddr* s)
@@ -204,14 +209,23 @@ namespace
             return EsIpv4Local(ntohl(reinterpret_cast<const sockaddr_in*>(s)->sin_addr.s_addr));
         if (s->sa_family != AF_INET6) return true;
         const uint8_t* b = reinterpret_cast<const sockaddr_in6*>(s)->sin6_addr.u.Byte;
-        auto v4 = [&]() { return EsIpv4Local((uint32_t)b[12] << 24 | (uint32_t)b[13] << 16 | (uint32_t)b[14] << 8 | b[15]); };
-        bool ceros = std::all_of(b, b + 10, [](uint8_t x) { return x == 0; });
-        if (ceros && b[10] == 0xFF && b[11] == 0xFF) return v4();                    // ::ffff:a.b.c.d
-        if (ceros && b[10] == 0 && b[11] == 0) return true;                           // ::, ::1 y las viejas ::a.b.c.d
-        if (b[0] == 0 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B) return v4();   // 64:ff9b::a.b.c.d
-        return (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) || (b[0] & 0xFE) == 0xFC || b[0] == 0xFF;
+        auto ceros = [&](int desde, int hasta) { return std::all_of(b + desde, b + hasta, [](uint8_t x) { return x == 0; }); };
+        auto v4En = [&](int i) { return EsIpv4Local((uint32_t)b[i] << 24 | (uint32_t)b[i + 1] << 16 | (uint32_t)b[i + 2] << 8 | b[i + 3]); };
+        if (ceros(0, 10) && b[10] == 0xFF && b[11] == 0xFF) return v4En(12);        // ::ffff:a.b.c.d
+        if (ceros(0, 12)) return true;                                               // ::, ::1 y las viejas ::a.b.c.d
+        if (b[0] == 0x00 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B)
+        {
+            if (ceros(4, 12)) return v4En(12);                                       // 64:ff9b::/96 (NAT64)
+            return true;                                                             // 64:ff9b:1::/48 (NAT64 local)
+        }
+        if (b[0] == 0x01 && b[1] == 0x00 && ceros(2, 8)) return true;               // 100::/64 (se descarta)
+        if (b[0] == 0x20 && b[1] == 0x01 && b[2] < 0x02) return true;               // 2001::/23 (Teredo y otros especiales)
+        if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0D && b[3] == 0xB8) return true; // 2001:db8::/32 (documentación)
+        if (b[0] == 0x20 && b[1] == 0x02) return v4En(2);                            // 2002::/16 (6to4 lleva una IPv4)
+        return (b[0] == 0xFE && (b[1] & 0xC0) == 0x80)                               // fe80::/10
+            || (b[0] & 0xFE) == 0xFC                                                 // fc00::/7
+            || b[0] == 0xFF;                                                         // multidifusión
     }
-
     // Para las consultas automáticas: no conectar nunca con una dirección local, aunque un nombre de afuera apunte a
     // ella o una redirección lleve ahí
     curl_socket_t AbrirSoloAfuera(void* u, curlsocktype tipo, curl_sockaddr* a)
@@ -587,24 +601,37 @@ namespace hnd
         double fichas = 0;
         steady_clock::time_point t = steady_clock::now();
 
-        void Consumir(int64_t n, int64_t limite, const std::atomic<bool>& parar)
+        // Recarga las fichas con el límite que rige ahora (puede cambiar mientras se espera)
+        void Recargar(int64_t limite)
         {
-            if (limite <= 0) return;
-            double espera = 0;
+            auto ahora = steady_clock::now();
+            double dt = duration<double>(ahora - t).count();
+            t = ahora;
+            fichas = std::min(fichas + dt * (double)limite, (double)limite);
+        }
+
+        void Consumir(int64_t n, const std::atomic<int64_t>& limite, const std::atomic<bool>& parar)
+        {
+            int64_t lim = limite;
+            if (lim <= 0) return;
             {
                 std::lock_guard g(m);
-                auto ahora = steady_clock::now();
-                double dt = duration<double>(ahora - t).count();
-                t = ahora;
-                fichas = std::min(fichas + dt * (double)limite, (double)limite);
+                Recargar(lim);
                 fichas -= (double)n;
-                if (fichas < 0) espera = -fichas / (double)limite;
             }
-            while (espera > 0 && !parar)
+            // Se espera en pasos cortos, mirando el límite de cada momento: si sube, la espera se acorta
+            while (!parar)
             {
-                double paso = std::min(espera, 0.1);
-                Sleep((DWORD)(paso * 1000));
-                espera -= paso;
+                lim = limite;
+                if (lim <= 0) return;
+                double espera;
+                {
+                    std::lock_guard g(m);
+                    Recargar(lim);
+                    if (fichas >= 0) return;
+                    espera = -fichas / (double)lim;
+                }
+                Sleep((DWORD)(std::min(espera, 0.05) * 1000) + 1);
             }
         }
     };
@@ -993,19 +1020,30 @@ namespace hnd
                     terminadas.push_back(std::move(f));
                 }
             }
-            // Arrancar las de la cola, en orden
-            for (auto& x : m_descargas)
+            // Arrancar las de la cola: las que permitió la ventana o, sin permisos, en orden hasta el máximo
+            auto enCola = [](const std::shared_ptr<Descarga>& x) {
+                std::lock_guard g2(x->m);
+                return !x->enMarcha && x->d.estado == Estado::EnCola;
+            };
+            if (conPermisos)
             {
-                if (enMarcha >= maxSimultaneas) break;
-                bool enCola;
+                for (uint64_t id : permitidas)
                 {
-                    std::lock_guard g2(x->m);
-                    enCola = !x->enMarcha && x->d.estado == Estado::EnCola;
+                    auto x = Encontrar(id);
+                    if (x && enCola(x)) Arrancar(x);
                 }
-                if (enCola)
+                permitidas.clear();
+            }
+            else
+            {
+                for (auto& x : m_descargas)
                 {
-                    Arrancar(x);
-                    enMarcha++;
+                    if (enMarcha >= maxSimultaneas) break;
+                    if (enCola(x))
+                    {
+                        Arrancar(x);
+                        enMarcha++;
+                    }
                 }
             }
             // Las quitadas que ya cerraron sus conexiones

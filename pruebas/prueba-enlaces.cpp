@@ -119,6 +119,7 @@ namespace
         Comprobar(NoPermitido("https://m.youtube.com/watch?v=1") && NoPermitido("https://rr3---sn.googlevideo.com/videoplayback")
                   && NoPermitido("https://youtu.be/x") && !NoPermitido("https://notyoutube.com/a.mp4"), "YouTube fuera");
         Comprobar(Sitio("https://usuario:clave@Ejemplo.ORG:8080/x") == "ejemplo.org", "sitio sin usuario ni puerto");
+        Comprobar(NoPermitido("https://%79outube.com/watch?v=1") && NoPermitido("https://WWW.YOUTUBE.COM./x"), "YouTube escrito con %79 o con punto final");
 
         // Click'n'Load: la clave sin ejecutar JavaScript
         std::vector<uint8_t> clave;

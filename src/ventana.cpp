@@ -108,8 +108,9 @@ namespace
     }
 
     // Un torrent tendría archivos con el mismo nombre que otros que ya están en la carpeta. Devuelve 0 = cancelar,
-    // 1 = usar los que ya están (si son de este mismo torrent), 2 = guardar en una carpeta aparte.
-    int PreguntarChoques(wxWindow* padre, const std::vector<std::wstring>& choques)
+    // 1 = usar los que ya están (si son de este mismo torrent), 2 = guardar en una carpeta aparte, 3 = no bajar esos.
+    // Sin «aparte» (un torrent que ya bajó algo no se puede mover) la primera opción es no bajar esos archivos.
+    int PreguntarChoques(wxWindow* padre, const std::vector<std::wstring>& choques, bool aparte = true)
     {
         std::wstring ejemplo = choques.front().substr(choques.front().find_last_of(L'\\') + 1);
         wxString texto = choques.size() == 1
@@ -119,9 +120,9 @@ namespace
         texto += L"\n\nSi son de este mismo torrent (de una descarga anterior), Atarraya los revisa y sigue desde ahí. "
                  L"Si son otros archivos, se dañarían. ¿Qué hacemos?";
         wxMessageDialog d(padre, texto, L"Archivos con el mismo nombre", wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxICON_WARNING);
-        d.SetYesNoCancelLabels(L"Guardar en una carpeta aparte", L"Usar los que ya están", L"Cancelar");
+        d.SetYesNoCancelLabels(aparte ? L"Guardar en una carpeta aparte" : L"No bajar esos archivos", L"Usar los que ya están", L"Cancelar");
         int r = d.ShowModal();
-        return r == wxID_YES ? 2 : r == wxID_NO ? 1 : 0;
+        return r == wxID_YES ? (aparte ? 2 : 3) : r == wxID_NO ? 1 : 0;
     }
 
     // Una carpeta nueva dentro de «base», con el nombre del torrent (y un número si ya existe)
@@ -706,10 +707,24 @@ void VentanaPrincipal::Refrescar()
     std::sort(cola.begin(), cola.end());
     int libres = std::max(0, m_ajustes.simultaneas - activasHttp - activosTorrent);
     int nuevasHttp = 0, nuevosTorrent = 0;
+    // Se autorizan exactamente las que siguen en la cola (no una cantidad por tipo): así se respeta el orden
+    m_motor.conPermisos = true;
+    m_torrents.conPermisos = true;
+    m_motor.permitidas.clear();
+    m_torrents.permitidos.clear();
     for (auto& [cuando, id] : cola)
     {
         if (libres <= 0) break;
-        (EsIdTorrent(id) ? nuevosTorrent : nuevasHttp)++;
+        if (EsIdTorrent(id))
+        {
+            nuevosTorrent++;
+            m_torrents.permitidos.push_back(id);
+        }
+        else
+        {
+            nuevasHttp++;
+            m_motor.permitidas.push_back(id);
+        }
         libres--;
     }
     m_motor.maxSimultaneas = activasHttp + nuevasHttp;
@@ -1543,6 +1558,26 @@ void VentanaPrincipal::ElegirArchivos(uint64_t id)
                 {
                     ayuda::Aviso(L"No se pudo usar una carpeta aparte para este torrent.", L"Elegir los archivos", wxOK | wxICON_WARNING, this);
                     return;
+                }
+            }
+        }
+    }
+    else if (m_torrents.Buscar(id, f))
+    {
+        // Archivos que se suman a la selección y que el torrent nunca usó: si ya hay otros con ese nombre, se pregunta
+        std::vector<bool> nuevos(elegidos.size(), false);
+        for (size_t i = 0; i < elegidos.size() && i < info.archivos.size(); i++)
+            nuevos[i] = elegidos[i] && !info.archivos[i].bajar && info.archivos[i].hecho == 0;
+        auto choques = m_torrents.Choques(id, nuevos);
+        if (!choques.empty())
+        {
+            int r = PreguntarChoques(this, choques, false);
+            if (r == 0) return;
+            if (r == 3)
+            {
+                for (size_t i = 0; i < nuevos.size(); i++)
+                {
+                    if (nuevos[i] && ExisteArchivo(f.datos.carpeta + L"\\" + info.archivos[i].ruta)) elegidos[i] = false;
                 }
             }
         }

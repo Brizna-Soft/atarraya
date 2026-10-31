@@ -337,6 +337,22 @@ std::string hnd::enlaces::Sitio(const std::string& url)
     std::string s = url.substr(esquema + 3, fin == std::string::npos ? std::string::npos : fin - esquema - 3);
     auto arroba = s.rfind('@');
     if (arroba != std::string::npos) s = s.substr(arroba + 1);
+    // curl entiende «%79outube.com» como «youtube.com»: aquí también
+    if (s.find('%') != std::string::npos)
+    {
+        std::string d;
+        for (size_t i = 0; i < s.size(); i++)
+        {
+            auto hex = [](char c) { return std::isxdigit((unsigned char)c) ? (std::isdigit((unsigned char)c) ? c - '0' : (std::tolower((unsigned char)c) - 'a' + 10)) : -1; };
+            if (s[i] == '%' && i + 2 < s.size() && hex(s[i + 1]) >= 0 && hex(s[i + 2]) >= 0)
+            {
+                d += (char)(hex(s[i + 1]) * 16 + hex(s[i + 2]));
+                i += 2;
+            }
+            else d += s[i];
+        }
+        s = d;
+    }
     if (!s.empty() && s[0] == '[')
     {
         auto cierre = s.find(']');

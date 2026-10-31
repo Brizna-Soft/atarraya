@@ -464,7 +464,7 @@ int hnd::ServidorCnL::Recibir(uintptr_t conexion, char* buf, int largo, uint64_t
 void hnd::ServidorCnL::Atender(uintptr_t conexion)
 {
     SOCKET s = (SOCKET)conexion;
-    DWORD espera = 5000;
+    DWORD espera = 2000;   // las respuestas son cortas: si no se pueden mandar en 2 s, se deja
     setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&espera), sizeof(espera));
     uint64_t limite = GetTickCount64() + 5000;   // todo el pedido tiene que llegar en 5 segundos
     // 1. Cabeceras

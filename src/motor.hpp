@@ -130,6 +130,9 @@ namespace hnd
         void Detener();
 
         int maxSimultaneas = 3;
+        // Con «conPermisos», solo arrancan las de «permitidas» (la ventana reparte los turnos entre descargas y torrents)
+        bool conPermisos = false;
+        std::vector<uint64_t> permitidas;
         std::atomic<int64_t> limiteBytesSeg{ 0 };   // 0 = sin límite
         std::function<void(const Foto&)> alTerminar; // se llama desde Tick (hilo de la ventana)
 
