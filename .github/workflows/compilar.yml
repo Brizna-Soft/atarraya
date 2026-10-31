@@ -65,6 +65,27 @@ jobs:
         shell: pwsh
         run: ./build/Release/prueba-enlaces.exe
 
+      # El modo de prueba solo existe en Atarraya-prueba.exe: el programa que se publica no lo trae
+      - name: Comprobar que el programa no trae el modo de prueba
+        shell: pwsh
+        run: |
+          $latin = [Text.Encoding]::GetEncoding(28591)
+          function Tiene([string]$exe, [string]$texto) {
+            $todo = $latin.GetString([IO.File]::ReadAllBytes($exe))
+            foreach ($cod in [Text.Encoding]::Unicode, [Text.Encoding]::UTF8) {
+              if ($todo.Contains($latin.GetString($cod.GetBytes($texto)))) { return $true }
+            }
+            return $false
+          }
+          foreach ($t in 'ATARRAYA_PRUEBA', 'Atarraya.Mensajes.Prueba', 'com.briznasoft.atarraya.prueba', 'atarraya-puente-prueba',
+                         'Atarraya-prueba.exe', 'paginas-abiertas', 'copia de prueba') {
+            foreach ($exe in 'programa/Atarraya.exe', 'programa/atarraya-puente.exe') {
+              if (Tiene $exe $t) { throw "$exe trae «$t»" }
+            }
+          }
+          if (-not (Tiene 'build/Release/Atarraya-prueba.exe' 'ATARRAYA_PRUEBA')) { throw 'La copia de prueba no trae su modo de prueba' }
+          'Atarraya.exe y atarraya-puente.exe no traen el modo de prueba.'
+
       - name: Empaquetar
         shell: pwsh
         run: ./empaquetar.ps1
@@ -73,6 +94,14 @@ jobs:
         with:
           name: atarraya
           path: publicar/*.zip*
+
+      # Solo para probar en un escritorio aparte; no va en el .zip ni en las versiones
+      - uses: actions/upload-artifact@v7
+        with:
+          name: atarraya-copia-de-prueba
+          path: |
+            build/Release/Atarraya-prueba.exe
+            build/Release/atarraya-puente-prueba.exe
 
       - name: Publicar la versión
         if: startsWith(github.ref, 'refs/tags/v')

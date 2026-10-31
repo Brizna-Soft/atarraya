@@ -14,11 +14,12 @@
 
 #include <nlohmann/json.hpp>
 
+#include "canal.hpp"
 #include "version.h"
 
 namespace
 {
-    const wchar_t* ClaseMensajes = L"Atarraya.Mensajes";
+    const wchar_t* ClaseMensajes = ATARRAYA_CLASE_MENSAJES;
     const ULONG_PTR MarcaCopia = 0x41545231;   // «ATR1», igual que en Atarraya.exe
 
     bool Leer(std::string& mensaje)
@@ -52,7 +53,7 @@ namespace
         wchar_t ruta[32768] = {};
         DWORD n = GetModuleFileNameW(nullptr, ruta, 32768);
         std::wstring exe(ruta, n);
-        exe = exe.substr(0, exe.find_last_of(L"\\/") + 1) + L"Atarraya.exe";
+        exe = exe.substr(0, exe.find_last_of(L"\\/") + 1) + ATARRAYA_PROGRAMA;
         std::wstring linea = L"\"" + exe + L"\" --bandeja";
 
         STARTUPINFOW si = { sizeof(si) };
@@ -85,6 +86,7 @@ namespace
         };
         texto("url", 8192);
         texto("referer", 8192);
+        texto("pagina", 8192);   // la pestaña donde se pulsó descargar
         texto("nombre", 1024);
         texto("tipoMime", 256);
         texto("agente", 1024);

@@ -50,28 +50,42 @@ set(DEFINICIONES UNICODE _UNICODE NOMINMAX WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0A
 
 # --- El programa ---
 file(GLOB FUENTES CONFIGURE_DEPENDS src/*.cpp src/*.hpp)
-add_executable(Atarraya WIN32 ${FUENTES} res/app.rc)
-target_include_directories(Atarraya PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
-target_compile_definitions(Atarraya PRIVATE ${DEFINICIONES})
-target_compile_options(Atarraya PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
-target_link_options(Atarraya PRIVATE /MANIFEST:NO /guard:cf)
-target_link_libraries(Atarraya PRIVATE
-    wx::core wx::base
-    CURL::libcurl
-    nlohmann_json::nlohmann_json
-    bcrypt iphlpapi shlwapi winhttp ws2_32)
-if(CON_TORRENTS)
-    target_compile_definitions(Atarraya PRIVATE CON_TORRENTS=1)
-    target_link_libraries(Atarraya PRIVATE LibtorrentRasterbar::torrent-rasterbar crypt32 iphlpapi ws2_32 mswsock)
-endif()
+function(armar_programa objetivo)
+    add_executable(${objetivo} WIN32 ${FUENTES} res/app.rc)
+    target_include_directories(${objetivo} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
+    target_compile_definitions(${objetivo} PRIVATE ${DEFINICIONES})
+    target_compile_options(${objetivo} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
+    target_link_options(${objetivo} PRIVATE /MANIFEST:NO /guard:cf)
+    target_link_libraries(${objetivo} PRIVATE
+        wx::core wx::base
+        CURL::libcurl
+        nlohmann_json::nlohmann_json
+        bcrypt iphlpapi shlwapi winhttp ws2_32)
+    if(CON_TORRENTS)
+        target_compile_definitions(${objetivo} PRIVATE CON_TORRENTS=1)
+        target_link_libraries(${objetivo} PRIVATE LibtorrentRasterbar::torrent-rasterbar crypt32 iphlpapi ws2_32 mswsock)
+    endif()
+endfunction()
+armar_programa(Atarraya)
 
 # --- El puente con los navegadores (native messaging) ---
-add_executable(atarraya-puente puente/puente.cpp res/puente.rc)
-target_include_directories(atarraya-puente PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
-target_compile_definitions(atarraya-puente PRIVATE ${DEFINICIONES})
-target_compile_options(atarraya-puente PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
-target_link_options(atarraya-puente PRIVATE /guard:cf)
-target_link_libraries(atarraya-puente PRIVATE nlohmann_json::nlohmann_json)
+function(armar_puente objetivo)
+    add_executable(${objetivo} puente/puente.cpp res/puente.rc)
+    target_include_directories(${objetivo} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
+    target_compile_definitions(${objetivo} PRIVATE ${DEFINICIONES})
+    target_compile_options(${objetivo} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
+    target_link_options(${objetivo} PRIVATE /guard:cf)
+    target_link_libraries(${objetivo} PRIVATE nlohmann_json::nlohmann_json)
+endfunction()
+armar_puente(atarraya-puente)
+
+# --- Copia de prueba (no se publica): el mismo programa con ATARRAYA_PRUEBAS. Usa su propia carpeta de datos (nunca
+#     la de verdad), su propio canal con su propio puente y solo anota las páginas que abriría en el navegador. Sirve
+#     para probarlo en un escritorio aparte sin tocar la copia que la persona usa. ---
+armar_programa(Atarraya-prueba)
+target_compile_definitions(Atarraya-prueba PRIVATE ATARRAYA_PRUEBAS)
+armar_puente(atarraya-puente-prueba)
+target_compile_definitions(atarraya-puente-prueba PRIVATE ATARRAYA_PRUEBAS)
 
 # --- Pruebas sin ventana (no se publican) ---
 add_executable(prueba-motor pruebas/prueba-motor.cpp src/motor.cpp src/nombres.cpp src/util.cpp src/enlaces.cpp
@@ -84,7 +98,7 @@ target_link_libraries(prueba-motor PRIVATE CURL::libcurl nlohmann_json::nlohmann
 add_executable(prueba-enlaces pruebas/prueba-enlaces.cpp src/enlaces.cpp src/motor.cpp src/nombres.cpp src/util.cpp
     src/clicknload.cpp src/recolector.cpp src/redlocal.cpp src/deunaenuna.cpp)
 target_include_directories(prueba-enlaces PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
-# ATARRAYA_PRUEBAS: deja simular fallas de Windows (solo aquí; el programa no lo trae)
+# ATARRAYA_PRUEBAS: deja simular fallas de Windows y usa datos de prueba (solo en las pruebas; el programa no lo trae)
 target_compile_definitions(prueba-enlaces PRIVATE ${DEFINICIONES} SIN_WX ATARRAYA_PRUEBAS)
 target_compile_options(prueba-enlaces PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
 target_link_libraries(prueba-enlaces PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt iphlpapi shlwapi winhttp ws2_32)

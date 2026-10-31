@@ -71,25 +71,29 @@ std::wstring hnd::CarpetaDescargas()
     return r;
 }
 
+#ifdef ATARRAYA_PRUEBAS
 std::wstring hnd::CarpetaDePrueba()
 {
     wchar_t buf[MAX_PATH] = {};
     DWORD n = GetEnvironmentVariableW(L"ATARRAYA_PRUEBA", buf, MAX_PATH);
-    if (n == 0 || n >= MAX_PATH) return {};
-    std::wstring r(buf, n);
-    // Solo una ruta completa con letra de unidad («C:\...»)
-    if (r.size() < 4 || r[1] != L':' || (r[2] != L'\\' && r[2] != L'/')) return {};
+    std::wstring r = n > 0 && n < MAX_PATH ? std::wstring(buf, n) : std::wstring();
+    // Solo una ruta completa con letra de unidad («C:\...»); si no, una carpeta temporal
+    if (r.size() < 4 || r[1] != L':' || (r[2] != L'\\' && r[2] != L'/'))
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        r = std::wstring(temporal) + L"Atarraya-prueba";
+    }
+    SHCreateDirectoryExW(nullptr, r.c_str(), nullptr);
     return r;
 }
+#endif
 
 std::wstring hnd::CarpetaDatos()
 {
-    std::wstring prueba = CarpetaDePrueba();
-    if (!prueba.empty())
-    {
-        SHCreateDirectoryExW(nullptr, prueba.c_str(), nullptr);
-        return prueba;
-    }
+#ifdef ATARRAYA_PRUEBAS
+    return CarpetaDePrueba();   // la copia de prueba nunca toca los datos de verdad
+#else
     PWSTR ruta = nullptr;
     std::wstring r;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &ruta))) r = ruta;
@@ -97,6 +101,7 @@ std::wstring hnd::CarpetaDatos()
     r += L"\\Atarraya";
     CreateDirectoryW(r.c_str(), nullptr);
     return r;
+#endif
 }
 
 std::wstring hnd::CarpetaDelPrograma()

@@ -62,7 +62,9 @@ película) y pulsas «Descargar los marcados», Atarraya no las abre todas a la 
 1. Abre la primera en tu navegador. Arriba de la lista, Atarraya te dice «Parte 1 de 18 en tu navegador:
    resuelve el captcha y pulsa descargar».
 2. Tú resuelves el captcha y pulsas descargar en la página. La extensión le pasa la descarga a Atarraya, que la
-   reconoce por el nombre del archivo (o, si no coincide, por ser la siguiente que llega de ese sitio) y la baja.
+   toma sola si es seguro que es esa parte: si tiene el nombre del archivo y viene de ese sitio, o si sale de la
+   misma página que abrió. Si viene de ese sitio pero hay duda, te pregunta. Lo demás sigue como cualquier
+   descarga.
 3. Cuando termina, Atarraya abre la página siguiente y te avisa junto al reloj.
 
 Los botones «Abrir la siguiente ahora», «Saltar esta» y «Parar» te dejan ir a tu ritmo; lo que saltas o paras
@@ -113,7 +115,8 @@ Si Atarraya está cerrado, se abre solo junto al reloj. Si no está conectado, e
   apaga en **Ajustes**.
 - Para que funcionen las descargas que piden haber iniciado sesión, la extensión le pasa a Atarraya, solo dentro
   de tu PC, las cookies del sitio de esa descarga. Atarraya no las guarda cuando la descarga termina y nunca las
-  manda a otro sitio.
+  manda a otro sitio. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
+  una»; esa dirección no se guarda.
 - No pide ser administrador y no cambia la configuración de Windows. «Conectar con los navegadores» solo
   escribe en tu propia cuenta (HKEY_CURRENT_USER), y «Quitar la conexión» lo borra.
 - Lo que quitas de la lista con «mandar a la Papelera» va a la Papelera de Windows. Si el disco no tiene Papelera
@@ -142,6 +145,10 @@ powershell -ExecutionPolicy Bypass -File compilar.ps1
 
 La primera vez baja vcpkg y compila wxWidgets, curl, Boost, OpenSSL y libtorrent, y tarda bastante. El programa
 queda en `programa\`. Con `-SinTorrents` compila mucho más rápido, sin torrents, para probar lo demás.
+
+La compilación también arma, en `build\Release`, las pruebas y `Atarraya-prueba.exe`: una copia para probar que
+nunca toca tus datos (usa la carpeta de la variable `ATARRAYA_PRUEBA` o una temporal), habla con su propio puente y
+solo anota las páginas que abriría. No se publica, y el `Atarraya.exe` que se publica no trae nada de eso.
 
 ## Licencia y créditos
 

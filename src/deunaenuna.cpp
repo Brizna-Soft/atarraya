@@ -5,11 +5,13 @@
 #include <algorithm>
 #include <cctype>
 #include <cwctype>
+#include <map>
 
 #include <nlohmann/json.hpp>
 
 #include "enlaces.hpp"
 #include "nombres.hpp"
+#include "recolector.hpp"
 #include "util.hpp"
 
 using json = nlohmann::json;
@@ -113,6 +115,51 @@ bool hnd::MismoSitio(const std::string& a, const std::string& b)
     return !x.empty() && x == y;
 }
 
+bool hnd::MismaPagina(const std::string& a, const std::string& b)
+{
+    auto partir = [](const std::string& url, std::string& sitio, std::string& ruta) {
+        sitio = enlaces::Sitio(url);
+        if (sitio.rfind("www.", 0) == 0) sitio = sitio.substr(4);
+        auto esquema = url.find("://");
+        if (sitio.empty() || esquema == std::string::npos) return false;
+        auto barra = url.find_first_of("/?", esquema + 3);
+        ruta = barra == std::string::npos ? "/" : url.substr(barra);
+        ruta = ruta.substr(0, ruta.find('#'));
+        if (ruta.empty() || ruta[0] != '/') ruta = "/" + ruta;
+        while (ruta.size() > 1 && ruta.back() == '/') ruta.pop_back();
+        return true;
+    };
+    std::string s1, r1, s2, r2;
+    if (!partir(a, s1, r1) || !partir(b, s2, r2) || s1 != s2 || r1 == "/" || r2 == "/") return false;
+    if (r1 == r2) return true;
+    const std::string& corta = r1.size() < r2.size() ? r1 : r2;
+    const std::string& larga = r1.size() < r2.size() ? r2 : r1;
+    if (larga.compare(0, corta.size(), corta) != 0 || std::string("/?&").find(larga[corta.size()]) == std::string::npos) return false;
+    // Lo que tienen en común lleva un código: un trozo de 6 o más letras o números seguidos
+    size_t seguidos = 0;
+    for (char c : corta)
+    {
+        seguidos = std::isalnum((unsigned char)c) ? seguidos + 1 : 0;
+        if (seguidos >= 6) return true;
+    }
+    return false;
+}
+
+bool hnd::GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector)
+{
+    if (partes.empty()) return true;
+    // Por paquete y por página de origen, como llegaron
+    std::map<std::pair<std::wstring, std::string>, std::vector<std::string>> grupos;
+    for (const auto& p : partes) grupos[{ p.paquete, p.referer }].push_back(p.url);
+    for (const auto& [clave, urls] : grupos) recolector.Agregar(urls, clave.first, clave.second, "de-una-en-una", true);
+    // Tienen que estar todas (las que ya estaban cuentan); si no, no se vacía la cola
+    for (const auto& p : partes)
+    {
+        if (!recolector.Contiene(p.url)) return false;
+    }
+    return recolector.Guardar();
+}
+
 hnd::DeUnaEnUna::DeUnaEnUna(std::wstring archivo) : m_archivo(std::move(archivo)) {}
 
 void hnd::DeUnaEnUna::Cargar()
@@ -158,14 +205,18 @@ bool hnd::DeUnaEnUna::Guardar() const
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
 }
 
-void hnd::DeUnaEnUna::Agregar(std::vector<Parte> partes)
+bool hnd::DeUnaEnUna::Agregar(std::vector<Parte> partes)
 {
+    size_t antes = m_partes.size();
     for (auto& p : partes)
     {
         p.estado = EstadoParte::Esperando;
         p.descarga = 0;
         m_partes.push_back(std::move(p));
     }
+    if (Guardar()) return true;
+    m_partes.resize(antes);   // no se pudo guardar: la cola queda como estaba
+    return false;
 }
 
 int hnd::DeUnaEnUna::AbrirSiguiente()
@@ -181,25 +232,50 @@ int hnd::DeUnaEnUna::AbrirSiguiente()
     return -1;
 }
 
-int hnd::DeUnaEnUna::Emparejar(const std::string& url, const std::string& referer, const std::wstring& nombre) const
+hnd::Emparejamiento hnd::DeUnaEnUna::Emparejar(const std::string& url, const std::string& referer, const std::string& pagina,
+                                               const std::wstring& nombre) const
 {
-    // Por el nombre: el que dio el navegador y el que trae la dirección del archivo
-    std::wstring candidatos[] = { NombreComparable(nombre), NombreComparable(NombreDeUrl(url)) };
-    for (const auto& buscado : candidatos)
+    // Los nombres de la descarga: el que dio el navegador y el que trae la dirección del archivo
+    std::vector<std::wstring> nombres;
+    for (const auto& n : { NombreComparable(nombre), NombreComparable(NombreDeUrl(url)) })
     {
-        if (buscado.empty()) continue;
-        for (size_t i = 0; i < m_partes.size(); i++)
-        {
-            if (m_partes[i].estado == EstadoParte::Abierta && NombreComparable(m_partes[i].nombre) == buscado) return (int)i;
-        }
+        if (!n.empty()) nombres.push_back(n);
     }
-    // Si el nombre no coincide: la primera abierta del mismo sitio (por la página de donde salió o por el servidor)
+    auto tieneSuNombre = [&](const Parte& p) {
+        std::wstring n = NombreComparable(p.nombre);
+        return !n.empty() && std::find(nombres.begin(), nombres.end(), n) != nombres.end();
+    };
+    // Viene del sitio de la parte: la página de origen, la pestaña o el servidor del archivo son de ese sitio
+    auto deSuSitio = [&](const Parte& p) { return MismoSitio(referer, p.url) || MismoSitio(pagina, p.url) || MismoSitio(url, p.url); };
+    // Viene de la página que Atarraya abrió para la parte
+    auto deSuPagina = [&](const Parte& p) { return MismaPagina(referer, p.url) || MismaPagina(pagina, p.url); };
+    auto abierta = [](const Parte& p) { return p.estado == EstadoParte::Abierta; };
+    auto falta = [](const Parte& p) { return p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Esperando; };
+
+    // 1. Tiene el nombre de una parte abierta y viene de su sitio
     for (size_t i = 0; i < m_partes.size(); i++)
     {
-        const auto& p = m_partes[i];
-        if (p.estado == EstadoParte::Abierta && (MismoSitio(referer, p.url) || MismoSitio(url, p.url))) return (int)i;
+        if (abierta(m_partes[i]) && tieneSuNombre(m_partes[i]) && deSuSitio(m_partes[i])) return { (int)i, true };
     }
-    return -1;
+    // 2. Viene de la página de una parte abierta y no tiene el nombre de ninguna parte de la cola
+    if (std::none_of(m_partes.begin(), m_partes.end(), tieneSuNombre))
+    {
+        for (size_t i = 0; i < m_partes.size(); i++)
+        {
+            if (abierta(m_partes[i]) && deSuPagina(m_partes[i])) return { (int)i, true };
+        }
+    }
+    // 3. Hay duda (se pregunta): tiene el nombre de una parte que falta y viene de su sitio, o viene del sitio de una
+    //    parte abierta
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        if (falta(m_partes[i]) && tieneSuNombre(m_partes[i]) && deSuSitio(m_partes[i])) return { (int)i, false };
+    }
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        if (abierta(m_partes[i]) && deSuSitio(m_partes[i])) return { (int)i, false };
+    }
+    return {};
 }
 
 void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
@@ -233,17 +309,22 @@ void hnd::DeUnaEnUna::Saltar(int i)
         p.estado = EstadoParte::Saltada;
 }
 
-std::vector<hnd::Parte> hnd::DeUnaEnUna::Parar()
+std::vector<hnd::Parte> hnd::DeUnaEnUna::Sobrantes() const
 {
     std::vector<Parte> vuelven;
-    for (auto& p : m_partes)
+    for (const auto& p : m_partes)
     {
         if (p.estado == EstadoParte::Esperando || p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Saltada
             || p.estado == EstadoParte::Fallo)
             vuelven.push_back(p);
     }
-    m_partes.clear();
     return vuelven;
+}
+
+bool hnd::DeUnaEnUna::Vaciar()
+{
+    m_partes.clear();
+    return Guardar();
 }
 
 int hnd::DeUnaEnUna::Actual() const

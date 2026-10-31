@@ -83,6 +83,17 @@ function nombreDe(ruta) {
   return partes[partes.length - 1] || "";
 }
 
+// La pestaña donde la persona pulsó descargar. Atarraya la usa para saber de qué página salió la descarga (por
+// ejemplo, en «de una en una»). Como todo lo demás, solo va al programa de esta PC.
+async function paginaActual() {
+  try {
+    const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
+    return tab && /^https?:/i.test(tab.url || "") ? tab.url : "";
+  } catch (e) {
+    return "";
+  }
+}
+
 async function enviar(datos) {
   const r = await hablar(Object.assign({ tipo: "descargar", agente: navigator.userAgent }, datos));
   return !!(r && r.ok);
@@ -111,6 +122,7 @@ api.downloads.onCreated.addListener(async (item) => {
     const datos = {
       url,
       referer: item.referrer || "",
+      pagina: await paginaActual(),
       nombre: nombreDe(item.filename),
       tamano,
       tipoMime: item.mime || "",
@@ -157,7 +169,8 @@ api.contextMenus.onClicked.addListener(async (info, tab) => {
   try {
     // Un enlace magnet no lleva cookies ni página de origen: es para torrents
     const magnet = /^magnet:/i.test(url);
-    ok = await enviar(magnet ? { url } : { url, referer: info.pageUrl || (tab && tab.url) || "", cookies: await cookiesPara(url) });
+    const pagina = info.pageUrl || (tab && tab.url) || "";
+    ok = await enviar(magnet ? { url } : { url, referer: pagina, pagina, cookies: await cookiesPara(url) });
   } catch (e) {}
   if (!ok) {
     api.action.setBadgeText({ text: "!" });

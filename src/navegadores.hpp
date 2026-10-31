@@ -6,9 +6,11 @@
 #include <string>
 #include <vector>
 
+#include "canal.hpp"
+
 namespace hnd::navegadores
 {
-    inline const wchar_t* NombreHost = L"com.briznasoft.atarraya";
+    inline const wchar_t* NombreHost = ATARRAYA_HOST;   // la copia de prueba usa otro (ver canal.hpp)
     inline const char* IdChrome = "mnppdeogjpkdgkbmknkaddjcakoofgaf";   // sale de la clave pública de manifest.json
     inline const char* IdFirefox = "atarraya@briznasoft";
 

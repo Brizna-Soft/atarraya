@@ -54,7 +54,7 @@ namespace hnd
         Recolector& operator=(const Recolector&) = delete;
 
         void Cargar();
-        void Guardar();
+        bool Guardar();   // escribe a un archivo aparte y después reemplaza al anterior; false si no se pudo
 
         // Agrega sin repetir. Devuelve cuántos entraron (hay un tope para que nadie lo llene sin fin).
         // «comoSitio»: vuelven como páginas de sitios de descargas (las que no bajaron en «de una en una»).

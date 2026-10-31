@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "ajustes.hpp"
+#include "canal.hpp"
 #include "hilos.hpp"
 #include "motor.hpp"
 #include "nombres.hpp"
@@ -29,8 +30,15 @@
 
 namespace
 {
-    const wchar_t* ClaseMensajes = L"Atarraya.Mensajes";
+    const wchar_t* ClaseMensajes = ATARRAYA_CLASE_MENSAJES;
     const ULONG_PTR MarcaCopia = 0x41545231;   // «ATR1», igual que en el puente
+#ifdef ATARRAYA_PRUEBAS
+    const wchar_t* NombreUnico = L"Atarraya-prueba-";   // la copia de prueba cuenta aparte de la de verdad
+    const char* SufijoRegistro = " (copia de prueba)";
+#else
+    const wchar_t* NombreUnico = L"Atarraya-";
+    const char* SufijoRegistro = "";
+#endif
 }
 
 class Aplicacion : public wxApp
@@ -101,10 +109,8 @@ bool Aplicacion::OnInit()
     if (!torrent.empty()) pedido = { { "tipo", "torrent" }, { "ruta", hnd::Utf8(torrent) } };
     else if (!url.empty()) pedido = { { "tipo", "descargar" }, { "url", url } };
 
-    // Una sola copia: si ya está abierto, se le pasa el pedido y esta copia se cierra. La copia de prueba
-    // (ATARRAYA_PRUEBA) cuenta aparte, con sus propios datos.
-    bool prueba = !hnd::CarpetaDePrueba().empty();
-    m_unica = std::make_unique<wxSingleInstanceChecker>((prueba ? L"Atarraya-prueba-" : L"Atarraya-") + wxGetUserId());
+    // Una sola copia: si ya está abierto, se le pasa el pedido y esta copia se cierra
+    m_unica = std::make_unique<wxSingleInstanceChecker>(NombreUnico + wxGetUserId());
     if (m_unica->IsAnotherRunning())
     {
         HWND otra = FindWindowExW(HWND_MESSAGE, nullptr, ClaseMensajes, nullptr);
@@ -121,7 +127,7 @@ bool Aplicacion::OnInit()
         return false;
     }
 
-    hnd::Registrar(std::string("Atarraya ") + APP_VERSION_TEXTO + (bandeja ? " (en la bandeja)" : "") + (prueba ? " (copia de prueba)" : ""));
+    hnd::Registrar(std::string("Atarraya ") + APP_VERSION_TEXTO + (bandeja ? " (en la bandeja)" : "") + SufijoRegistro);
     MSWEnableDarkMode();   // claro u oscuro, como Windows
     SetAppDisplayName(L"Atarraya");
 

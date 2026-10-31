@@ -29,7 +29,6 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <map>
 #include <thread>
 
 #include "ayuda.hpp"
@@ -1342,11 +1341,12 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     auto t = j.find("tamano");
     int64_t tamano = t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1;
 
-    // ¿Es la descarga de una página abierta «de una en una»? Se toma sin preguntar: la persona ya eligió la carpeta
-    int parte = m_sitios.Emparejar(d.url, d.referer, nombre);
-    if (parte >= 0)
+    // ¿Es la descarga de una página abierta «de una en una»? Si es seguro, se toma sin preguntar (la persona ya eligió
+    // la carpeta); si viene del sitio pero hay duda, se le pregunta. Si no, sigue como cualquier descarga.
+    auto parte = m_sitios.Emparejar(d.url, d.referer, campo("pagina"), nombre);
+    if (parte.parte >= 0 && (parte.segura || PreguntarSiEsParte(parte.parte, d.url, nombre)))
     {
-        TomarParte(parte, d);
+        TomarParte(parte.parte, d);
         return;
     }
 
@@ -1690,7 +1690,7 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
     int parte = m_sitios.Terminar(f.datos.id, f.datos.estado == Estado::Completada);
     if (parte >= 0)
     {
-        m_sitios.Guardar();
+        GuardarCola();
         Registrar("de una en una: parte " + std::to_string(parte + 1) + (f.datos.estado == Estado::Completada ? " lista" : " con error"));
         Avanzar();
     }
@@ -1768,7 +1768,7 @@ void VentanaPrincipal::Salir()
     m_motor.Detener();
     m_torrents.Detener();
     m_recolector.Detener();
-    m_sitios.Guardar();
+    GuardarCola();
     Destroy();
 }
 
@@ -1814,11 +1814,19 @@ bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolecta
         p.carpeta = porPaquete ? carpeta + L"\\" + LimpiarNombre(p.paquete) : carpeta;
         partes.push_back(std::move(p));
     }
+    // La cola se guarda antes de que los enlaces salgan del recolector: si no se puede guardar, se quedan ahí
+    if (!m_sitios.Agregar(std::move(partes)))
+    {
+        Registrar("de una en una: no se pudo guardar la cola; los enlaces se quedan en el recolector");
+        ayuda::Aviso(L"No se pudo guardar la cola de «de una en una» en " + wxString(CarpetaDatos())
+                         + L". Los enlaces se quedan en el recolector: prueba otra vez en un momento.",
+                     L"De una en una", wxOK | wxICON_WARNING, padre);
+        return false;
+    }
     m_resumenSitios.clear();
-    m_sitios.Agregar(std::move(partes));
     Registrar("de una en una: " + std::to_string(sitios.size()) + (sitios.size() == 1 ? " página" : " páginas") + " en la cola");
     int i = abrir && !m_sitios.HayAbierta() ? m_sitios.AbrirSiguiente() : -1;
-    m_sitios.Guardar();
+    if (i >= 0) GuardarCola();
     Mostrar();   // la barra con los botones está en la ventana principal
     if (i >= 0) AbrirParte(i, false);
     ActualizarBarraSitios();
@@ -1857,7 +1865,7 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
     m_bSiguiente->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         int i = m_sitios.AbrirSiguiente();
         if (i < 0) return;
-        m_sitios.Guardar();
+        GuardarCola();
         AbrirParte(i, false);
         ActualizarBarraSitios();
     });
@@ -1865,18 +1873,23 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
         int i = m_sitios.Actual();
         if (i < 0 || m_sitios.Partes()[i].estado != EstadoParte::Abierta) return;
         m_sitios.Saltar(i);
-        m_sitios.Guardar();
+        GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + " saltada");
         Avanzar();
     });
     m_bParar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-        auto vuelven = m_sitios.Parar();
-        m_sitios.Guardar();
-        DevolverAlRecolector(vuelven);
-        Registrar("de una en una: parada; " + std::to_string(vuelven.size()) + " vuelven al recolector");
-        if (vuelven.empty()) m_resumenSitios = L"Paraste la cola.";
-        else if (vuelven.size() == 1) m_resumenSitios = L"Paraste la cola: la página que faltaba volvió al recolector.";
-        else m_resumenSitios = wxString::Format(L"Paraste la cola: las %zu páginas que faltaban volvieron al recolector.", vuelven.size());
+        size_t vuelven = 0;
+        if (!DevolverYVaciar(vuelven))
+        {
+            ayuda::Aviso(L"No se pudo guardar el recolector, así que la cola sigue como estaba y no se perdió ninguna página. "
+                         L"Prueba otra vez en un momento.",
+                         L"De una en una", wxOK | wxICON_WARNING, this);
+            return;
+        }
+        Registrar("de una en una: parada; " + std::to_string(vuelven) + " vuelven al recolector");
+        if (vuelven == 0) m_resumenSitios = L"Paraste la cola.";
+        else if (vuelven == 1) m_resumenSitios = L"Paraste la cola: la página que faltaba volvió al recolector.";
+        else m_resumenSitios = wxString::Format(L"Paraste la cola: las %zu páginas que faltaban volvieron al recolector.", vuelven);
         ActualizarBarraSitios();
         Refrescar();
     });
@@ -1906,7 +1919,12 @@ void VentanaPrincipal::ActualizarBarraSitios()
         else if (i >= 0)
         {
             texto = wxString::Format(L"Parte %d de %zu bajando en Atarraya. ", i + 1, total);
-            texto += m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Es la última.";
+            texto += m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.";
+        }
+        else if (m_sitios.Terminada())
+        {
+            // Terminó, pero el recolector no se pudo guardar: las que no bajaron siguen aquí
+            texto = L"Terminó la cola, pero las páginas que no bajaron no pudieron volver al recolector. Pulsa «Parar» para intentarlo otra vez.";
         }
         else
         {
@@ -1950,16 +1968,15 @@ void VentanaPrincipal::AbrirParte(int i, bool avisar)
     if (i < 0 || (size_t)i >= partes.size()) return;
     std::string url = partes[i].url;
     size_t total = partes.size();
-    std::wstring prueba = CarpetaDePrueba();
-    if (prueba.empty()) ayuda::AbrirEnlace(wxString::FromUTF8(url));
-    else
-    {
-        // Copia de prueba: no se abre ningún navegador, solo se anota la página
-        std::wstring archivo = prueba + L"\\paginas-abiertas.txt";
-        std::string antes;
-        LeerArchivo(archivo, antes);
-        EscribirSeguro(archivo, antes + url + "\n");
-    }
+#ifdef ATARRAYA_PRUEBAS
+    // Copia de prueba: no se abre ningún navegador, solo se anota la página
+    std::wstring archivo = CarpetaDePrueba() + L"\\paginas-abiertas.txt";
+    std::string antes;
+    LeerArchivo(archivo, antes);
+    EscribirSeguro(archivo, antes + url + "\n");
+#else
+    ayuda::AbrirEnlace(wxString::FromUTF8(url));
+#endif
     Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " abierta en el navegador ("
               + SoloSitio(url) + ")");
     if (avisar)
@@ -1970,16 +1987,21 @@ void VentanaPrincipal::Avanzar()
 {
     if (m_sitios.Terminada())
     {
-        size_t total = m_sitios.Partes().size(), listas = m_sitios.Cuantas(EstadoParte::Lista);
-        auto vuelven = m_sitios.Parar();   // las saltadas y las que fallaron: se pueden intentar después
-        m_sitios.Guardar();
-        DevolverAlRecolector(vuelven);
+        size_t total = m_sitios.Partes().size(), listas = m_sitios.Cuantas(EstadoParte::Lista), vuelven = 0;
+        // Las saltadas y las que fallaron vuelven al recolector, para intentarlas después
+        if (!DevolverYVaciar(vuelven))
+        {
+            Avisar(L"De una en una", L"No se pudo guardar el recolector: las páginas que no bajaron siguen en la cola. Pulsa «Parar» "
+                                     L"para intentarlo otra vez.", true);
+            ActualizarBarraSitios();
+            return;
+        }
         if (listas == total) m_resumenSitios = total == 1 ? wxString(L"Listo: bajó la única parte.") : wxString::Format(L"Listo: bajaron las %zu partes.", total);
         else
         {
             m_resumenSitios = wxString::Format(L"Listo: bajaron %zu de %zu partes. ", listas, total);
-            m_resumenSitios += vuelven.size() == 1 ? wxString(L"La otra volvió al recolector, para intentarla después.")
-                                                   : wxString::Format(L"Las otras %zu volvieron al recolector, para intentarlas después.", vuelven.size());
+            m_resumenSitios += vuelven == 1 ? wxString(L"La otra volvió al recolector, para intentarla después.")
+                                            : wxString::Format(L"Las otras %zu volvieron al recolector, para intentarlas después.", vuelven);
         }
         Registrar("de una en una: terminó (" + std::to_string(listas) + " de " + std::to_string(total) + " listas)");
         Avisar(L"De una en una: listo", m_resumenSitios);
@@ -1991,7 +2013,7 @@ void VentanaPrincipal::Avanzar()
         int i = m_sitios.AbrirSiguiente();
         if (i >= 0)
         {
-            m_sitios.Guardar();
+            GuardarCola();
             AbrirParte(i, true);
         }
     }
@@ -2007,7 +2029,7 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
     d.conexiones = 1;
     uint64_t id = m_motor.Agregar(d, true);
     m_sitios.Tomar(i, id);
-    m_sitios.Guardar();
+    GuardarCola();
     size_t total = m_sitios.Partes().size();
     Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " tomada (" + SoloSitio(d.url) + ")");
     Avisar(wxString::Format(L"Parte %d de %zu: la baja Atarraya", i + 1, total),
@@ -2016,14 +2038,50 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
     Refrescar();
 }
 
-void VentanaPrincipal::DevolverAlRecolector(const std::vector<Parte>& partes)
+bool VentanaPrincipal::PreguntarSiEsParte(int i, const std::string& url, const std::wstring& nombre)
 {
-    if (partes.empty()) return;
-    // Por paquete y por página de origen, como llegaron
-    std::map<std::pair<std::wstring, std::string>, std::vector<std::string>> grupos;
-    for (const auto& p : partes) grupos[{ p.paquete, p.referer }].push_back(p.url);
-    for (const auto& [clave, urls] : grupos) m_recolector.Agregar(urls, clave.first, clave.second, "de-una-en-una", true);
+    const auto& p = m_sitios.Partes()[i];
+    wxString archivo = nombre.empty() ? wxString(NombreDeUrl(url)) : wxString(nombre);
+    wxString texto = L"Llegó una descarga de " + wxString::FromUTF8(enlaces::Sitio(url));
+    if (archivo.Find(L'.') != wxNOT_FOUND) texto += L": «" + archivo + L"»";   // solo si parece un nombre de archivo
+    texto += wxString::Format(L".\n\n¿Es la parte %d de %zu", i + 1, m_sitios.Partes().size());
+    if (p.nombre.find(L'.') != std::wstring::npos) texto += L" («" + wxString(p.nombre) + L"»)";
+    texto += L", la que abrió Atarraya en tu navegador?\n\nSi no lo es, sigue como cualquier descarga.";
+    wxMessageDialog d(IsShown() ? this : nullptr, texto, L"De una en una", wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
+    d.SetYesNoLabels(wxString::Format(L"Sí, es la parte %d", i + 1), L"No, es otra descarga");
+    bool si = d.ShowModal() == wxID_YES;
+    Registrar("de una en una: se preguntó si una descarga de " + SoloSitio(url) + " era la parte " + std::to_string(i + 1) + ": "
+              + (si ? "sí" : "no"));
+    return si;
+}
+
+bool VentanaPrincipal::DevolverYVaciar(size_t& devueltas)
+{
+    auto vuelven = m_sitios.Sobrantes();
+    devueltas = vuelven.size();
+    // 1. Primero el recolector, con las páginas que vuelven (si falla, la cola queda como estaba)
+    if (!GuardarEnRecolector(vuelven, m_recolector))
+    {
+        Registrar("de una en una: no se pudo guardar el recolector; la cola sigue como estaba");
+        return false;
+    }
     if (m_ventanaRecolector) m_ventanaRecolector->Refrescar();
+    // 2. Después la cola vacía. Si esto falla, las páginas quedan repetidas en los dos lados, pero no se pierden
+    if (!m_sitios.Vaciar()) GuardarCola();
+    return true;
+}
+
+void VentanaPrincipal::GuardarCola()
+{
+    if (m_sitios.Guardar())
+    {
+        m_colaSinGuardar = false;
+        return;
+    }
+    Registrar("de una en una: no se pudo guardar la cola");
+    if (m_colaSinGuardar) return;   // ya se avisó
+    m_colaSinGuardar = true;
+    Avisar(L"De una en una", L"No se pudo guardar la cola. Si cierras Atarraya ahora, puede que no siga donde iba.", true);
 }
 
 void VentanaPrincipal::RevisarPartes()
@@ -2047,7 +2105,7 @@ void VentanaPrincipal::RevisarPartes()
     }
     if (cambio)
     {
-        m_sitios.Guardar();
+        GuardarCola();
         Avanzar();
     }
 }

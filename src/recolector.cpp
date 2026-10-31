@@ -238,7 +238,7 @@ void hnd::Recolector::Cargar()
     m_guardada = m_version;
 }
 
-void hnd::Recolector::Guardar()
+bool hnd::Recolector::Guardar()
 {
     json l = json::array();
     uint64_t version;
@@ -254,7 +254,9 @@ void hnd::Recolector::Guardar()
     }
     json todo = { { "version", 1 }, { "enlaces", l } };
     // «replace»: un texto que no es UTF-8 válido (por ejemplo, de Click'n'Load) no impide guardar
-    if (EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace))) m_guardada = version;
+    if (!EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace))) return false;
+    m_guardada = version;
+    return true;
 }
 
 size_t hnd::Recolector::Agregar(const std::vector<std::string>& urls, const std::wstring& paquete, const std::string& referer,

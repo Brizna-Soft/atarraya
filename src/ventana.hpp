@@ -90,7 +90,11 @@ private:
     void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
     void Avanzar();                        // terminó o se saltó una: abre la siguiente, o cierra la cola si no queda nada
     void TomarParte(int i, hnd::DatosDescarga d);
-    void DevolverAlRecolector(const std::vector<hnd::Parte>& partes);
+    bool PreguntarSiEsParte(int i, const std::string& url, const std::wstring& nombre);
+    // Las que no bajaron vuelven al recolector sin perder ninguna (primero se guarda el recolector, después la cola).
+    // false si el recolector no se pudo guardar: entonces la cola queda como estaba.
+    bool DevolverYVaciar(size_t& devueltas);
+    void GuardarCola();                    // y avisa una vez si no se pudo
     void RevisarPartes();                  // descargas de partes que la persona quitó de la lista
 
     hnd::Motor& m_motor;
@@ -118,6 +122,7 @@ private:
     std::vector<uint64_t> m_avisadosElegir; // ya se avisó con un globo
 
     hnd::DeUnaEnUna m_sitios;
+    bool m_colaSinGuardar = false;          // ya se avisó que la cola no se pudo guardar
     wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
     wxPanel* m_barraSitios = nullptr;
     wxStaticText* m_textoSitios = nullptr;

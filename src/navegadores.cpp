@@ -77,10 +77,10 @@ std::vector<hnd::navegadores::Navegador> hnd::navegadores::Estado()
 
 bool hnd::navegadores::Conectar(std::wstring& error)
 {
-    std::wstring puente = CarpetaDelPrograma() + L"\\atarraya-puente.exe";
+    std::wstring puente = CarpetaDelPrograma() + L"\\" ATARRAYA_PUENTE;
     if (!ExisteArchivo(puente))
     {
-        error = L"No encuentro atarraya-puente.exe junto al programa. Vuelve a descomprimir Atarraya completo.";
+        error = L"No encuentro " ATARRAYA_PUENTE L" junto al programa. Vuelve a descomprimir Atarraya completo.";
         return false;
     }
 
