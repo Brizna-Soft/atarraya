@@ -7,10 +7,19 @@
 <body>
   <h1><img src="iconos/icono-32.png" alt="" width="20" height="20"> Atarraya</h1>
   <p id="estado" class="estado">Revisando...</p>
+
+  <h2>Videos de esta pestaña</h2>
+  <p id="videosEstado" class="nota">Buscando...</p>
+  <ul id="videos" class="videos"></ul>
+  <p id="videosResultado" class="resultado" hidden></p>
+
+  <h2>Descargas</h2>
   <label class="fila"><input type="checkbox" id="capturar"> Pasar las descargas a Atarraya</label>
   <label class="fila">Solo archivos de más de <input type="number" id="minimo" min="0" max="100000" step="1"> MB (0 = todos)</label>
   <p class="nota">Atarraya toma las descargas de cualquier sitio. Las que salen de un formulario y las que arma la
     misma página siguen en el navegador. También puedes hacer clic derecho en un enlace → «Descargar con Atarraya».</p>
+  <p class="nota">Nada se baja solo: los videos van a Atarraya solo cuando pulsas «Bajar» o «Descargar este video».
+    No baja videos de YouTube ni videos protegidos.</p>
   <p class="nota"><a href="https://brizna-soft.github.io" target="_blank" rel="noopener">Brizna Soft</a> ·
     gratis, sin publicidad y sin recoger datos.</p>
   <script src="popup.js"></script>

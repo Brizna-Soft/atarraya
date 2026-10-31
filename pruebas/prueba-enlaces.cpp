@@ -26,6 +26,7 @@
 
 #include "clicknload.hpp"
 #include "deunaenuna.hpp"
+#include "flujos.hpp"
 #include "jicaro.hpp"
 #include "nombres.hpp"
 #include "enlaces.hpp"
@@ -438,6 +439,22 @@ namespace
     public:
         explicit ServidorDePrueba(std::function<std::string(int, const std::string&)> responder) : m_responder(std::move(responder))
         {
+            Iniciar();
+        }
+        // Otra forma: lo que se responde depende de la ruta pedida («/hls/lista.m3u8») y de su Range
+        struct PorRuta
+        {
+            std::function<std::string(const std::string&, const std::string&)> f;
+        };
+        explicit ServidorDePrueba(PorRuta porRuta) : m_porRuta(std::move(porRuta.f))
+        {
+            Iniciar();
+        }
+        int Pedidos() const { return m_pedidos; }
+
+    private:
+        void Iniciar()
+        {
             m_escucha = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             sockaddr_in a{};
             a.sin_family = AF_INET;
@@ -449,6 +466,8 @@ namespace
             m_puerto = ntohs(a.sin_port);
             m_hilo = std::thread([this]() { Atender(); });
         }
+
+    public:
         ~ServidorDePrueba()
         {
             m_parar = true;
@@ -486,7 +505,17 @@ namespace
                     rango = pedido.substr(p + 8, fin - (p + 8));
                     while (!rango.empty() && rango.front() == ' ') rango.erase(rango.begin());
                 }
-                std::string respuesta = m_responder(++m_pedidos, rango);
+                std::string respuesta;
+                if (m_porRuta)
+                {
+                    // «GET /ruta HTTP/1.1»
+                    auto e1 = pedido.find(' ');
+                    auto e2 = e1 == std::string::npos ? std::string::npos : pedido.find(' ', e1 + 1);
+                    std::string ruta = e2 == std::string::npos ? std::string() : pedido.substr(e1 + 1, e2 - e1 - 1);
+                    ++m_pedidos;
+                    respuesta = m_porRuta(ruta, rango);
+                }
+                else respuesta = m_responder(++m_pedidos, rango);
                 for (size_t enviado = 0; enviado < respuesta.size();)
                 {
                     int n = send(c, respuesta.data() + enviado, (int)std::min<size_t>(respuesta.size() - enviado, 65536), 0);
@@ -499,9 +528,10 @@ namespace
         }
 
         std::function<std::string(int, const std::string&)> m_responder;
+        std::function<std::string(const std::string&, const std::string&)> m_porRuta;
         SOCKET m_escucha = INVALID_SOCKET;
         int m_puerto = 0;
-        int m_pedidos = 0;
+        std::atomic<int> m_pedidos{ 0 };
         std::atomic<bool> m_parar{ false };
         std::thread m_hilo;
     };
@@ -1198,6 +1228,336 @@ namespace
             fs::remove_all(b, ec);
         }
     }
+
+    // ---- Videos por partes: HLS y DASH ----
+
+    std::string Http(int codigo, const std::string& tipo, const std::string& cuerpo, const std::string& extra = "")
+    {
+        std::string razon = codigo == 200 ? "OK" : codigo == 206 ? "Partial Content" : codigo == 404 ? "Not Found" : "X";
+        return "HTTP/1.1 " + std::to_string(codigo) + " " + razon + "\r\nContent-Type: " + tipo + "\r\nContent-Length: "
+               + std::to_string(cuerpo.size()) + "\r\n" + extra + "Connection: close\r\n\r\n" + cuerpo;
+    }
+
+    // Baja un video por partes con el motor de verdad y espera a que termine o se detenga
+    Foto BajarVideo(const std::string& url, const std::string& formato, const std::string& pista, bool local, const std::wstring& carpeta,
+                    const std::wstring& nombre)
+    {
+        Motor m(carpeta + L"\\estado-video.json");
+        DatosDescarga d;
+        d.url = url;
+        d.formato = formato;
+        d.pista = pista;
+        d.flujoLocal = local;
+        d.carpeta = carpeta;
+        d.nombre = nombre;
+        d.conexiones = 3;
+        uint64_t id = m.Agregar(d, true);
+        Foto f;
+        for (int i = 0; i < 300; i++)
+        {
+            m.Tick();
+            if (m.Buscar(id, f) && (f.datos.estado == Estado::Error || f.datos.estado == Estado::Completada)) break;
+            Sleep(100);
+        }
+        m.Detener();
+        return f;
+    }
+
+    void FlujosPruebas()
+    {
+        using namespace hnd::flujos;
+
+        // 1. Direcciones relativas, como un navegador
+        const std::string base = "https://cdn.ejemplo.org/videos/peli/index.m3u8?token=abc";
+        Comprobar(Resolver(base, "seg_001.ts") == "https://cdn.ejemplo.org/videos/peli/seg_001.ts"
+                      && Resolver(base, "../otra/seg.ts?x=1") == "https://cdn.ejemplo.org/videos/otra/seg.ts?x=1"
+                      && Resolver(base, "/raiz/seg.ts") == "https://cdn.ejemplo.org/raiz/seg.ts"
+                      && Resolver(base, "//otro.cdn.net/a.ts") == "https://otro.cdn.net/a.ts"
+                      && Resolver(base, "http://x.org/b.ts") == "http://x.org/b.ts"
+                      && Resolver(base, "720p/./index.m3u8#y") == "https://cdn.ejemplo.org/videos/peli/720p/index.m3u8"
+                      && Resolver("http://h:8080", "a.ts") == "http://h:8080/a.ts",
+                  "videos: direcciones relativas de la lista, como un navegador");
+
+        // 2. HLS: lista maestra con calidades y audio aparte
+        std::string maestra = "\xEF\xBB\xBF#EXTM3U\r\n"
+                              "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"Español\",LANGUAGE=\"es\",DEFAULT=YES,URI=\"audio/es.m3u8\"\r\n"
+                              "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",LANGUAGE=\"en\",URI=\"audio/en.m3u8\"\r\n"
+                              "#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360,CODECS=\"avc1.4d401e,mp4a.40.2\"\r\n"
+                              "360p/index.m3u8\r\n"
+                              "#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",AUDIO=\"aac\"\r\n"
+                              "1080p/index.m3u8\r\n"
+                              "#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100000,URI=\"iframes.m3u8\"\r\n"
+                              "#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720\r\n"
+                              "720p/index.m3u8\r\n";
+        auto m = LeerHls(maestra, base);
+        int mejor = MejorVariante(m);
+        Comprobar(m.valida && m.maestra && !m.cifrada && !m.enVivo && m.variantes.size() == 3 && mejor == 1
+                      && m.variantes[1].url == "https://cdn.ejemplo.org/videos/peli/1080p/index.m3u8" && m.variantes[1].alto == 1080
+                      && m.variantes[1].banda == 5000000 && m.audios.size() == 2 && AudioDeVariante(m, 1) == 0
+                      && m.audios[0].url == "https://cdn.ejemplo.org/videos/peli/audio/es.m3u8" && AudioDeVariante(m, 0) == -1,
+                  "videos: HLS maestra: calidades, la mejor (1080p) y su audio aparte; las de solo cuadros clave no cuentan");
+        Comprobar(LeerHls("#EXTM3U\n#EXT-X-SESSION-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXT-X-STREAM-INF:BANDWIDTH=1\na.m3u8\n", base).cifrada,
+                  "videos: HLS maestra con EXT-X-SESSION-KEY: protegida");
+
+        // 3. HLS: lista de partes
+        std::string partes = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.0,\nseg0.ts\n#EXTINF:4.0,\nseg1.ts\n"
+                             "#EXTINF:2.5,título\nhttps://otro.cdn.net/seg2.ts\n#EXT-X-ENDLIST\n";
+        auto p = LeerHls(partes, base);
+        Comprobar(p.valida && !p.maestra && !p.cifrada && !p.enVivo && p.trozos.size() == 3 && std::abs(p.duracion - 10.5) < 1e-6
+                      && p.trozos[0].url == "https://cdn.ejemplo.org/videos/peli/seg0.ts" && p.trozos[2].url == "https://otro.cdn.net/seg2.ts"
+                      && p.trozos[0].desde == -1 && ExtensionHls(p) == L".ts",
+                  "videos: HLS de partes: direcciones, duración y extensión .ts");
+        auto sinFin = LeerHls("#EXTM3U\n#EXTINF:4,\na.ts\n", base);
+        auto vod = LeerHls("#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n#EXTINF:4,\na.ts\n", base);
+        Comprobar(sinFin.enVivo && !vod.enVivo && !LeerHls("hola\n#EXTM3U\n", base).valida && !LeerHls("<html>", base).valida,
+                  "videos: HLS sin EXT-X-ENDLIST es en vivo (salvo VOD); un texto cualquiera no es una lista");
+        bool todasCifradas = true;
+        for (const char* metodo : { "AES-128", "SAMPLE-AES", "SAMPLE-AES-CTR", "NONE" })
+            todasCifradas = todasCifradas
+                            && LeerHls(std::string("#EXTM3U\n#EXT-X-KEY:METHOD=") + metodo + ",URI=\"k.bin\"\n#EXTINF:4,\na.ts\n#EXT-X-ENDLIST\n", base).cifrada;
+        Comprobar(todasCifradas, "videos: HLS con EXT-X-KEY (con cualquier método): protegida, no se baja");
+        auto cmaf = LeerHls("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\",BYTERANGE=\"800@0\"\n#EXTINF:2,\nparte1.m4s\n#EXTINF:2,\nparte2.m4s\n#EXT-X-ENDLIST\n", base);
+        Comprobar(cmaf.inicio.url == "https://cdn.ejemplo.org/videos/peli/init.mp4" && cmaf.inicio.desde == 0 && cmaf.inicio.largo == 800
+                      && cmaf.trozos.size() == 2 && ExtensionHls(cmaf) == L".mp4",
+                  "videos: HLS CMAF/fMP4: su EXT-X-MAP va primero y el archivo es .mp4");
+        auto rangos = LeerHls("#EXTM3U\n#EXTINF:2,\n#EXT-X-BYTERANGE:1000@0\ntodo.ts\n#EXTINF:2,\n#EXT-X-BYTERANGE:1500\ntodo.ts\n"
+                              "#EXTINF:2,\n#EXT-X-BYTERANGE:500@2500\ntodo.ts\n#EXTINF:2,\n#EXT-X-BYTERANGE:40\notro.ts\n#EXT-X-ENDLIST\n", base);
+        Comprobar(rangos.trozos.size() == 4 && rangos.trozos[0].desde == 0 && rangos.trozos[0].largo == 1000 && rangos.trozos[1].desde == 1000
+                      && rangos.trozos[1].largo == 1500 && rangos.trozos[2].desde == 2500 && rangos.trozos[3].desde == 0,
+                  "videos: HLS con EXT-X-BYTERANGE: trozos de un archivo (sin «@» sigue donde terminó el anterior del mismo archivo)");
+
+        // 4. DASH
+        std::string mpd =
+            "<?xml version=\"1.0\"?>\n<!-- un comentario -->\n"
+            "<MPD xmlns=\"urn:mpeg:dash:schema:mpd:2011\" type=\"static\" mediaPresentationDuration=\"PT0H0M10.5S\">\n"
+            " <BaseURL>https://cdn.ejemplo.org/dash/</BaseURL>\n"
+            " <Period>\n"
+            "  <AdaptationSet mimeType=\"video/mp4\" segmentAlignment=\"true\">\n"
+            "   <SegmentTemplate timescale=\"1000\" duration=\"4000\" startNumber=\"1\" initialization=\"$RepresentationID$/init.mp4\""
+            " media=\"$RepresentationID$/seg-$Number%05d$.m4s?a=1&amp;b=2\"/>\n"
+            "   <Representation id=\"v360\" bandwidth=\"800000\" width=\"640\" height=\"360\" codecs=\"avc1.4d401e\"/>\n"
+            "   <Representation id=\"v1080\" bandwidth=\"5000000\" width=\"1920\" height=\"1080\" codecs=\"avc1.640028\"/>\n"
+            "  </AdaptationSet>\n"
+            "  <AdaptationSet contentType=\"audio\" mimeType=\"audio/mp4\">\n"
+            "   <Representation id=\"a128\" bandwidth=\"128000\" codecs=\"mp4a.40.2\">\n"
+            "    <BaseURL>audio/</BaseURL>\n"
+            "    <SegmentTemplate timescale=\"48000\" initialization=\"init-$Bandwidth$.mp4\" media=\"t$Time$.m4s\">\n"
+            "     <SegmentTimeline><S t=\"0\" d=\"96000\" r=\"2\"/><S d=\"48000\"/></SegmentTimeline>\n"
+            "    </SegmentTemplate>\n"
+            "   </Representation>\n"
+            "  </AdaptationSet>\n"
+            "  <AdaptationSet mimeType=\"text/vtt\"><Representation id=\"sub\" bandwidth=\"1\"/></AdaptationSet>\n"
+            " </Period>\n</MPD>\n";
+        auto dash = LeerDash(mpd, "https://sitio.org/ver/manifiesto.mpd");
+        int mv = MejorRepresentacion(dash.videos), ma = MejorRepresentacion(dash.audios);
+        Comprobar(dash.valido && !dash.protegido && !dash.enVivo && !dash.variasPartes && std::abs(dash.duracion - 10.5) < 1e-6
+                      && dash.videos.size() == 2 && dash.audios.size() == 1 && mv == 1 && dash.videos[1].trozos.size() == 3
+                      && dash.videos[1].inicio.url == "https://cdn.ejemplo.org/dash/v1080/init.mp4"
+                      && dash.videos[1].trozos[0].url == "https://cdn.ejemplo.org/dash/v1080/seg-00001.m4s?a=1&b=2"
+                      && dash.videos[1].trozos[2].url == "https://cdn.ejemplo.org/dash/v1080/seg-00003.m4s?a=1&b=2"
+                      && ExtensionDash(dash.videos[1]) == L".mp4",
+                  "videos: DASH con SegmentTemplate: la mejor calidad, sus partes ($Number%05d$, sin pasarse del final) y su BaseURL");
+        Comprobar(ma == 0 && dash.audios[0].inicio.url == "https://cdn.ejemplo.org/dash/audio/init-128000.mp4" && dash.audios[0].trozos.size() == 4
+                      && dash.audios[0].trozos[1].url == "https://cdn.ejemplo.org/dash/audio/t96000.m4s"
+                      && dash.audios[0].trozos[3].url == "https://cdn.ejemplo.org/dash/audio/t288000.m4s" && ExtensionDash(dash.audios[0]) == L".m4a"
+                      && BuscarRepresentacion(dash.videos, "v360") == 0 && BuscarRepresentacion(dash.videos, "no") == -1,
+                  "videos: DASH con SegmentTimeline ($Time$ y repeticiones) para el audio, que va en otro archivo (.m4a)");
+        std::string lista = "<MPD mediaPresentationDuration=\"PT20S\"><Period><AdaptationSet mimeType=\"video/webm\">"
+                            "<Representation id=\"1\" bandwidth=\"1000\"><BaseURL>http://h.org/v.webm</BaseURL><SegmentList>"
+                            "<Initialization range=\"0-499\"/><SegmentURL mediaRange=\"500-999\"/><SegmentURL media=\"p2.webm\"/></SegmentList>"
+                            "</Representation></AdaptationSet><AdaptationSet mimeType=\"audio/mp4\"><Representation id=\"2\" bandwidth=\"64000\">"
+                            "<BaseURL>a.m4a</BaseURL><SegmentBase indexRange=\"0-100\"/></Representation></AdaptationSet></Period></MPD>";
+        auto dl = LeerDash(lista, "http://h.org/m.mpd");
+        Comprobar(dl.valido && dl.videos.size() == 1 && dl.videos[0].inicio.url == "http://h.org/v.webm" && dl.videos[0].inicio.desde == 0
+                      && dl.videos[0].inicio.largo == 500 && dl.videos[0].trozos.size() == 2 && dl.videos[0].trozos[0].desde == 500
+                      && dl.videos[0].trozos[1].url == "http://h.org/p2.webm" && ExtensionDash(dl.videos[0]) == L".webm"
+                      && dl.audios.size() == 1 && dl.audios[0].unArchivo && dl.audios[0].trozos.size() == 1
+                      && dl.audios[0].trozos[0].url == "http://h.org/a.m4a",
+                  "videos: DASH con SegmentList (rangos) y con SegmentBase (todo el medio en un archivo)");
+        auto conDrm = LeerDash("<MPD><Period><AdaptationSet mimeType=\"video/mp4\"><ContentProtection schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" "
+                               "value=\"cenc\"/><Representation id=\"1\" bandwidth=\"1\"><BaseURL>v.mp4</BaseURL></Representation></AdaptationSet>"
+                               "</Period></MPD>", "http://h.org/m.mpd");
+        auto drmEnRep = LeerDash("<mpd:MPD xmlns:mpd=\"urn:x\"><mpd:Period><mpd:AdaptationSet mimeType=\"video/mp4\"><mpd:Representation id=\"1\">"
+                                 "<mpd:ContentProtection schemeIdUri=\"urn:uuid:edef8ba9-79d6-4ace-a3c8-27dcd51d21ed\"><cenc:pssh>AAAA</cenc:pssh>"
+                                 "</mpd:ContentProtection></mpd:Representation></mpd:AdaptationSet></mpd:Period></mpd:MPD>", "http://h.org/m.mpd");
+        Comprobar(conDrm.valido && conDrm.protegido && drmEnRep.valido && drmEnRep.protegido,
+                  "videos: DASH con ContentProtection (en el conjunto o en la representación, con o sin prefijo): protegido");
+        auto vivo = LeerDash("<MPD type=\"dynamic\"><Period/></MPD>", "http://h.org/m.mpd");
+        auto dos = LeerDash("<MPD><Period duration=\"PT5S\"/><Period duration=\"PT5S\"/></MPD>", "http://h.org/m.mpd");
+        Comprobar(vivo.valido && vivo.enVivo && dos.variasPartes && !LeerDash("<html><body>hola</body></html>", "").valido
+                      && !LeerDash("<MPD><Period", "").valido,
+                  "videos: DASH en vivo, con varios períodos o mal hecho: no se baja");
+
+        // 5. Lo que no se baja: YouTube, sitios con DRM y lo que no es de internet
+        Trozo sin;
+        std::vector<Trozo> bien = { { "https://cdn.ejemplo.org/a.ts" }, { "http://cdn.ejemplo.org/b.ts" } };
+        Comprobar(RevisarTrozos(sin, bien).empty() && RevisarTrozos(sin, { { "https://rr3---sn-a5m.googlevideo.com/videoplayback?x" } }) == Utf8(enlaces::TextoNoPermitido)
+                      && RevisarTrozos(sin, { { "https://www.youtube-nocookie.com/a.ts" } }) == Utf8(enlaces::TextoNoPermitido)
+                      && RevisarTrozos({ "https://m.youtube.com/i.mp4" }, bien) == Utf8(enlaces::TextoNoPermitido)
+                      && RevisarTrozos(sin, { { "https://ipv4-c001.1.nflxvideo.net/range/0-1" } }) == TextoProtegido
+                      && !RevisarTrozos(sin, { { "file:///C:/Windows/win.ini" } }).empty() && !RevisarTrozos(sin, { { "ftp://h.org/a.ts" } }).empty()
+                      && !RevisarTrozos(sin, {}).empty(),
+                  "videos: partes de YouTube o de googlevideo.com (también el inicio), de un sitio con DRM o que no son http: no se bajan");
+        Comprobar(enlaces::SitioProtegido("https://www.netflix.com/watch/1") && enlaces::SitioProtegido("https://www.disneyplus.com/video/x")
+                      && enlaces::SitioProtegido("https://www.primevideo.com/detail") && enlaces::SitioProtegido("https://www.amazon.com/gp/video/detail/B0")
+                      && enlaces::SitioProtegido("https://play.max.com/") && enlaces::SitioProtegido("https://tv.apple.com/")
+                      && !enlaces::SitioProtegido("https://www.amazon.com/dp/B0") && !enlaces::SitioProtegido("https://archive.org/details/x")
+                      && !enlaces::SitioProtegido("https://notmax.com/") && enlaces::NoPermitido("https://m.youtube.com/watch?v=1"),
+                  "videos: sitios con DRM (Netflix, Disney+, Prime Video, Max...); una tienda de Amazon o Internet Archive no");
+        Comprobar(TextoCalidad(1920, 1080, 5000000, false) == L"1080p · 5.0 Mb/s" && TextoCalidad(0, 0, 128000, true) == L"Audio · 128 kb/s"
+                      && TextoCalidad(0, 0, 0, false) == L"Video",
+                  "videos: la calidad para la persona («1080p · 5.0 Mb/s»)");
+
+        // 6. Juntar en orden aunque lleguen desordenadas
+        {
+            std::string archivo;
+            auto escribir = [&](int64_t pos, const char* d, size_t n) {
+                if (archivo.size() < (size_t)pos + n) archivo.resize((size_t)pos + n);
+                memcpy(&archivo[(size_t)pos], d, n);
+                return true;
+            };
+            Ensamblador e(4, 0, 0, escribir);
+            e.Pedazo(2, "CC", 2);
+            e.Terminar(2);
+            e.Pedazo(0, "AA", 2);
+            e.Pedazo(1, "B", 1);
+            e.Pedazo(0, "A", 1);
+            bool enEspera = e.EnMemoria() == 3 && e.Siguiente() == 0;
+            e.Terminar(0);
+            e.Pedazo(1, "B", 1);
+            e.Pedazo(1, "XYZ", 3);   // a mitad, falla: se descarta y se baja otra vez
+            e.Descartar(1);
+            e.Pedazo(1, "BB", 2);
+            e.Terminar(1);
+            e.Pedazo(3, "DDD", 3);
+            e.Terminar(3);
+            Comprobar(enEspera && e.Completo() && e.BytesEscritos() == 10 && archivo.substr(0, 10) == "AAABBCCDDD" && e.EnMemoria() == 0,
+                      "videos: las partes se juntan en orden aunque lleguen desordenadas; una que falla a mitad se baja otra vez");
+            std::string seguido = "AAAB";
+            auto sobre = [&](int64_t pos, const char* d, size_t n) {
+                if (seguido.size() < (size_t)pos + n) seguido.resize((size_t)pos + n);
+                memcpy(&seguido[(size_t)pos], d, n);
+                return true;
+            };
+            Ensamblador r(3, 2, 4, sobre);   // al volver a abrir: ya había dos partes (4 bytes)
+            r.Pedazo(2, "CC", 2);
+            r.Terminar(2);
+            Comprobar(r.Completo() && seguido == "AAABCC", "videos: al reanudar sigue después de las partes que ya estaban juntas");
+        }
+
+        // 7. Con el motor de verdad y un servidor de prueba: bajar, juntar y lo que no se baja
+        namespace fs = std::filesystem;
+        std::wstring carpeta = (fs::temp_directory_path() / (L"atarraya-prueba-videos-" + std::to_wstring(GetCurrentProcessId()))).wstring();
+        std::error_code ec;
+        fs::remove_all(carpeta, ec);
+        fs::create_directories(carpeta, ec);
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", carpeta.c_str());
+        auto parte = [](int i) { return std::string((size_t)(900 + i * 37), (char)('a' + i)); };
+        std::string todo;
+        for (int i = 0; i < 6; i++) todo += parte(i);
+        std::string init = "INIT-fMP4-ftyp-moov";
+        std::string rango3000;
+        for (int i = 0; i < 3000; i++) rango3000 += (char)('0' + i % 10);
+        std::string listaHls = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n";
+        std::string listaCmaf = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n";
+        for (int i = 0; i < 6; i++)
+        {
+            listaHls += "#EXTINF:2,\nseg" + std::to_string(i) + ".ts\n";
+            listaCmaf += "#EXTINF:2,\nseg" + std::to_string(i) + ".m4s\n";
+        }
+        listaHls += "#EXT-X-ENDLIST\n";
+        listaCmaf += "#EXT-X-ENDLIST\n";
+        std::string mpdBien = "<MPD mediaPresentationDuration=\"PT12S\"><Period><AdaptationSet mimeType=\"video/mp4\">"
+                              "<SegmentTemplate duration=\"2\" initialization=\"init-$RepresentationID$.mp4\" media=\"$RepresentationID$-$Number$.m4s\"/>"
+                              "<Representation id=\"v1\" bandwidth=\"1000\" width=\"320\" height=\"180\"/></AdaptationSet>"
+                              "<AdaptationSet mimeType=\"audio/mp4\"><SegmentTemplate duration=\"2\" initialization=\"init-$RepresentationID$.mp4\" "
+                              "media=\"$RepresentationID$-$Number$.m4s\"/><Representation id=\"a1\" bandwidth=\"64000\"/></AdaptationSet></Period></MPD>";
+        std::atomic<int> pedidosDeYoutube{ 0 };
+        ServidorDePrueba web(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string& r) -> std::string {
+            if (ruta == "/hls/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaHls);
+            if (ruta == "/cmaf/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaCmaf);
+            if (ruta == "/cmaf/init.mp4") return Http(200, "video/mp4", init);
+            if (ruta.rfind("/hls/seg", 0) == 0 || ruta.rfind("/cmaf/seg", 0) == 0)
+            {
+                int i = atoi(ruta.c_str() + ruta.find("seg") + 3);
+                return Http(200, ruta.find(".ts") != std::string::npos ? "video/mp2t" : "video/iso.segment", parte(i));
+            }
+            if (ruta == "/cifrada/lista.m3u8")
+                return Http(200, "application/x-mpegURL", "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"clave.bin\"\n#EXTINF:2,\nseg0.ts\n#EXT-X-ENDLIST\n");
+            if (ruta == "/pagina/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\nseg0.ts\n#EXTINF:2,\nseg1.ts\n#EXT-X-ENDLIST\n");
+            if (ruta == "/pagina/seg0.ts") return Http(200, "video/mp2t", parte(0));
+            if (ruta == "/pagina/seg1.ts") return Http(200, "text/html; charset=utf-8", "<html><body>Inicia sesion</body></html>");
+            if (ruta == "/yt/lista.m3u8")
+                return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\nhttps://rr1---sn-x.googlevideo.com/videoplayback?a=1\n#EXT-X-ENDLIST\n");
+            if (ruta == "/rango/lista.m3u8")
+                return Http(200, "application/vnd.apple.mpegurl",
+                            "#EXTM3U\n#EXTINF:2,\n#EXT-X-BYTERANGE:1000@0\ntodo.ts\n#EXTINF:2,\n#EXT-X-BYTERANGE:1500\ntodo.ts\n#EXTINF:2,\n"
+                            "#EXT-X-BYTERANGE:500@2500\ntodo.ts\n#EXT-X-ENDLIST\n");
+            if (ruta == "/rango/todo.ts" && r.rfind("bytes=", 0) == 0)
+            {
+                int64_t a = _atoi64(r.c_str() + 6), b = _atoi64(r.c_str() + r.find('-') + 1);
+                return Http(206, "video/mp2t", rango3000.substr((size_t)a, (size_t)(b - a + 1)),
+                            "Content-Range: bytes " + std::to_string(a) + "-" + std::to_string(b) + "/3000\r\n");
+            }
+            if (ruta == "/dash/manifiesto.mpd") return Http(200, "application/dash+xml", mpdBien);
+            if (ruta == "/dash/init-v1.mp4" || ruta == "/dash/init-a1.mp4") return Http(200, "video/mp4", init + ruta.substr(11, 2));
+            if (ruta.rfind("/dash/v1-", 0) == 0 || ruta.rfind("/dash/a1-", 0) == 0)
+                return Http(200, "video/iso.segment", parte(atoi(ruta.c_str() + 9)) + ruta.substr(6, 2));
+            if (ruta == "/dashdrm/manifiesto.mpd")
+                return Http(200, "application/dash+xml", "<MPD><Period><AdaptationSet mimeType=\"video/mp4\"><ContentProtection "
+                            "schemeIdUri=\"urn:mpeg:dash:mp4protection:2011\" value=\"cenc\"/><Representation id=\"v1\" bandwidth=\"1\">"
+                            "<BaseURL>v.mp4</BaseURL></Representation></AdaptationSet></Period></MPD>");
+            if (ruta.find("googlevideo") != std::string::npos) pedidosDeYoutube++;
+            return Http(404, "text/plain", "no existe");
+        } });
+        std::string w = "http://127.0.0.1:" + std::to_string(web.Puerto());
+        auto leer = [&](const std::wstring& nombre) {
+            std::string s;
+            LeerArchivo(carpeta + L"\\" + nombre, s);
+            return s;
+        };
+
+        Foto hls = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Mi video");
+        Comprobar(hls.datos.estado == Estado::Completada && hls.datos.nombre == L"Mi video.ts" && leer(L"Mi video.ts") == todo
+                      && hls.datos.flujoTotal == 6 && hls.datos.flujoHechos == 6 && hls.datos.tamano == (int64_t)todo.size()
+                      && !ExisteArchivo(carpeta + L"\\Mi video.ts.atarraya"),
+                  "videos: HLS con el motor: 6 partes con 3 conexiones, juntas en orden en un .ts");
+        Foto cm = BajarVideo(w + "/cmaf/lista.m3u8", "hls", "", true, carpeta, L"");
+        Comprobar(cm.datos.estado == Estado::Completada && cm.datos.nombre == L"lista.mp4" && leer(L"lista.mp4") == init + todo,
+                  "videos: HLS CMAF/fMP4 con el motor: el inicio y las partes en un .mp4");
+        Foto rg = BajarVideo(w + "/rango/lista.m3u8", "hls", "", true, carpeta, L"Rangos");
+        Comprobar(rg.datos.estado == Estado::Completada && leer(L"Rangos.ts") == rango3000,
+                  "videos: HLS con EXT-X-BYTERANGE: los trozos de un archivo, pedidos por rango y juntos");
+        Foto dv = BajarVideo(w + "/dash/manifiesto.mpd", "dash", "video:v1", true, carpeta, L"Peli (video)");
+        Foto da = BajarVideo(w + "/dash/manifiesto.mpd", "dash", "audio:a1", true, carpeta, L"Peli (audio)");
+        std::string esperadoV = init + "v1", esperadoA = init + "a1";
+        for (int i = 1; i <= 6; i++)
+        {
+            esperadoV += parte(i) + "v1";
+            esperadoA += parte(i) + "a1";
+        }
+        Comprobar(dv.datos.estado == Estado::Completada && dv.datos.nombre == L"Peli (video).mp4" && leer(L"Peli (video).mp4") == esperadoV
+                      && da.datos.estado == Estado::Completada && da.datos.nombre == L"Peli (audio).m4a" && leer(L"Peli (audio).m4a") == esperadoA,
+                  "videos: DASH con el motor: el video y el audio en dos archivos, sin unir");
+        int antes = web.Pedidos();
+        Foto cif = BajarVideo(w + "/cifrada/lista.m3u8", "hls", "", true, carpeta, L"Cifrada");
+        Foto drm = BajarVideo(w + "/dashdrm/manifiesto.mpd", "dash", "video:v1", true, carpeta, L"Drm");
+        Comprobar(cif.datos.estado == Estado::Error && cif.datos.error == TextoProtegido && drm.datos.estado == Estado::Error
+                      && drm.datos.error == TextoProtegido && web.Pedidos() == antes + 2 && !ExisteArchivo(carpeta + L"\\Cifrada.ts")
+                      && !ExisteArchivo(carpeta + L"\\Cifrada.ts.atarraya"),
+                  "videos: HLS con EXT-X-KEY y DASH con ContentProtection: «protegido», no se baja ni una parte");
+        Foto pag = BajarVideo(w + "/pagina/lista.m3u8", "hls", "", true, carpeta, L"Pagina");
+        Foto yt = BajarVideo(w + "/yt/lista.m3u8", "hls", "", true, carpeta, L"Yt");
+        Comprobar(pag.datos.estado == Estado::Error && pag.datos.error == TextoRespondioPagina && !ExisteArchivo(carpeta + L"\\Pagina.ts")
+                      && yt.datos.estado == Estado::Error && yt.datos.error == Utf8(enlaces::TextoNoPermitido) && pedidosDeYoutube == 0,
+                  "videos: una parte que llega como página web no se guarda; una lista con partes de googlevideo.com no se baja");
+        antes = web.Pedidos();
+        Foto lejos = BajarVideo(w + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Lejos");
+        Comprobar(lejos.datos.estado == Estado::Error && lejos.datos.error == TextoRedLocal && web.Pedidos() == antes,
+                  "videos: una lista de internet no puede pedir nada de esta PC ni de su red (ni se conecta)");
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
+        fs::remove_all(carpeta, ec);
+    }
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -1228,6 +1588,7 @@ int wmain(int argc, wchar_t** argv)
     PaginaEnVezDeArchivo();
     PaginaEnUnaParte();
     JicaroPruebas();
+    FlujosPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

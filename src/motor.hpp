@@ -59,6 +59,11 @@ namespace hnd
         // El archivo que quedó al terminar (se lee cuando Windows ya lo marcó como bajado de internet): «Borrar las
         // partes» solo manda a la Papelera un archivo que sigue siendo este
         IdentidadArchivo identidad;
+        // Videos por partes: «formato» es "hls" o "dash" (vacío en una descarga normal) y «url» es su lista. En DASH,
+        // «pista» dice cuál bajar: «video:<id>» o «audio:<id>». Se baja parte por parte y se junta en un archivo.
+        std::string formato, pista;
+        int flujoTotal = 0, flujoHechos = 0;   // partes en total y ya juntadas
+        bool flujoLocal = false;               // la lista es de esta PC o de su red: sus partes también pueden serlo
 
         int64_t Hecho() const;
     };
@@ -103,6 +108,11 @@ namespace hnd
         bool noPermitido = false; // una redirección llevaba a YouTube
     };
     void ComprobarEnlace(const std::string& url, const std::string& referer, InfoEnlace& r, const std::atomic<bool>* parar = nullptr);
+
+    // Baja la lista de un video por partes (HLS o DASH) con las cookies y el referer de su página. «local» dice si vino
+    // de esta PC o de su red. Falso y un texto en español si falla (también si llegó una página web o lleva a YouTube).
+    bool BajarLista(const std::string& url, const std::string& referer, const std::string& cookies, const std::string& agente,
+                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar = nullptr);
 
     class Motor
     {
@@ -156,6 +166,8 @@ namespace hnd
         void Arrancar(const std::shared_ptr<Descarga>& x);
         void Ejecutar(std::shared_ptr<Descarga> x);
         void Trabajar(std::shared_ptr<Descarga> x);
+        // Un video por partes (HLS o DASH): lee la lista, baja las partes con varias conexiones y las junta en orden
+        void EjecutarFlujo(std::shared_ptr<Descarga> x, const std::function<void(Estado, const std::string&)>& terminar);
         std::shared_ptr<Descarga> Encontrar(uint64_t id);
 
         std::wstring m_archivo;

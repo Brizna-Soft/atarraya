@@ -1,9 +1,9 @@
 # Atarraya
 
-**Descargas, torrents y enlaces magnet en un solo programa, gratis para Windows.** Baja cada archivo en varias partes
-a la vez, se puede pausar y seguir después (aunque apagues la PC) y recibe las descargas de tu navegador. Junta
-muchos enlaces en un recolector, como JDownloader, y te deja elegir qué bajar. Sin publicidad, sin virus y sin
-recoger tus datos.
+**Descargas, videos, torrents y enlaces magnet en un solo programa, gratis para Windows.** Baja cada archivo en
+varias partes a la vez, se puede pausar y seguir después (aunque apagues la PC) y recibe las descargas y los videos
+de tu navegador, como IDM. Junta muchos enlaces en un recolector, como JDownloader, y te deja elegir qué bajar. Sin
+publicidad, sin virus y sin recoger tus datos.
 
 Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 
@@ -41,8 +41,10 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 - **Los archivos de una página.** Pega la dirección de una página y Atarraya te muestra los archivos que enlaza
   (videos, música, documentos, programas...) para que marques cuáles bajar. En Internet Archive usa su lista
   oficial de archivos.
-- **Videos de sitios que lo permiten:** enlaces directos a un archivo de video, Internet Archive y páginas que
-  ofrecen el video como archivo. **No baja videos de YouTube**: sus condiciones no lo permiten.
+- **Los videos de las páginas, como IDM.** Pon el ratón sobre un video y pulsa **Descargar este video**, o abre la
+  ventanita de la extensión para ver todos los videos de la pestaña. Baja archivos MP4 y WebM y transmisiones HLS y
+  DASH. Nada se baja solo. **No baja videos de YouTube ni videos protegidos con DRM.** Ver
+  [Videos de las páginas](#videos-de-las-páginas).
 - **Pausar y seguir.** También después de cerrar el programa o de apagar la PC, si el servidor lo permite.
 - **Cola de descargas.** Elige cuántas bajan a la vez (los torrents también cuentan); las demás esperan su turno.
 - **Reintenta solo** cuando se cae el internet.
@@ -124,8 +126,58 @@ Si Atarraya está cerrado, se abre solo junto al reloj. Si no está conectado, e
 **Al pasar a una versión nueva, recarga la extensión.** En `chrome://extensions` (en Edge, `edge://extensions`)
 busca Atarraya y pulsa el botón de recargar (la flecha en círculo). Si pusiste la versión nueva en otra carpeta,
 quita la extensión, vuelve a pulsar **Cargar descomprimida** con la carpeta `extension\chrome` nueva y, en
-Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.2.1 lo necesita: su extensión le dice a Atarraya en
-qué página pulsaste descargar, para reconocer las partes de «de una en una».
+Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.3.0 lo necesita: su extensión trae el botón
+**Descargar este video** y la lista de videos de cada pestaña.
+
+### Los permisos de la extensión
+
+La extensión pide solo lo que usa, y nada de lo que ve sale de tu PC:
+
+- **Descargas** (`downloads`): para pasarle a Atarraya lo que bajas en el navegador.
+- **Comunicación con programas** (`nativeMessaging`): para hablar con Atarraya, que está en tu misma PC. No habla
+  con ningún servidor.
+- **Menú del clic derecho** (`contextMenus`): para **Descargar con Atarraya**.
+- **Cookies** (`cookies`): para que Atarraya pueda bajar lo que pide haber iniciado sesión. Solo lee las del sitio
+  de esa descarga (para un video, las del marco donde está), y solo cuando empieza una descarga o pulsas un botón.
+- **Almacenamiento** (`storage`): para tus ajustes de la extensión y, mientras el navegador está abierto, la lista
+  de videos de cada pestaña (se borra al cerrarlo).
+- **Ver los pedidos de las páginas** (`webRequest`): solo mira las respuestas, sin bloquearlas ni cambiarlas, para
+  saber en qué pestaña nació una descarga y qué videos, listas HLS o manifiestos DASH pidió el reproductor.
+- **Todos los sitios** (`<all_urls>` y el botón en las páginas): porque las descargas y los videos pueden venir de
+  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM.
+
+## Videos de las páginas
+
+Desde la 0.3.0, la extensión encuentra los videos de la página que estás viendo, como IDM:
+
+- **El botón «Descargar este video»** aparece arriba a la derecha del video cuando pones el ratón encima, para no
+  tapar los controles del reproductor. También dentro de un reproductor que está en un marco de otro sitio.
+- **La ventanita de la extensión** (su ícono junto a la barra de direcciones) muestra los videos de la pestaña y de
+  todos sus marcos, con su nombre y, si se sabe, su calidad o su tamaño, y un botón **Bajar** para cada uno.
+- **Nada se baja solo.** La extensión solo mira lo que el navegador ya pidió para reproducir el video, y nada sale
+  de ella hasta que pulsas un botón. Entonces se lo pasa a Atarraya como cualquier descarga, con las cookies y la
+  página del marco donde está el video.
+
+Qué hace Atarraya con cada uno:
+
+- **Un archivo MP4 o WebM:** una descarga normal, con varias conexiones.
+- **HLS (.m3u8):** si la lista trae varias calidades, eliges cuál (la mejor ya viene marcada). Baja las partes con
+  tus conexiones y tu límite de velocidad, y las junta en un solo archivo `.ts` (o `.mp4` si la lista es CMAF), que
+  abre cualquier reproductor, como VLC.
+- **DASH (.mpd):** baja el mejor video y el mejor audio (o los que elijas), cada uno en su archivo: «(video)» y
+  «(audio)». **No los une**: para juntarlos hace falta un programa aparte, como FFmpeg, que Atarraya no trae.
+
+Lo que no baja:
+
+- **Nada de YouTube**: ni botón ni lista en youtube.com, youtu.be, youtube-nocookie.com ni m.youtube.com, ni nada
+  que venga de googlevideo.com, aunque llegue por una redirección o esté en un marco de otra página. Sus
+  condiciones no lo permiten.
+- **Nada protegido ni cifrado.** Si el video usa DRM (en el navegador, EME), si la lista HLS trae una clave
+  (`EXT-X-KEY`, con cualquier método) o si el manifiesto DASH dice `ContentProtection`, te dice **Este video está
+  protegido** y no baja nada. Tampoco en Netflix, Disney+, Prime Video, Max y sitios parecidos.
+- Transmisiones en vivo y videos DASH partidos en varios períodos: te avisa que no se pueden.
+- Como siempre: no se salta esperas ni captchas, y una lista de internet no puede hacer que Atarraya se conecte a
+  tu PC ni a tu red local.
 
 ## Torrents
 
@@ -149,8 +201,10 @@ qué página pulsaste descargar, para reconocer las partes de «de una en una».
   ejecuta código de las páginas, tiene topes de tamaño y de cantidad, y lo que llega espera en el recolector. Se
   apaga en **Ajustes**.
 - Para que funcionen las descargas que piden haber iniciado sesión, la extensión le pasa a Atarraya, solo dentro
-  de tu PC, las cookies del sitio de esa descarga. Atarraya no las guarda cuando la descarga termina y nunca las
-  manda a otro sitio. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
+  de tu PC, las cookies del sitio de esa descarga (para un video, las del marco donde está). Atarraya no las guarda
+  cuando la descarga termina y nunca las manda a otro sitio.
+- La lista de videos de cada pestaña se queda dentro del navegador y se borra al cerrarlo. La extensión no guarda
+  qué videos ves ni los manda a ningún lado. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
   una»; esa dirección no se guarda.
 - No pide ser administrador y no cambia la configuración de Windows. «Conectar con los navegadores» solo
   escribe en tu propia cuenta (HKEY_CURRENT_USER), y «Quitar la conexión» lo borra.

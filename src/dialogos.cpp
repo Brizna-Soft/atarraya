@@ -18,6 +18,8 @@
 #include <wx/toplevel.h>
 #include <wx/weakref.h>
 
+#include <algorithm>
+#include <cmath>
 #include <thread>
 
 #include "ayuda.hpp"
@@ -674,6 +676,302 @@ void DialogoPagina::AlAceptar(bool empezar)
     if (!CarpetaValida(this, m_carpeta, GetTitle())) return;
     m_empezar = empezar;
     EndModal(wxID_OK);
+}
+
+// ---------------------------------------------------------------- Bajar video (HLS o DASH)
+
+namespace
+{
+    // De la mejor a la peor: más bits por segundo; si empatan, más resolución
+    template <class T> std::vector<int> DeMejorAPeor(const std::vector<T>& v)
+    {
+        std::vector<int> r(v.size());
+        for (int i = 0; i < (int)r.size(); i++) r[i] = i;
+        std::stable_sort(r.begin(), r.end(), [&](int a, int b) {
+            if (v[a].banda != v[b].banda) return v[a].banda > v[b].banda;
+            return (int64_t)v[a].ancho * v[a].alto > (int64_t)v[b].ancho * v[b].alto;
+        });
+        return r;
+    }
+
+    const wchar_t* const NotaSinUnir =
+        L"El video y el audio vienen por separado: Atarraya los guarda en dos archivos, «(video)» y «(audio)», sin unirlos. "
+        L"Para juntarlos hace falta un programa aparte, como FFmpeg (Atarraya no lo trae).";
+}
+
+DialogoVideo::DialogoVideo(wxWindow* padre, const Ajustes& ajustes, Pedido pedido)
+    : wxDialog(padre, wxID_ANY, L"Bajar video", wxDefaultPosition, wxDefaultSize, wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER | wxSTAY_ON_TOP),
+      m_pedido(std::move(pedido)), m_conexiones(ajustes.conexiones)
+{
+    const int borde = FromDIP(12);
+    auto* caja = new wxBoxSizer(wxVERTICAL);
+    m_estado = new wxStaticText(this, wxID_ANY, L"Leyendo la lista del video...");
+    m_estado->SetFont(m_estado->GetFont().Bold());
+    caja->Add(m_estado, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
+
+    auto* rejilla = new wxFlexGridSizer(2, FromDIP(8), FromDIP(10));
+    rejilla->AddGrowableCol(1, 1);
+    std::wstring nombre = wxString(m_pedido.titulo).Strip(wxString::both).ToStdWstring();
+    if (nombre.empty())
+    {
+        nombre = NombreDeUrl(m_pedido.url);
+        auto punto = nombre.find_last_of(L'.');
+        if (punto != std::wstring::npos && punto > 0) nombre = nombre.substr(0, punto);
+    }
+    if (nombre.empty()) nombre = L"video";
+    m_nombre = new wxTextCtrl(this, wxID_ANY, LimpiarNombre(nombre), wxDefaultPosition, FromDIP(wxSize(420, -1)));
+    rejilla->Add(Etiqueta(this, L"Nombre:"), 0, wxALIGN_CENTER_VERTICAL);
+    rejilla->Add(m_nombre, 1, wxEXPAND);
+    m_etiquetaCalidad = Etiqueta(this, m_pedido.formato == "dash" ? L"Video:" : L"Calidad:");
+    m_calidad = new wxChoice(this, wxID_ANY);
+    rejilla->Add(m_etiquetaCalidad, 0, wxALIGN_CENTER_VERTICAL);
+    rejilla->Add(m_calidad, 1, wxEXPAND);
+    m_etiquetaAudio = Etiqueta(this, L"Audio:");
+    m_audio = new wxChoice(this, wxID_ANY);
+    rejilla->Add(m_etiquetaAudio, 0, wxALIGN_CENTER_VERTICAL);
+    rejilla->Add(m_audio, 1, wxEXPAND);
+    m_etiquetaAudio->Hide();
+    m_audio->Hide();
+    // Con un ancho fijo: si no, al volver a acomodar la ventana (cuando aparece «Audio:») crecería hasta el largo de la carpeta
+    m_carpeta = ElegirCarpeta(this, ajustes.CarpetaEfectiva(), FromDIP(420));
+    rejilla->Add(Etiqueta(this, L"Guardar en:"), 0, wxALIGN_CENTER_VERTICAL);
+    rejilla->Add(m_carpeta, 1, wxEXPAND);
+    caja->Add(rejilla, 0, wxEXPAND | wxALL, borde);
+
+    m_nota = Nota(this, L"Atarraya baja el video por partes, con tus conexiones y tu límite de velocidad, y las junta en un solo archivo.",
+                  FromDIP(560));
+    caja->Add(m_nota, 0, wxLEFT | wxRIGHT, borde);
+
+    caja->Add(Botones(this, L"Descargar", &m_descargar, &m_luego), 0, wxEXPAND | wxALL, borde);
+    m_descargar->Disable();
+    m_luego->Disable();
+    m_descargar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(true); });
+    m_luego->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(false); });
+
+    SetSizerAndFit(caja);
+    SetMinSize(GetSize());
+    Centrar(this, padre);
+    CallAfter([this]() { Leer(); });
+}
+
+DialogoVideo::~DialogoVideo()
+{
+    if (m_parar) *m_parar = true;   // el hilo que lee la lista ya no toca esta ventana
+}
+
+void DialogoVideo::Leer()
+{
+    auto parar = std::make_shared<std::atomic<bool>>(false);
+    m_parar = parar;
+    DialogoVideo* yo = this;
+    Pedido p = m_pedido;
+    std::thread([yo, parar, p]() {
+        std::string texto, urlFinal, error;
+        bool local = false, ok = false;
+        try
+        {
+            ok = BajarLista(p.url, p.referer, p.cookies, p.agente, texto, urlFinal, local, error, parar.get());
+        }
+        catch (...)
+        {
+            ok = false;
+            error = "La lista del video llegó en un formato que Atarraya no pudo leer.";
+        }
+        hilos::Enviar([yo, parar, ok, texto, urlFinal, local, error]() {
+            if (*parar) return;
+            yo->AlLeer(ok, texto, urlFinal, local, error);
+        });
+    }).detach();
+}
+
+void DialogoVideo::NoSePuede(const wxString& estado, const wxString& nota)
+{
+    m_estado->SetForegroundColour(wxColour(0xD6, 0x45, 0x45));
+    m_estado->SetLabel(estado);
+    m_nota->SetLabel(nota);
+    m_nota->Wrap(-1);   // wx no vuelve a partir el texto si se le pide el mismo ancho que la vez anterior
+    m_nota->Wrap(FromDIP(560));
+    m_calidad->Disable();
+    m_descargar->Disable();
+    m_luego->Disable();
+    GetSizer()->Fit(this);
+    Registrar("bajar video: no se puede (" + Utf8(estado.ToStdWstring()) + ")");
+}
+
+void DialogoVideo::AlLeer(bool ok, const std::string& texto, const std::string& urlFinal, bool local, const std::string& error)
+{
+    if (!ok)
+    {
+        NoSePuede(L"No se pudo leer la lista del video", wxString::FromUTF8(error));
+        return;
+    }
+    m_urlLista = urlFinal.empty() ? m_pedido.url : urlFinal;
+    m_local = local;
+    const wxString protegido = L"Este video está protegido";
+    const wxString porQue = L"Usa DRM o está cifrado. Atarraya no baja videos protegidos ni cifrados.";
+    const wxString enVivo = L"Es una transmisión en vivo";
+    double duracion = 0;
+    wxString nota;
+    if (m_pedido.formato == "hls")
+    {
+        m_hls = flujos::LeerHls(texto, m_urlLista);
+        if (!m_hls.valida) { NoSePuede(L"No es una lista de video", L"La dirección no trae una lista HLS (.m3u8)."); return; }
+        if (m_hls.cifrada) { NoSePuede(protegido, porQue); return; }
+        if (!m_hls.maestra && m_hls.enVivo) { NoSePuede(enVivo, wxString::FromUTF8(flujos::TextoEnVivo)); return; }
+        if (m_hls.maestra)
+        {
+            m_ordenCalidad = DeMejorAPeor(m_hls.variantes);
+            for (int i : m_ordenCalidad)
+            {
+                const auto& v = m_hls.variantes[i];
+                m_calidad->Append(flujos::TextoCalidad(v.ancho, v.alto, v.banda, false));
+            }
+            if (m_ordenCalidad.empty()) { NoSePuede(L"La lista no trae calidades", L"No hay nada para bajar en esta lista."); return; }
+            m_calidad->SetSelection(0);
+            nota = L"Se baja por partes, con tus conexiones y tu límite de velocidad, y se junta en un solo archivo (.ts, o .mp4 si "
+                   L"la lista es CMAF).";
+            if (flujos::AudioDeVariante(m_hls, m_ordenCalidad.front()) >= 0) nota += wxString(L" ") + NotaSinUnir;
+        }
+        else
+        {
+            m_calidad->Append(L"La única que trae la lista");
+            m_calidad->SetSelection(0);
+            duracion = m_hls.duracion;
+            nota = wxString::Format(L"Son %zu partes: se bajan con tus conexiones y tu límite de velocidad, y se juntan en un solo "
+                                    L"archivo (%s).", m_hls.trozos.size() + (m_hls.inicio.url.empty() ? 0 : 1),
+                                    flujos::ExtensionHls(m_hls).c_str());
+        }
+    }
+    else
+    {
+        m_dash = flujos::LeerDash(texto, m_urlLista);
+        if (!m_dash.valido) { NoSePuede(L"No es un manifiesto de video", L"La dirección no trae un manifiesto DASH (.mpd)."); return; }
+        if (m_dash.protegido) { NoSePuede(protegido, porQue); return; }
+        if (m_dash.enVivo) { NoSePuede(enVivo, wxString::FromUTF8(flujos::TextoEnVivo)); return; }
+        if (m_dash.variasPartes) { NoSePuede(L"Este video no se puede bajar todavía", wxString::FromUTF8(flujos::TextoVariasPartes)); return; }
+        if (m_dash.videos.empty() && m_dash.audios.empty()) { NoSePuede(L"El manifiesto no trae video ni audio", L"No hay nada para bajar."); return; }
+        m_ordenCalidad = DeMejorAPeor(m_dash.videos);
+        for (int i : m_ordenCalidad)
+        {
+            const auto& r = m_dash.videos[i];
+            m_calidad->Append(flujos::TextoCalidad(r.ancho, r.alto, r.banda, false));
+        }
+        m_ordenAudio = DeMejorAPeor(m_dash.audios);
+        for (int i : m_ordenAudio)
+        {
+            const auto& r = m_dash.audios[i];
+            m_audio->Append(flujos::TextoCalidad(0, 0, r.banda, true));
+        }
+        if (m_ordenCalidad.empty())
+        {
+            m_etiquetaCalidad->Hide();
+            m_calidad->Hide();
+        }
+        else m_calidad->SetSelection(0);
+        if (!m_ordenAudio.empty())
+        {
+            m_etiquetaAudio->Show();
+            m_audio->Show();
+            m_audio->SetSelection(0);
+        }
+        duracion = m_dash.duracion;
+        nota = !m_ordenCalidad.empty() && !m_ordenAudio.empty() ? wxString(NotaSinUnir)
+                                                                  : wxString(L"Se baja por partes, con tus conexiones y tu límite de velocidad.");
+    }
+    m_estado->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
+    m_estado->SetLabel(duracion > 0 ? wxString(L"Listo para bajar: dura ") + TextoDuracion((int64_t)std::llround(duracion))
+                                    : wxString(L"Listo para bajar"));
+    m_nota->SetLabel(nota);
+    m_nota->Wrap(-1);   // igual que arriba: si no, se queda en una sola línea muy larga
+    m_nota->Wrap(FromDIP(560));
+    m_listo = true;
+    m_descargar->Enable();
+    m_luego->Enable();
+    m_descargar->SetFocus();
+    GetSizer()->SetSizeHints(this);
+    Fit();
+    Layout();
+}
+
+void DialogoVideo::AlAceptar(bool empezar)
+{
+    if (!m_listo) return;
+    if (!CarpetaValida(this, m_carpeta, GetTitle())) return;
+    m_empezar = empezar;
+    EndModal(wxID_OK);
+}
+
+std::vector<DatosDescarga> DialogoVideo::Descargas() const
+{
+    std::vector<DatosDescarga> r;
+    if (!m_listo) return r;
+    DatosDescarga base;
+    base.referer = m_pedido.referer;
+    base.cookies = m_pedido.cookies;
+    base.agente = m_pedido.agente;
+    base.carpeta = m_carpeta->GetPath().ToStdWstring();
+    base.conexiones = m_conexiones;
+    base.flujoLocal = m_local;
+    std::wstring nombre = LimpiarNombre(m_nombre->GetValue().Strip(wxString::both).ToStdWstring());
+    if (nombre.empty()) nombre = L"video";
+    auto elegida = [](const wxChoice* c, const std::vector<int>& orden) {
+        int s = c->GetSelection();
+        return s >= 0 && s < (int)orden.size() ? orden[s] : (orden.empty() ? -1 : orden.front());
+    };
+    if (m_pedido.formato == "hls")
+    {
+        DatosDescarga d = base;
+        d.formato = "hls";
+        d.nombre = nombre;
+        d.url = m_urlLista;
+        if (m_hls.maestra)
+        {
+            int v = elegida(m_calidad, m_ordenCalidad);
+            if (v < 0) return r;
+            d.url = m_hls.variantes[v].url;
+            int a = flujos::AudioDeVariante(m_hls, v);
+            if (a >= 0)
+            {
+                // El audio va aparte: dos archivos sin unir
+                d.nombre = nombre + L" (video)";
+                DatosDescarga au = base;
+                au.formato = "hls";
+                au.url = m_hls.audios[a].url;
+                au.nombre = nombre + L" (audio)";
+                r.push_back(d);
+                r.push_back(au);
+                return r;
+            }
+        }
+        r.push_back(d);
+        return r;
+    }
+    // DASH: el mejor video y el mejor audio (o los elegidos), cada uno en su archivo
+    int v = m_ordenCalidad.empty() ? -1 : elegida(m_calidad, m_ordenCalidad);
+    int a = m_ordenAudio.empty() ? -1 : elegida(m_audio, m_ordenAudio);
+    bool dos = v >= 0 && a >= 0;
+    auto agregar = [&](const flujos::Representacion& rep, bool audio) {
+        DatosDescarga d = base;
+        std::wstring n = dos ? nombre + (audio ? L" (audio)" : L" (video)") : nombre;
+        if (rep.unArchivo)
+        {
+            // Todo el medio es un archivo: una descarga normal, con varias conexiones
+            d.url = rep.trozos.front().url;
+            d.nombre = n + flujos::ExtensionDash(rep);
+            d.nombreFijo = true;
+        }
+        else
+        {
+            d.formato = "dash";
+            d.url = m_urlLista;
+            d.pista = std::string(audio ? "audio:" : "video:") + rep.id;
+            d.nombre = n;
+        }
+        r.push_back(std::move(d));
+    };
+    if (v >= 0) agregar(m_dash.videos[v], false);
+    if (a >= 0) agregar(m_dash.audios[a], true);
+    return r;
 }
 
 // ---------------------------------------------------------------- Ajustes

@@ -9,6 +9,7 @@
 
 #include "ajustes.hpp"
 #include "enlaces.hpp"
+#include "flujos.hpp"
 #include "motor.hpp"
 #include "torrents.hpp"
 
@@ -128,6 +129,50 @@ private:
     std::string m_urlPagina;
     bool m_internetArchive = false;
     bool m_empezar = true;
+};
+
+// «Bajar video»: un video por partes (HLS o DASH) que pasó la extensión. Lee su lista con las cookies y el referer de su
+// página, muestra las calidades (la mejor ya elegida) y avisa si está protegido o es en vivo (entonces no se baja). En
+// DASH, y en HLS con el audio aparte, el video y el audio quedan en dos archivos sin unir: Atarraya no trae FFmpeg.
+class DialogoVideo : public wxDialog
+{
+public:
+    struct Pedido
+    {
+        std::string formato;   // "hls" o "dash"
+        std::string url, referer, cookies, agente;
+        std::wstring titulo;
+    };
+    DialogoVideo(wxWindow* padre, const hnd::Ajustes& ajustes, Pedido pedido);
+    ~DialogoVideo() override;
+
+    std::vector<hnd::DatosDescarga> Descargas() const;
+    bool EmpezarAhora() const { return m_empezar; }
+
+private:
+    void Leer();
+    void AlLeer(bool ok, const std::string& texto, const std::string& urlFinal, bool local, const std::string& error);
+    void NoSePuede(const wxString& estado, const wxString& nota);
+    void AlAceptar(bool empezar);
+
+    Pedido m_pedido;
+    int m_conexiones;
+    std::shared_ptr<std::atomic<bool>> m_parar;
+    wxStaticText* m_estado = nullptr;
+    wxTextCtrl* m_nombre = nullptr;
+    wxStaticText* m_etiquetaCalidad = nullptr;
+    wxChoice* m_calidad = nullptr;   // HLS: las calidades; DASH: el video
+    wxStaticText* m_etiquetaAudio = nullptr;
+    wxChoice* m_audio = nullptr;     // DASH: el audio
+    wxStaticText* m_nota = nullptr;
+    wxDirPickerCtrl* m_carpeta = nullptr;
+    wxButton* m_descargar = nullptr;
+    wxButton* m_luego = nullptr;
+    bool m_listo = false, m_local = false, m_empezar = true;
+    std::string m_urlLista;          // ya con sus redirecciones
+    hnd::flujos::ListaHls m_hls;
+    hnd::flujos::ManifiestoDash m_dash;
+    std::vector<int> m_ordenCalidad, m_ordenAudio;   // de la mejor a la peor
 };
 
 class DialogoAjustes : public wxDialog

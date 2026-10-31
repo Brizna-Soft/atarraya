@@ -81,6 +81,8 @@ namespace
     int Permil(const Foto& f)
     {
         if (f.datos.estado == Estado::Completada || f.datos.estado == Estado::Compartiendo) return 1000;
+        // Un video por partes: por las partes ya juntadas (su tamaño no se sabe hasta el final)
+        if (f.datos.tamano <= 0 && f.datos.flujoTotal > 0) return (int)std::min<int64_t>(1000, (int64_t)f.datos.flujoHechos * 1000 / f.datos.flujoTotal);
         if (f.datos.tamano <= 0) return 1001;   // tamaño desconocido
         return (int)std::min<int64_t>(1000, f.hecho * 1000 / f.datos.tamano);
     }
@@ -183,6 +185,12 @@ public:
         case Falta:
             if (bajando && f.velocidad > 1 && d.tamano > 0)
                 v = wxString(TextoDuracion((int64_t)((d.tamano - f.hecho) / f.velocidad)));
+            else if (bajando && f.velocidad > 1 && d.flujoTotal > 0 && d.flujoHechos > 0)
+            {
+                // Video por partes: lo que falta, calculado con lo que pesan en promedio las ya juntadas
+                double total = (double)f.hecho * d.flujoTotal / d.flujoHechos;
+                v = wxString(TextoDuracion((int64_t)(std::max(0.0, total - (double)f.hecho) / f.velocidad)));
+            }
             else v = wxString();
             break;
         case EstadoCol: v = TextoEstadoFila(f); break;
@@ -1382,6 +1390,14 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         if (ruta.size() > 8 && Minusculas(ruta.substr(ruta.size() - 8)) == L".torrent" && ExisteArchivo(ruta)) AbrirTorrentDe(ruta);
         return;
     }
+    if (tipo == "video")
+    {
+        // Un video de la página (el botón «Descargar este video» o la lista de la extensión)
+        auto t = j.find("tamano");
+        PedidoVideo(campo("formato"), urlPedido, Ancho(campo("titulo")), campo("referer"), campo("pagina"), campo("cookies"),
+                    campo("agente"), campo("tipoMime"), t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1);
+        return;
+    }
     if (tipo != "descargar") return;
 
     std::string url = urlPedido;
@@ -1424,6 +1440,71 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         m_motor.Agregar(d, true);
         Refrescar();
     }
+}
+
+void VentanaPrincipal::PedidoVideo(const std::string& formato, const std::string& url, const std::wstring& titulo,
+                                   const std::string& referer, const std::string& pagina, const std::string& cookies,
+                                   const std::string& agente, const std::string& tipoMime, int64_t tamano)
+{
+    // Lo mismo que revisa la extensión, otra vez aquí: cualquier programa de esta PC puede mandar un pedido
+    std::string bajo = url.substr(0, 8);
+    std::transform(bajo.begin(), bajo.end(), bajo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+    if (!sistema::EsDireccion(Ancho(url)) || (bajo.rfind("http://", 0) != 0 && bajo.rfind("https://", 0) != 0))
+    {
+        Registrar("video rechazado: dirección no válida");
+        return;
+    }
+    if (enlaces::NoPermitido(url) || enlaces::NoPermitido(referer) || enlaces::NoPermitido(pagina))
+    {
+        Registrar("video rechazado: sitio que no permite bajar sus videos");
+        Avisar(L"Atarraya", enlaces::TextoNoPermitido);
+        return;
+    }
+    if (enlaces::SitioProtegido(url) || enlaces::SitioProtegido(referer) || enlaces::SitioProtegido(pagina))
+    {
+        Registrar("video rechazado: sitio con DRM");
+        Avisar(L"Atarraya", enlaces::TextoSitioProtegido);
+        return;
+    }
+    if (formato == "archivo")
+    {
+        // Un archivo de video o de audio entero: como cualquier descarga, con el título de la página como nombre
+        DatosDescarga d;
+        d.url = url;
+        d.referer = referer;
+        d.cookies = cookies;
+        d.agente = agente;
+        d.conexiones = m_ajustes.conexiones;
+        std::wstring deUrl = NombreDeUrl(url);
+        std::wstring t = wxString(titulo).Strip(wxString::both).ToStdWstring();
+        if (!t.empty())
+        {
+            auto punto = deUrl.find_last_of(L'.');
+            std::wstring ext = punto != std::wstring::npos && deUrl.size() - punto <= 6 ? deUrl.substr(punto) : std::wstring();
+            d.nombre = ext.empty() ? AgregarExtension(LimpiarNombre(t), tipoMime) : LimpiarNombre(t) + ext;
+        }
+        Registrar("video: archivo de " + SoloSitio(url));
+        if (m_ajustes.preguntarNavegador) NuevaDescarga(d, true, tamano);
+        else
+        {
+            d.carpeta = m_ajustes.CarpetaEfectiva();
+            m_motor.Agregar(d, true);
+            Refrescar();
+        }
+        return;
+    }
+    if (formato != "hls" && formato != "dash") return;
+    Registrar("video: " + formato + " de " + SoloSitio(url));
+    DialogoVideo dialogo(IsShown() ? this : nullptr, m_ajustes, { formato, url, referer, cookies, agente, titulo });
+    dialogo.Raise();
+    int respuesta = dialogo.ShowModal();
+    Registrar("ventana «Bajar video»: " + std::string(respuesta == wxID_OK ? "aceptada" : "cancelada"));
+    if (respuesta != wxID_OK) return;
+    auto descargas = dialogo.Descargas();
+    for (auto& d : descargas) m_motor.Agregar(d, dialogo.EmpezarAhora());
+    if (descargas.size() > 1) Registrar("video: " + std::to_string(descargas.size()) + " archivos (video y audio aparte)");
+    Mostrar();
+    Refrescar();
 }
 
 void VentanaPrincipal::Reanudar()

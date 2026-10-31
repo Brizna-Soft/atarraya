@@ -18,6 +18,7 @@
 #include <set>
 
 #include "enlaces.hpp"
+#include "flujos.hpp"
 #include "nombres.hpp"
 #include "redlocal.hpp"
 #include "util.hpp"
@@ -424,6 +425,127 @@ namespace
         if (s == "error") return hnd::Estado::Error;
         return hnd::Estado::Pausada;
     }
+
+    // Videos por partes: a dónde se conectó cada pedido. Si la lista vino de internet, sus partes no pueden pedir nada
+    // de esta PC ni de su red (una lista no elige a qué aparatos de la casa se conecta Atarraya). Con proxy no se puede
+    // saber (la conexión va al proxy) y no se revisa.
+    struct DestinoVisto
+    {
+        bool soloAfuera = false;   // no deja conectar con esta PC ni con su red
+        bool local = false;        // se conectó (o quiso) con esta PC o su red
+        bool sinRedes = false;     // no se supo cuáles son las redes de la PC
+    };
+
+    curl_socket_t AbrirMirando(void* u, curlsocktype tipo, curl_sockaddr* a)
+    {
+        auto* v = static_cast<DestinoVisto*>(u);
+        if (tipo == CURLSOCKTYPE_IPCXN)
+        {
+            auto destino = hnd::red::Destino::SinRevisar;
+            try
+            {
+                destino = hnd::red::RevisarDestino(&a->addr);
+            }
+            catch (...)
+            {
+            }
+            if (destino == hnd::red::Destino::Local) v->local = true;
+            if (destino == hnd::red::Destino::SinRevisar) v->sinRedes = true;
+            if (v->soloAfuera && destino != hnd::red::Destino::Afuera) return CURL_SOCKET_BAD;
+        }
+        return socket(a->family, a->socktype, a->protocol);
+    }
+
+    bool EsPaginaWeb(const std::string& tipo)
+    {
+        std::string t = tipo;
+        std::transform(t.begin(), t.end(), t.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        return t.find("text/html") != std::string::npos || t.find("application/xhtml") != std::string::npos;
+    }
+
+    // Baja la lista de un video (HLS o DASH) a memoria. «temporal»: la falla puede pasar sola (vale la pena reintentar).
+    bool BajarListaInterna(const Peticion& p, const Proxy& proxy, bool soloAfuera, std::string& texto, std::string& urlFinal,
+                           bool& local, bool& temporal, std::string& error, const std::atomic<bool>& parar)
+    {
+        texto.clear();
+        urlFinal.clear();
+        error.clear();
+        local = temporal = false;
+        std::string bajo = p.url.substr(0, 8);
+        std::transform(bajo.begin(), bajo.end(), bajo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (bajo.rfind("http://", 0) != 0 && bajo.rfind("https://", 0) != 0)
+        {
+            error = "La lista del video tiene que ser de una dirección http o https.";
+            return false;
+        }
+        if (hnd::enlaces::NoPermitido(p.url))
+        {
+            error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
+            return false;
+        }
+        CURL* c = curl_easy_init();
+        if (!c)
+        {
+            error = "No se pudo preparar la conexión.";
+            return false;
+        }
+        Preparar(c, p, proxy);
+        curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
+        curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+        curl_easy_setopt(c, CURLOPT_TIMEOUT, 120L);
+        Memoria m{ &texto, 16u * 1024 * 1024, false };
+        curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, AlRecibirMemoria);
+        curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
+        Cabeceras cab;
+        curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
+        curl_easy_setopt(c, CURLOPT_HEADERDATA, &cab);
+        DestinoVisto visto;
+        visto.soloAfuera = soloAfuera;
+        if (proxy.servidor.empty())
+        {
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
+        }
+        curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+        curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
+        curl_easy_setopt(c, CURLOPT_XFERINFODATA, const_cast<std::atomic<bool>*>(&parar));
+        char detalle[CURL_ERROR_SIZE] = {};
+        curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detalle);
+        CURLcode res = curl_easy_perform(c);
+        long codigo = 0;
+        curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &codigo);
+        char* efectiva = nullptr;
+        curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &efectiva);
+        if (efectiva) urlFinal = efectiva;
+        curl_easy_cleanup(c);
+        local = visto.local;
+        auto it = cab.v.find("content-type");
+        std::string tipo = it == cab.v.end() ? std::string() : it->second;
+        if (cab.sitioNoPermitido) error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
+        else if (soloAfuera && (visto.local || visto.sinRedes) && res != CURLE_OK) error = hnd::flujos::TextoRedLocal;
+        else if (m.excedido) error = "La lista del video es demasiado grande.";
+        else if (res == CURLE_ABORTED_BY_CALLBACK) error = "Se canceló.";
+        else if (res != CURLE_OK)
+        {
+            error = TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));
+            temporal = !EsErrorPermanente(res);
+        }
+        else if (codigo >= 400)
+        {
+            error = TextoErrorHttp(codigo);
+            temporal = codigo == 408 || codigo == 429 || codigo >= 500;
+        }
+        // Una página web en vez de la lista (por ejemplo, la de un sitio que pide iniciar sesión)
+        else if (EsPaginaWeb(tipo) && texto.find("#EXTM3U") == std::string::npos && texto.find("<MPD") == std::string::npos)
+            error = hnd::TextoRespondioPagina;
+        else if (!urlFinal.empty() && hnd::enlaces::NoPermitido(urlFinal)) error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
+        if (!error.empty())
+        {
+            texto.clear();
+            return false;
+        }
+        return true;
+    }
 }
 
 namespace hnd
@@ -582,6 +704,16 @@ namespace hnd
         if (r.nombre.empty()) r.nombre = NombreDeUrl(url);
         if (!r.nombre.empty()) r.nombre = AgregarExtension(LimpiarNombre(r.nombre), r.tipo);
         if (!r.pagina && largo >= 0) r.tamano = largo;
+    }
+
+    bool BajarLista(const std::string& url, const std::string& referer, const std::string& cookies, const std::string& agente,
+                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar)
+    {
+        std::atomic<bool> nunca{ false };
+        bool temporal = false;
+        Peticion p{ url, referer, cookies, agente };
+        // La primera lista la eligió la persona (pulsó el botón): puede ser de su red, como cualquier descarga
+        return BajarListaInterna(p, ProxyDelSistema(), false, texto, urlFinal, local, temporal, error, parar ? *parar : nunca);
     }
 
     // Limita la velocidad total: cada conexión «gasta» fichas y espera si se acaban
@@ -751,6 +883,63 @@ namespace hnd
             }
             // Si el trozo se acortó (otra conexión tomó su final) cortamos aquí: curl lo da como error de escritura
             return (size_t)escribir;
+        }
+
+        // Una parte de un video por partes: lo que llega va al Ensamblador, que lo junta en orden
+        struct ParteFlujo
+        {
+            Motor::Descarga* x = nullptr;
+            CURL* c = nullptr;
+            size_t indice = 0;
+            flujos::Ensamblador* ens = nullptr;
+            std::mutex* mEns = nullptr;
+            bool pidioRango = false;
+            bool primera = true;
+            bool pagina = false;          // llegó una página web: no se escribió nada
+            bool rangoIgnorado = false;   // se pidió un trozo y el servidor mandó otra cosa
+            bool errorDisco = false;
+            int64_t recibidos = 0;
+            Cabeceras cab;
+            std::function<void(int64_t)> limitar;
+        };
+
+        size_t AlRecibirParteFlujo(char* b, size_t t, size_t n, void* u)
+        {
+            auto* k = static_cast<ParteFlujo*>(u);
+            size_t total = t * n;
+            if (k->x->parar) return 0;
+            if (k->primera)
+            {
+                k->primera = false;
+                long codigo = 0;
+                curl_easy_getinfo(k->c, CURLINFO_RESPONSE_CODE, &codigo);
+                if (codigo < 200 || codigo >= 300) return 0;   // los errores los ve quien llama
+                if (k->pidioRango && codigo != 206)
+                {
+                    k->rangoIgnorado = true;
+                    return 0;
+                }
+                auto it = k->cab.v.find("content-type");
+                if (it != k->cab.v.end() && EsPaginaWeb(it->second))
+                {
+                    k->pagina = true;   // una parte de un video nunca es una página web
+                    return 0;
+                }
+            }
+            {
+                std::lock_guard g(*k->mEns);
+                if (!k->ens->Pedazo(k->indice, b, total))
+                {
+                    k->errorDisco = true;
+                    return 0;
+                }
+                std::lock_guard g2(k->x->m);
+                if (!k->x->d.segmentos.empty()) k->x->d.segmentos[0].hecho = k->ens->BytesEscritos() + k->ens->BytesDeLaActual();
+            }
+            k->recibidos += (int64_t)total;
+            k->x->bytesNuevos += (int64_t)total;
+            if (k->limitar) k->limitar((int64_t)total);
+            return total;
         }
     }
 
@@ -1174,6 +1363,8 @@ namespace hnd
                     { "identidad", d.identidad.Valida() ? json{ { "volumen", d.identidad.volumen }, { "indice", d.identidad.indice },
                                                                 { "tamano", d.identidad.tamano }, { "modificado", d.identidad.modificado } }
                                                         : json() },
+                    { "formato", d.formato }, { "pista", d.pista }, { "flujoTotal", d.flujoTotal }, { "flujoHechos", d.flujoHechos },
+                    { "flujoLocal", d.flujoLocal },
                 });
             }
         }
@@ -1225,6 +1416,12 @@ namespace hnd
                     d.identidad.tamano = i->value("tamano", (int64_t)-1);
                     d.identidad.modificado = i->value("modificado", (int64_t)0);
                 }
+                d.formato = j.value("formato", "");
+                if (d.formato != "hls" && d.formato != "dash") d.formato.clear();
+                d.pista = j.value("pista", "");
+                d.flujoTotal = std::max(0, j.value("flujoTotal", 0));
+                d.flujoHechos = std::clamp(j.value("flujoHechos", 0), 0, d.flujoTotal);
+                d.flujoLocal = j.value("flujoLocal", false);
                 for (auto& s : j.value("segmentos", json::array()))
                 {
                     if (s.is_array() && s.size() == 3)
@@ -1259,6 +1456,20 @@ namespace hnd
             m_sucio = true;
             x->termino = true;
         };
+
+        // Un video por partes (HLS o DASH) va por su propio camino
+        {
+            std::string formato;
+            {
+                std::lock_guard g(x->m);
+                formato = x->d.formato;
+            }
+            if (!formato.empty())
+            {
+                EjecutarFlujo(x, terminar);
+                return;
+            }
+        }
 
         Peticion p;
         {
@@ -1512,6 +1723,370 @@ namespace hnd
             std::lock_guard g(x->m);
             x->d.nombre = nombreFinal;
             if (x->d.tamano < 0) x->d.tamano = x->d.Hecho();
+        }
+        terminar(Estado::Completada, "");
+    }
+
+    void Motor::EjecutarFlujo(std::shared_ptr<Descarga> x, const std::function<void(Estado, const std::string&)>& terminar)
+    {
+        DatosDescarga d0;
+        {
+            std::lock_guard g(x->m);
+            d0 = x->d;
+        }
+        x->proxy = ProxyDelSistema();
+        Peticion p{ d0.url, d0.referer, d0.cookies, d0.agente };
+        // Si la lista es de internet, nada de esta PC ni de su red (ni la lista, ni sus partes)
+        bool soloAfuera = !d0.flujoLocal;
+
+        // 1. La lista (con reintentos si la conexión falla)
+        std::string texto, urlFinal, error;
+        bool local = false;
+        auto bajarLista = [&](const Peticion& pl) {
+            for (int intento = 0;; intento++)
+            {
+                bool temporal = false;
+                if (BajarListaInterna(pl, x->proxy, soloAfuera, texto, urlFinal, local, temporal, error, x->parar)) return true;
+                if (x->parar || !temporal || intento >= 4) return false;
+                Esperar(2.0 * (1 << intento), x->parar);
+            }
+        };
+        if (!bajarLista(p))
+        {
+            if (x->parar && error == "Se canceló.") terminar(x->pausaPedida ? Estado::Pausada : Estado::EnCola, "");
+            else terminar(Estado::Error, error);
+            return;
+        }
+
+        // 2. Qué partes bajar
+        flujos::Trozo inicio;
+        std::vector<flujos::Trozo> trozos;
+        std::wstring extension;
+        if (d0.formato == "hls")
+        {
+            auto l = flujos::LeerHls(texto, urlFinal.empty() ? p.url : urlFinal);
+            if (l.valida && l.maestra && !l.cifrada)
+            {
+                // Llegó la lista con las calidades (la ventana guarda la que eligió la persona): la mejor
+                int v = flujos::MejorVariante(l);
+                if (v < 0) error = "La lista del video no trae ninguna calidad para bajar.";
+                else
+                {
+                    Peticion pv = p;
+                    pv.url = l.variantes[v].url;
+                    if (!bajarLista(pv))
+                    {
+                        terminar(Estado::Error, error);
+                        return;
+                    }
+                    l = flujos::LeerHls(texto, urlFinal.empty() ? pv.url : urlFinal);
+                    if (l.maestra) error = "La lista del video no trae partes para bajar.";
+                }
+            }
+            if (!error.empty()) {}
+            else if (!l.valida) error = "La dirección no es una lista de video HLS (.m3u8).";
+            else if (l.cifrada) error = flujos::TextoProtegido;
+            else if (l.enVivo) error = flujos::TextoEnVivo;
+            inicio = l.inicio;
+            trozos = std::move(l.trozos);
+            extension = flujos::ExtensionHls(l);
+        }
+        else if (d0.formato == "dash")
+        {
+            auto m = flujos::LeerDash(texto, urlFinal.empty() ? p.url : urlFinal);
+            if (!m.valido) error = "La dirección no es un manifiesto de video DASH (.mpd).";
+            else if (m.protegido) error = flujos::TextoProtegido;
+            else if (m.enVivo) error = flujos::TextoEnVivo;
+            else if (m.variasPartes) error = flujos::TextoVariasPartes;
+            else
+            {
+                bool audio = d0.pista.rfind("audio", 0) == 0;
+                auto dp = d0.pista.find(':');
+                std::string id = dp == std::string::npos ? std::string() : d0.pista.substr(dp + 1);
+                auto& lista = audio ? m.audios : m.videos;
+                int i = flujos::BuscarRepresentacion(lista, id);
+                if (i < 0) i = flujos::MejorRepresentacion(lista);
+                if (i < 0) error = audio ? "El video DASH no trae audio." : "El video DASH no trae video.";
+                else
+                {
+                    inicio = lista[i].inicio;
+                    trozos = lista[i].trozos;
+                    extension = flujos::ExtensionDash(lista[i]);
+                }
+            }
+        }
+        else error = "Atarraya no sabe bajar este tipo de video.";
+        if (error.empty()) error = flujos::RevisarTrozos(inicio, trozos);
+        if (!error.empty())
+        {
+            terminar(Estado::Error, error);
+            return;
+        }
+        std::vector<flujos::Trozo> partes;
+        if (!inicio.url.empty()) partes.push_back(inicio);
+        partes.insert(partes.end(), trozos.begin(), trozos.end());
+        // Las partes pueden ser de esta PC o de su red solo si la lista también lo es
+        bool partesSoloAfuera = soloAfuera || !local;
+
+        // 3. Nombre, archivo parcial y desde dónde seguir
+        std::set<std::wstring> ocupados;
+        {
+            std::lock_guard g(m_lista);
+            for (auto& otra : m_descargas)
+            {
+                if (otra == x) continue;
+                std::lock_guard g2(otra->m);
+                if (otra->d.estado != Estado::Completada && !otra->d.nombre.empty()) ocupados.insert(Minusculas(otra->d.nombre));
+            }
+        }
+        std::wstring parcial, carpeta;
+        size_t yaEscritas;
+        int64_t yaBytes;
+        {
+            std::lock_guard g(x->m);
+            auto& d = x->d;
+            if (d.flujoTotal != (int)partes.size() || d.segmentos.size() != 1)
+            {
+                d.flujoHechos = 0;   // la lista cambió (o es la primera vez): desde el principio
+                d.segmentos.clear();
+            }
+            if (d.segmentos.empty()) d.segmentos.push_back({ 0, -1, 0, false });
+            if (d.carpeta.empty()) d.carpeta = CarpetaDescargas();
+            if (d.flujoHechos == 0 && d.segmentos[0].hecho == 0)
+            {
+                std::wstring n = LimpiarNombre(d.nombre.empty() ? NombreDeUrl(d.url) : d.nombre);
+                std::wstring bajo = Minusculas(n);
+                for (const wchar_t* lista : { L".m3u8", L".mpd", L".m3u" })
+                {
+                    size_t largo = wcslen(lista);
+                    if (bajo.size() > largo && bajo.compare(bajo.size() - largo, largo, lista) == 0)
+                    {
+                        n = n.substr(0, n.size() - largo);
+                        bajo = Minusculas(n);
+                        break;
+                    }
+                }
+                std::wstring ext = Minusculas(extension);
+                if (bajo.size() < ext.size() || bajo.compare(bajo.size() - ext.size(), ext.size(), ext) != 0) n += extension;
+                d.nombre = NombreUnico(d.carpeta, n, ocupados);
+            }
+            d.flujoTotal = (int)partes.size();
+            d.tamano = -1;
+            d.rangos = false;
+            d.estado = Estado::Descargando;
+            carpeta = d.carpeta;
+            parcial = d.carpeta + L"\\" + d.nombre + L".atarraya";
+            x->rutaParcial = parcial;
+            yaEscritas = (size_t)std::max(0, d.flujoHechos);
+            yaBytes = d.segmentos[0].hecho;
+            m_sucio = true;
+        }
+
+        // 4. El archivo parcial: queda con las partes enteras que ya se juntaron (lo demás se baja otra vez)
+        SHCreateDirectoryExW(nullptr, carpeta.c_str(), nullptr);
+        HANDLE h = CreateFileW(parcial.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE, nullptr,
+                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE)
+        {
+            terminar(Estado::Error, "No se pudo crear el archivo en la carpeta elegida. ¿Tienes permiso para guardar ahí?");
+            return;
+        }
+        LARGE_INTEGER actual = {};
+        GetFileSizeEx(h, &actual);
+        if (actual.QuadPart < yaBytes || yaEscritas > partes.size())
+        {
+            yaEscritas = 0;
+            yaBytes = 0;
+        }
+        LARGE_INTEGER corte = {};
+        corte.QuadPart = yaBytes;
+        SetFilePointerEx(h, corte, nullptr, FILE_BEGIN);
+        SetEndOfFile(h);
+        {
+            std::lock_guard g(x->m);
+            x->d.flujoHechos = (int)yaEscritas;
+            x->d.segmentos[0].hecho = yaBytes;
+        }
+
+        // 5. Las partes: varias conexiones a la vez (las de cada descarga), con el límite de velocidad de siempre. El
+        //    Ensamblador las junta en orden; las que se adelantan esperan en memoria (como mucho unas pocas).
+        flujos::Ensamblador ens(partes.size(), yaEscritas, yaBytes, [h](int64_t posicion, const char* datos, size_t n) {
+            OVERLAPPED ov = {};
+            ov.Offset = (DWORD)(posicion & 0xFFFFFFFF);
+            ov.OffsetHigh = (DWORD)(posicion >> 32);
+            DWORD escritos = 0;
+            return WriteFile(h, datos, (DWORD)n, &escritos, &ov) && escritos == n;
+        });
+        std::mutex mEns;
+        size_t proxima = yaEscritas;
+        int conexiones = std::clamp(d0.conexiones, 1, 16);
+        size_t ventana = (size_t)conexiones * 2;
+        auto trabajar = [&]() {
+            CURL* c = curl_easy_init();
+            if (!c)
+            {
+                x->FijarError("No se pudo preparar la conexión.");
+                return;
+            }
+            x->activas++;
+            char detalle[CURL_ERROR_SIZE] = {};
+            while (!x->parar)
+            {
+                size_t i;
+                {
+                    std::unique_lock g(mEns);
+                    if (proxima >= partes.size()) break;
+                    if (proxima >= ens.Siguiente() + ventana)
+                    {
+                        g.unlock();
+                        Sleep(30);
+                        continue;
+                    }
+                    i = proxima++;
+                }
+                const flujos::Trozo& tr = partes[i];
+                std::string ultimoError;
+                bool lista = false;
+                for (int intento = 0; intento < MaxReintentos && !x->parar; intento++)
+                {
+                    ParteFlujo k;
+                    k.x = x.get();
+                    k.c = c;
+                    k.indice = i;
+                    k.ens = &ens;
+                    k.mEns = &mEns;
+                    k.pidioRango = tr.desde >= 0 && tr.largo > 0;
+                    k.limitar = [this, x](int64_t n) { m_limitador->Consumir(n, limiteBytesSeg, x->parar); };
+                    Peticion pp{ tr.url, d0.referer, d0.cookies, d0.agente };
+                    Preparar(c, pp, x->proxy);
+                    curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
+                    curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
+                    std::string rango = k.pidioRango ? std::to_string(tr.desde) + "-" + std::to_string(tr.desde + tr.largo - 1) : std::string();
+                    curl_easy_setopt(c, CURLOPT_RANGE, k.pidioRango ? rango.c_str() : nullptr);
+                    curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, AlRecibirParteFlujo);
+                    curl_easy_setopt(c, CURLOPT_WRITEDATA, &k);
+                    curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
+                    curl_easy_setopt(c, CURLOPT_HEADERDATA, &k.cab);
+                    DestinoVisto visto;
+                    visto.soloAfuera = partesSoloAfuera;
+                    if (x->proxy.servidor.empty())
+                    {
+                        curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
+                        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
+                    }
+                    else curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, nullptr);
+                    curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
+                    curl_easy_setopt(c, CURLOPT_XFERINFOFUNCTION, AlProgresar);
+                    curl_easy_setopt(c, CURLOPT_XFERINFODATA, &x->parar);
+                    curl_easy_setopt(c, CURLOPT_ERRORBUFFER, detalle);
+                    detalle[0] = 0;
+                    CURLcode res = curl_easy_perform(c);
+                    long codigo = 0;
+                    curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &codigo);
+                    bool bien = res == CURLE_OK && codigo >= 200 && codigo < 300 && !k.pagina && !k.rangoIgnorado && !k.errorDisco
+                                && (!k.pidioRango || k.recibidos == tr.largo);
+                    if (bien)
+                    {
+                        std::lock_guard g(mEns);
+                        if (!ens.Terminar(i))
+                        {
+                            x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?");
+                            break;
+                        }
+                        std::lock_guard g2(x->m);
+                        x->d.flujoHechos = (int)ens.Siguiente();
+                        x->d.segmentos[0].hecho = ens.BytesEscritos() + ens.BytesDeLaActual();
+                        lista = true;
+                        break;
+                    }
+                    {
+                        std::lock_guard g(mEns);
+                        ens.Descartar(i);   // lo que llegó de esta parte no sirve: se baja otra vez desde el principio
+                    }
+                    if (x->parar) break;
+                    // Lo que no se arregla reintentando
+                    if (k.pagina) { x->FijarError(TextoRespondioPagina); break; }
+                    if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
+                    if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
+                    if (visto.soloAfuera && (visto.local || visto.sinRedes)) { x->FijarError(flujos::TextoRedLocal); break; }
+                    if (k.rangoIgnorado) { x->FijarError("El servidor no deja bajar este video por trozos."); break; }
+                    if (codigo >= 400 && !(codigo == 408 || codigo == 429 || codigo >= 500)) { x->FijarError(TextoErrorHttp(codigo)); break; }
+                    if (res != CURLE_OK && EsErrorPermanente(res)) { x->FijarError(TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res))); break; }
+                    ultimoError = codigo >= 400 ? TextoErrorHttp(codigo)
+                                                : (res != CURLE_OK ? TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res))
+                                                                   : std::string("Una parte del video llegó incompleta."));
+                    Esperar(std::min(30.0, 1.0 * (1 << intento)), x->parar);
+                }
+                if (!lista)
+                {
+                    if (!x->parar) x->FijarError(ultimoError.empty() ? std::string("Una parte del video no se pudo bajar.") : ultimoError);
+                    break;
+                }
+            }
+            x->activas--;
+            curl_easy_cleanup(c);
+        };
+        {
+            std::vector<std::thread> hilos;
+            int cuantas = (int)std::min<size_t>((size_t)conexiones, partes.size() - std::min(partes.size(), yaEscritas));
+            for (int k = 0; k < std::max(1, cuantas); k++) hilos.emplace_back(trabajar);
+            for (auto& t : hilos) t.join();
+        }
+
+        // 6. Resultado: el archivo queda solo con las partes enteras (lo de una parte a medias se quita)
+        bool completo;
+        int64_t bytes;
+        size_t escritas;
+        {
+            std::lock_guard g(mEns);
+            completo = ens.Completo();
+            bytes = ens.BytesEscritos();
+            escritas = ens.Siguiente();
+        }
+        LARGE_INTEGER largoFinal = {};
+        largoFinal.QuadPart = bytes;
+        SetFilePointerEx(h, largoFinal, nullptr, FILE_BEGIN);
+        SetEndOfFile(h);
+        FlushFileBuffers(h);
+        CloseHandle(h);
+        std::string errorTexto;
+        {
+            std::lock_guard g(x->m);
+            x->d.flujoHechos = (int)escritas;
+            x->d.segmentos[0].hecho = bytes;
+            errorTexto = x->errorTexto;
+        }
+        if (!errorTexto.empty())
+        {
+            terminar(Estado::Error, errorTexto);
+            return;
+        }
+        if (!completo)
+        {
+            if (x->pausaPedida || x->parar) terminar(x->pausaPedida ? Estado::Pausada : Estado::EnCola, "");
+            else terminar(Estado::Error, "La descarga se detuvo sin terminar. Pulsa «Reanudar» para seguir.");
+            return;
+        }
+        std::wstring nombreFinal;
+        {
+            std::lock_guard g(x->m);
+            nombreFinal = x->d.nombre;
+        }
+        std::wstring destino = carpeta + L"\\" + nombreFinal;
+        if (ExisteArchivo(destino) || ExisteCarpeta(destino))
+        {
+            nombreFinal = NombreUnico(carpeta, nombreFinal, ocupados);
+            destino = carpeta + L"\\" + nombreFinal;
+        }
+        if (!MoveFileExW(parcial.c_str(), destino.c_str(), MOVEFILE_WRITE_THROUGH))
+        {
+            terminar(Estado::Error, "Se bajó todo, pero no se pudo poner el nombre final al archivo.");
+            return;
+        }
+        {
+            std::lock_guard g(x->m);
+            x->d.nombre = nombreFinal;
+            x->d.tamano = bytes;
         }
         terminar(Estado::Completada, "");
     }

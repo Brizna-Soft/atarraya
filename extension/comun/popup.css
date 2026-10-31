@@ -5,6 +5,9 @@
   --bien: #1d9e75;
   --mal: #d64545;
   --enlace: #185fa5;
+  --borde: #e3e8ef;
+  --boton: #185fa5;
+  --boton-texto: #ffffff;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -12,12 +15,14 @@
     --texto: #e6e9ee;
     --suave: #a3acb9;
     --enlace: #6cb6f5;
+    --borde: #3a3f47;
+    --boton: #2f7fc4;
   }
 }
 body {
   margin: 0;
   padding: 12px 14px;
-  width: 300px;
+  width: 340px;
   font: 13px/1.45 "Segoe UI", system-ui, sans-serif;
   background: var(--fondo);
   color: var(--texto);
@@ -29,6 +34,10 @@ h1 {
   margin: 0 0 8px;
   font-size: 15px;
 }
+h2 {
+  margin: 12px 0 4px;
+  font-size: 13px;
+}
 .estado { margin: 0 0 10px; }
 .estado.bien { color: var(--bien); }
 .estado.mal { color: var(--mal); }
@@ -36,3 +45,44 @@ h1 {
 .fila input[type="number"] { width: 64px; }
 .nota { color: var(--suave); font-size: 12px; margin: 8px 0 0; }
 a { color: var(--enlace); }
+.videos {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  max-height: 260px;
+  overflow-y: auto;
+}
+.video {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 0;
+  border-top: 1px solid var(--borde);
+}
+.video:first-child { border-top: none; }
+.textos { flex: 1; min-width: 0; }
+.nombre {
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.detalle { color: var(--suave); font-size: 12px; }
+.video button {
+  flex: none;
+  padding: 4px 10px;
+  border: none;
+  border-radius: 4px;
+  background: var(--boton);
+  color: var(--boton-texto);
+  font: inherit;
+  cursor: pointer;
+}
+.video button:disabled {
+  background: var(--borde);
+  color: var(--suave);
+  cursor: default;
+}
+.resultado { margin: 8px 0 0; }
+.resultado.bien { color: var(--bien); }
+.resultado.mal { color: var(--mal); }

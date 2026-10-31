@@ -1,10 +1,16 @@
 // Prueba de la extensión sin navegador (no se publica):   node pruebas/prueba-extension.js
-// De qué página salió una descarga: la pestaña real donde nació su pedido, nunca la pestaña activa.
+// De qué página salió una descarga: la pestaña real donde nació su pedido, nunca la pestaña activa. Los videos de
+// cada pestaña y de sus marcos (medios.js): qué es un video, una lista HLS o DASH o un trozo, nada de YouTube ni de
+// sitios con DRM, y lo que se le pasa a Atarraya.
 
 const enNode = typeof require === "function" && typeof module !== "undefined";
 const { PestanasDePedidos: Pestanas, paginaDeOrigen: origen } = enNode
   ? require("../extension/comun/origen.js")
-  : { PestanasDePedidos, paginaDeOrigen }; // en un navegador, origen.js se carga antes que este archivo
+  : { PestanasDePedidos, paginaDeOrigen }; // en un navegador, origen.js y medios.js se cargan antes que este archivo
+const M = enNode
+  ? require("../extension/comun/medios.js")
+  : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
+      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE };
 
 let fallas = 0;
 function decir(texto) {
@@ -41,13 +47,236 @@ comprobar(origen(item, { url: "about:blank" }, pagina) === pagina.url && origen(
 comprobar(origen(item, null, null) === "" && origen(item, { url: "chrome://newtab/" }, null) === "",
   "extensión: si no se sabe, nada (no se adivina con la pestaña activa)");
 
-// background.js nunca pregunta por la pestaña activa ni por la última ventana
+// --- Videos (medios.js) ------------------------------------------------------------------------------------------------
+const c = (url, tipo) => M.clasificar(url, tipo) || {};
+comprobar(c("https://cdn.ej.org/v/peli.mp4", "video/mp4").formato === "archivo" && c("https://cdn.ej.org/v/peli.mp4", "video/mp4").clase === "video"
+  && c("https://cdn.ej.org/v/peli.webm", "").formato === "archivo" && c("https://cdn.ej.org/v/peli.MKV?t=1", "application/octet-stream").formato === "archivo"
+  && c("https://cdn.ej.org/a/cancion.mp3", "audio/mpeg").clase === "audio" && c("https://cdn.ej.org/a/x.m4a", "").clase === "audio",
+  "videos: un archivo de video o de audio (por su tipo o por su extensión)");
+comprobar(c("https://cdn.ej.org/hls/master.m3u8", "application/vnd.apple.mpegurl").formato === "hls"
+  && c("https://cdn.ej.org/hls/lista?id=3", "application/x-mpegURL").formato === "hls"
+  && c("https://cdn.ej.org/hls/lista.m3u8", "text/plain").formato === "hls" && c("https://cdn.ej.org/hls/x", "audio/mpegurl").formato === "hls",
+  "videos: una lista HLS (.m3u8 o tipo mpegurl)");
+comprobar(c("https://cdn.ej.org/d/manifiesto.mpd", "").formato === "dash" && c("https://cdn.ej.org/d/m?x=1", "application/dash+xml").formato === "dash",
+  "videos: una lista DASH (.mpd o application/dash+xml)");
+comprobar(c("https://cdn.ej.org/hls/seg-12.ts", "video/mp2t").trozo && c("https://cdn.ej.org/d/v/3.m4s", "video/iso.segment").trozo
+  && c("https://cdn.ej.org/d/chunk_3.m4a", "audio/mp4").trozo && c("https://cdn.ej.org/d/init.mp4", "video/mp4").trozo
+  && c("https://cdn.ej.org/d/frag5.mp4", "video/mp4").trozo && c("https://cdn.ej.org/x/a.cmfv", "").trozo
+  && c("https://cdn.ej.org/x/raro", "video/mp2t").trozo,
+  "videos: los trozos de una transmisión (.ts, .m4s, init, seg-12, chunk_3...) no son videos enteros");
+comprobar(M.clasificar("https://ej.org/pagina.html", "text/html") === null && M.clasificar("https://ej.org/peli.mp4", "text/html") === null
+  && M.clasificar("https://ej.org/foto.jpg", "image/jpeg") === null && M.clasificar("blob:https://ej.org/1234", "video/mp4") === null
+  && M.clasificar("ftp://ej.org/peli.mp4", "") === null && M.clasificar("no es una dirección", "video/mp4") === null,
+  "videos: una página (aunque se llame .mp4), una imagen, un blob: o un ftp: no son videos");
+comprobar(M.tamanoDe(206, { "content-range": "bytes 0-1023/5000000" }) === 5000000 && M.tamanoDe(200, { "content-length": "1234" }) === 1234
+  && M.tamanoDe(206, { "content-range": "bytes 0-1023/*" }) === -1 && M.tamanoDe(206, { "content-length": "1024" }) === -1
+  && M.tamanoDe(200, {}) === -1,
+  "videos: el tamaño entero sale del total de Content-Range (206) o de Content-Length (200)");
+comprobar(M.nombreDeMedio("https://cdn/x/a.mp4", 'attachment; filename="Mi video.mp4"') === "Mi video.mp4"
+  && M.nombreDeMedio("https://cdn/x/a.mp4", "attachment; filename*=UTF-8''Pel%C3%ADcula.mp4") === "Película.mp4"
+  && M.nombreDeMedio("https://cdn/x/Mi%20video.webm?t=1", "") === "Mi video.webm",
+  "videos: el nombre del servidor o el del final de la dirección");
+comprobar(JSON.stringify(M.cabecerasDe([{ name: "Content-Type", value: "video/mp4" }, { name: "Content-Length", value: "9" }]))
+  === JSON.stringify({ "content-type": "video/mp4", "content-length": "9" }),
+  "videos: las cabeceras de webRequest con claves en minúsculas");
+
+// Nada de YouTube (tampoco googlevideo.com ni después de una redirección) y nada de sitios con DRM
+comprobar(["https://www.youtube.com/watch?v=x", "https://m.youtube.com/", "https://youtu.be/x", "https://www.youtube-nocookie.com/embed/x",
+  "https://rr3---sn-abc.googlevideo.com/videoplayback?x=1", "https://%79outube.com/", "https://www.youtubekids.com/", "https://youtube.com./"]
+  .every(M.esYouTube) && !M.esYouTube("https://notyoutube.com/") && !M.esYouTube("https://youtube.com.ejemplo.org/") && !M.esYouTube("nada"),
+  "videos: YouTube, youtu.be, youtube-nocookie.com, m.youtube.com y googlevideo.com quedan fuera");
+comprobar(M.cadenaBloqueada(["https://cdn.ejemplo.org/v.mp4", "https://r1---sn.googlevideo.com/videoplayback"])
+  && !M.cadenaBloqueada(["https://cdn.ejemplo.org/v.mp4", "https://cdn2.ejemplo.org/v.mp4", undefined]),
+  "videos: una redirección que pasa por googlevideo.com también queda fuera");
+comprobar(M.esSitioProtegido("https://www.netflix.com/watch/1") && M.esSitioProtegido("https://tv.apple.com/x")
+  && M.esSitioProtegido("https://www.disneyplus.com/") && M.esSitioProtegido("https://ipv4-c001.1.nflxvideo.net/range/0-1")
+  && M.esSitioProtegido("https://www.amazon.com/gp/video/detail/x") && M.esSitioProtegido("https://www.clarovideo.com/")
+  && !M.esSitioProtegido("https://www.apple.com/") && !M.esSitioProtegido("https://www.amazon.com/dp/B0")
+  && !M.esSitioProtegido("https://3dsmax.com/") && !M.esSitioProtegido("https://archive.org/details/x"),
+  "videos: Netflix, Disney+, Prime Video, Apple TV+, Claro video y sus servidores quedan fuera (sitios con DRM)");
+
+// Los videos de una pestaña con todos sus marcos: cada uno recuerda el suyo
+{
+  const m = new M.MediosPorPestana(5);
+  m.marco(7, 0, "https://pagina.org/ver/1");
+  m.marco(7, 3, "https://reproductor.net/embed/9");
+  m.marco(7, 4, "about:blank");   // no es una dirección web: no cuenta
+  m.anotar(7, { url: "https://cdn.pagina.org/a.mp4", formato: "archivo", clase: "video", tamano: 5000000, tipoMime: "video/mp4", frameId: 0 }, 1000);
+  m.anotar(7, { url: "https://cdn.reproductor.net/hls/master.m3u8", formato: "hls", frameId: 3 }, 2000);
+  m.anotar(8, { url: "https://otra.org/b.mp4", formato: "archivo", tamano: 9000000, frameId: 0 }, 1500);
+  m.muestra(7, 3, "https://seg.cdn2.net/s/1.ts");
+  m.muestra(7, 3, "https://seg.cdn2.net/s/2.ts");
+  m.muestra(7, 3, "https://r1.googlevideo.com/videoplayback");
+  const l = m.lista(7);
+  comprobar(l.length === 2 && l[0].url === "https://cdn.pagina.org/a.mp4" && l[0].marco === "https://pagina.org/ver/1"
+    && l[1].formato === "hls" && l[1].marco === "https://reproductor.net/embed/9" && m.lista(8).length === 1
+    && m.urlDeMarco(7, 4, "respaldo") === "respaldo",
+    "videos: la lista junta los videos de la pestaña y de sus marcos; cada uno con la dirección de su marco");
+  comprobar(m.muestrasDeMarco(7, 3).length === 1 && m.muestrasDeMarco(7, 3)[0] === "https://seg.cdn2.net/s/1.ts" && m.muestrasDeMarco(7, 0).length === 0,
+    "videos: se recuerdan los servidores de los trozos de cada marco (para sus cookies), sin googlevideo.com");
+  comprobar(m.transmisionDe(7, 3).url === "https://cdn.reproductor.net/hls/master.m3u8" && m.transmisionDe(7, 0).formato === "hls"
+    && m.transmisionDe(8, 0) === null && m.transmisionDe(99, 0) === null,
+    "videos: un video «blob:» usa la lista HLS o DASH de su marco (si no hay, la de la pestaña)");
+
+  // La misma dirección otra vez (un video que se reproduce por partes, 206): una sola entrada, con el tamaño entero
+  m.anotar(7, { url: "https://cdn.pagina.org/a.mp4", formato: "archivo", tamano: 7000000, frameId: 0 }, 3000);
+  m.anotar(7, { url: "https://cdn.pagina.org/a.mp4", formato: "archivo", tamano: -1, frameId: 0 }, 3500);
+  comprobar(m.lista(7).filter((e) => e.url === "https://cdn.pagina.org/a.mp4").length === 1 && m.buscar(7, "https://cdn.pagina.org/a.mp4").tamano === 7000000,
+    "videos: la misma dirección no se repite y se queda con el tamaño entero");
+  comprobar(m.anotar(7, { url: "https://r4---sn.googlevideo.com/videoplayback?id=1", formato: "archivo", frameId: 0 }) === null
+    && m.anotar(7, { url: "https://www.netflix.com/v.mp4", formato: "archivo", frameId: 0 }) === null
+    && !m.lista(7).some((e) => M.esYouTube(e.url)),
+    "videos: nada de YouTube ni de sitios con DRM entra a la lista");
+
+  // Un video con DRM en el marco 3: sus listas quedan protegidas (también las que lleguen después) y van al final
+  m.protegerMarco(7, 3, "");
+  m.anotar(7, { url: "https://cdn.reproductor.net/dash/m.mpd", formato: "dash", frameId: 3 }, 4000);
+  const p = m.lista(7);
+  comprobar(p.length === 3 && !p[0].protegido && p[1].protegido && p[2].protegido && p[2].formato === "dash",
+    "videos: un video protegido (DRM) protege las listas de su marco y va al final de la lista");
+
+  // Lo guardado en storage.session vuelve igual, sin pisar lo que ya había en memoria
+  const guardado = JSON.parse(JSON.stringify(m.exportar()));
+  const otra = new M.MediosPorPestana(5);
+  otra.anotar(7, { url: "https://cdn.pagina.org/nuevo.webm", formato: "archivo", tamano: 3000000, frameId: 0 }, 5000);
+  otra.cargar(guardado);
+  otra.cargar(null);
+  otra.cargar("roto");
+  const urls = otra.lista(7).map((e) => e.url);
+  comprobar(urls.length === 4 && urls.includes("https://cdn.pagina.org/nuevo.webm") && urls.includes("https://cdn.reproductor.net/hls/master.m3u8")
+    && otra.urlDeMarco(7, 3, "") === "https://reproductor.net/embed/9" && otra.lista(7).find((e) => e.formato === "hls").protegido
+    && otra.muestrasDeMarco(7, 3).length === 1,
+    "videos: la lista se guarda y vuelve (con sus marcos) aunque el «service worker» se apague");
+
+  // Cuando un marco cambia de página se olvida lo suyo; cuando la pestaña cambia, todo
+  m.borrarMarco(7, 3);
+  comprobar(m.lista(7).length === 1 && m.urlDeMarco(7, 3, "") === "" && m.transmisionDe(7, 0) === null,
+    "videos: un marco que cambia de página se olvida");
+  m.borrar(7);
+  comprobar(m.lista(7).length === 0 && m.lista(8).length === 1, "videos: una pestaña que cambia de página empieza de cero");
+
+  // Tope: se van las más viejas
+  const t = new M.MediosPorPestana(5);
+  for (let i = 1; i <= 7; i++) t.anotar(1, { url: "https://ej.org/v" + i + ".mp4", formato: "archivo", tamano: 5000000, frameId: 0 }, i);
+  const lt = t.lista(1).map((e) => e.url);
+  comprobar(lt.length === 5 && lt[0] === "https://ej.org/v3.mp4" && lt[4] === "https://ej.org/v7.mp4",
+    "videos: hay un tope por pestaña y se van los más viejos");
+}
+
+// YouTube que llega por una redirección o por un marco que reproduce desde googlevideo.com: nada de ese marco
+{
+  const m = new M.MediosPorPestana();
+  m.marco(3, 0, "https://noticias.org/nota");
+  m.marco(3, 2, "https://reproductor.net/embed/1");
+  m.anotar(3, { url: "https://cdn.noticias.org/a.mp4", formato: "archivo", tamano: 5000000, frameId: 0 }, 1);
+  m.anotar(3, { url: "https://reproductor.net/hls/master.m3u8", formato: "hls", frameId: 2 }, 2);
+  m.bloquearMarco(3, 2, M.motivoBloqueo(["https://rr1---sn.googlevideo.com/videoplayback"]));
+  m.anotar(3, { url: "https://reproductor.net/hls/otra.m3u8", formato: "hls", frameId: 2 }, 3);
+  const l = m.lista(3);
+  comprobar(l.length === 1 && l[0].frameId === 0 && m.marcoBloqueado(3, 2) === "youtube" && m.marcoBloqueado(3, 0) === ""
+    && m.transmisionDe(3, 2) === null,
+    "videos: un marco que reproduce desde googlevideo.com no sale en la lista (ni lo de antes ni lo de después)");
+  m.quitar(3, ["https://cdn.noticias.org/a.mp4"]);
+  comprobar(m.lista(3).length === 0 && m.motivoDePestana(3) === "youtube" && m.motivoDePestana(99) === "",
+    "videos: una dirección que redirige a YouTube se quita, y la ventanita sabe por qué no hay nada");
+  const otra = new M.MediosPorPestana();
+  otra.cargar(JSON.parse(JSON.stringify(m.exportar())));
+  comprobar(otra.marcoBloqueado(3, 2) === "youtube" && otra.anotar(3, { url: "https://reproductor.net/x.mp4", formato: "archivo", frameId: 2 }) === null,
+    "videos: el marco bloqueado se recuerda aunque el «service worker» se apague");
+  m.borrarMarco(3, 2);
+  comprobar(m.marcoBloqueado(3, 2) === "", "videos: si ese marco cambia de página, empieza de cero");
+  comprobar(M.motivoBloqueo(["https://ej.org/a", "https://www.netflix.com/x"]) === "protegido" && M.motivoBloqueo(["https://ej.org/a", undefined]) === ""
+    && M.motivoBloqueo(["https://www.netflix.com/", "https://youtu.be/x"]) === "youtube",
+    "videos: el motivo (YouTube o sitio con DRM) de una cadena de direcciones");
+}
+
+// Las listas de cada calidad (o del audio) que pide un reproductor HLS justo después de la principal no salen aparte
+{
+  const m = new M.MediosPorPestana();
+  m.anotar(4, { url: "https://ej.org/hls/master.m3u8", formato: "hls", frameId: 0 }, 1000);
+  m.anotar(4, { url: "https://ej.org/hls/720p/index.m3u8", formato: "hls", frameId: 0 }, 1200);
+  m.anotar(4, { url: "https://ej.org/hls/audio/index.m3u8", formato: "hls", frameId: 0 }, 1300);
+  m.anotar(4, { url: "https://otro.net/hls/master.m3u8", formato: "hls", frameId: 6 }, 1400);
+  m.anotar(4, { url: "https://ej.org/hls2/master.m3u8", formato: "hls", frameId: 0 }, 61000);
+  const urls = m.lista(4).map((e) => e.url);
+  comprobar(JSON.stringify(urls) === JSON.stringify(["https://ej.org/hls/master.m3u8", "https://otro.net/hls/master.m3u8", "https://ej.org/hls2/master.m3u8"])
+    && m.buscar(4, "https://ej.org/hls/720p/index.m3u8") !== null,
+    "videos: las listas que llegan justo después de la principal no salen aparte (las de otro marco o de otro momento, sí)");
+}
+
+// El orden de la ventanita: video antes que solo audio, lo protegido al final; sin los muy chicos ni los trozos chicos
+{
+  const m = new M.MediosPorPestana();
+  m.anotar(1, { url: "https://ej.org/cancion.mp3", formato: "archivo", clase: "audio", tamano: 4000000, frameId: 0 }, 1);
+  m.anotar(1, { url: "https://ej.org/ding.mp3", formato: "archivo", clase: "audio", tamano: 9000, frameId: 0 }, 2);
+  m.anotar(1, { url: "https://ej.org/peli.mp4", formato: "archivo", clase: "video", tamano: 90000000, frameId: 0 }, 3);
+  m.anotar(1, { url: "https://ej.org/sin-tamano.webm", formato: "archivo", clase: "video", tamano: -1, frameId: 0 }, 4);
+  m.anotar(1, { url: "https://ej.org/protegido.mp4", formato: "archivo", clase: "video", tamano: 9000000, frameId: 0, protegido: true }, 5);
+  const sinLista = m.lista(1).map((e) => e.url);
+  m.anotar(1, { url: "https://ej.org/hls/master.m3u8", formato: "hls", frameId: 0 }, 6);
+  m.anotar(1, { url: "https://ej.org/hls/v720.mp4", formato: "archivo", clase: "video", tamano: 900000, frameId: 0 }, 7);
+  m.anotar(1, { url: "https://otro-sitio.net/corto.mp4", formato: "archivo", clase: "video", tamano: 900000, frameId: 5 }, 8);
+  const conLista = m.lista(1).map((e) => e.url);
+  comprobar(JSON.stringify(sinLista) === JSON.stringify(["https://ej.org/peli.mp4", "https://ej.org/sin-tamano.webm", "https://ej.org/cancion.mp3",
+    "https://ej.org/protegido.mp4"]),
+    "videos: en la ventanita va primero el video, después el audio y al final lo protegido; lo muy chico no se muestra");
+  comprobar(conLista.includes("https://ej.org/hls/master.m3u8") && !conLista.includes("https://ej.org/hls/v720.mp4")
+    && conLista.includes("https://ej.org/peli.mp4") && conLista.includes("https://otro-sitio.net/corto.mp4"),
+    "videos: un «archivo» chico en el marco de una lista HLS o DASH es un trozo y no se muestra (en otro marco, sí)");
+}
+
+// Lo que se le pasa a Atarraya: exactamente estos campos; el «referer» es el del marco del video
+{
+  const e = { url: "https://cdn.reproductor.net/hls/master.m3u8", formato: "hls", tamano: -1, tipoMime: "application/vnd.apple.mpegurl" };
+  const p = M.pedidoDeVideo(e, "https://pagina.org/ver/1", "  " + "T".repeat(400) + "  ", "https://reproductor.net/embed/9", "linea", "Agente/1");
+  comprobar(JSON.stringify(Object.keys(p).sort()) === JSON.stringify(["agente", "cookies", "formato", "pagina", "referer", "tamano", "tipo", "tipoMime", "titulo", "url"])
+    && p.tipo === "video" && p.formato === "hls" && p.url === e.url && p.referer === "https://reproductor.net/embed/9"
+    && p.pagina === "https://pagina.org/ver/1" && p.titulo.length === 300 && p.titulo[0] === "T" && p.tamano === -1
+    && p.cookies === "linea" && p.agente === "Agente/1",
+    "videos: el pedido a Atarraya lleva la página de arriba y, como «referer», la del marco donde está el video");
+  const sinMarco = M.pedidoDeVideo({ url: "https://ej.org/a.mp4", formato: "archivo", tamano: 5 }, "https://ej.org/", "", "", "", "");
+  comprobar(sinMarco.referer === "https://ej.org/" && sinMarco.tamano === 5 && sinMarco.titulo === "" && sinMarco.tipoMime === "",
+    "videos: sin marco conocido, el «referer» es la página");
+  comprobar(M.pedidoDeVideo({ url: "https://ej.org/l.mpd", formato: "dash", tamano: 67 }, "https://ej.org/", "", "", "", "").tamano === -1,
+    "videos: el tamaño de una lista HLS o DASH no se manda como si fuera el del video");
+  comprobar(JSON.stringify(M.sitiosDeArriba("https://www.ejemplo.org/x")) === JSON.stringify(["https://www.ejemplo.org", "https://ejemplo.org"])
+    && JSON.stringify(M.sitiosDeArriba("https://ejemplo.org/")) === JSON.stringify(["https://ejemplo.org"])
+    && M.sitiosDeArriba("about:blank").length === 0 && M.sitiosDeArriba("").length === 0,
+    "videos: los sitios de arriba para las cookies partidas de un marco de otro sitio");
+}
+
+// background.js nunca pregunta por la pestaña activa ni por la última ventana, y solo mira (no bloquea nada).
+// Los dos manifiestos: el botón sobre los videos va en todos los marcos, pero nunca en YouTube.
 if (enNode) {
   const fs = require("fs");
   const path = require("path");
-  const fondo = fs.readFileSync(path.join(__dirname, "../extension/comun/background.js"), "utf8");
+  const leer = (r) => fs.readFileSync(path.join(__dirname, r), "utf8");
+  const fondo = leer("../extension/comun/background.js");
   comprobar(!/tabs\.query|active\s*:\s*true|lastFocusedWindow|currentWindow/.test(fondo),
     "extensión: background.js no usa la pestaña activa");
+  comprobar(!/blocking/.test(fondo) && /onHeadersReceived/.test(fondo) && /importScripts\("origen\.js", "medios\.js"\)/.test(fondo),
+    "extensión: background.js solo mira los pedidos (no bloquea ni cambia nada) y carga medios.js");
+  const videos = leer("../extension/comun/videos.js");
+  comprobar(/isTrusted/.test(videos) && /cadenaBloqueada/.test(videos) && !/innerHTML/.test(videos) && /attachShadow\(\{ mode: "closed" \}\)/.test(videos),
+    "extensión: el botón solo responde a un clic de la persona, no aparece en YouTube y no usa innerHTML");
+  comprobar(/tipo: "revisarVideo"/.test(videos) && /case "revisarVideo"/.test(fondo) && /onBeforeRedirect/.test(fondo) && /bloquearMarco/.test(fondo),
+    "extensión: antes de mostrar el botón pregunta si el video viene de YouTube (también por una redirección o por su marco)");
+  const popup = leer("../extension/comun/popup.js");
+  comprobar(!/innerHTML/.test(popup), "extensión: la ventanita muestra los nombres como texto (sin innerHTML)");
+  for (const nav of ["chrome", "firefox"]) {
+    const man = JSON.parse(leer("../extension/" + nav + "/manifest.json"));
+    const cs = (man.content_scripts || [])[0] || {};
+    const fuera = cs.exclude_matches || [];
+    comprobar(cs.all_frames === true && cs.match_about_blank === true && JSON.stringify(cs.js) === JSON.stringify(["medios.js", "videos.js"])
+      && ["*://*.youtube.com/*", "*://youtu.be/*", "*://*.youtube-nocookie.com/*", "*://*.googlevideo.com/*", "*://*.netflix.com/*"].every((x) => fuera.includes(x)),
+      "extensión (" + nav + "): el botón va en todos los marcos, pero no en YouTube ni en sitios con DRM");
+    comprobar(man.version === "0.3.0" && JSON.stringify(man.permissions) === JSON.stringify(["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"])
+      && JSON.stringify(man.host_permissions) === JSON.stringify(["<all_urls>"]),
+      "extensión (" + nav + "): versión 0.3.0 y ningún permiso nuevo");
+  }
+  const ff = JSON.parse(leer("../extension/firefox/manifest.json"));
+  comprobar(JSON.stringify(ff.background.scripts) === JSON.stringify(["origen.js", "medios.js", "background.js"]),
+    "extensión (firefox): carga origen.js y medios.js antes que background.js");
 }
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");

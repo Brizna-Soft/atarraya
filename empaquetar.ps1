@@ -20,8 +20,8 @@ Copy-Item (Join-Path $programa 'Atarraya.exe'), (Join-Path $programa 'atarraya-p
 Copy-Item (Join-Path $raiz 'LICENSE') (Join-Path $temporal 'LICENCIA.txt')
 Copy-Item (Join-Path $raiz 'AVISOS-DE-TERCEROS.txt') $temporal
 $leeme = @"
-Atarraya $version - descargas, torrents y enlaces magnet, gratis, de Brizna Soft
-================================================================================
+Atarraya $version - descargas, videos, torrents y enlaces magnet, gratis, de Brizna Soft
+========================================================================================
 
 1. Abre Atarraya.exe (no hace falta instalar nada).
 2. Si Windows dice "Windows protegió su PC": pulsa "Más información" y luego "Ejecutar de todas formas".
@@ -38,8 +38,17 @@ Atarraya $version - descargas, torrents y enlaces magnet, gratis, de Brizna Soft
    las partes de un paquete (o un .rar, .zip o .7z suelto) Atarraya lo descomprime en una carpeta con su nombre,
    al lado de las partes. Las partes no se borran solas: cuando Jícaro termina bien, Atarraya te ofrece
    "Borrar las partes" (van a la Papelera). Se apaga en Ajustes. Jícaro: https://brizna-soft.github.io/programas/jicaro/
+7. Nuevo en la 0.3.0: los videos de las páginas, como IDM. Pon el ratón sobre un video y pulsa
+   "Descargar este video", o abre la ventanita de la extensión (su ícono) para ver los videos de la pestaña,
+   también los de un reproductor dentro de un marco de otro sitio. Nada se baja solo: solo cuando pulsas.
+   - MP4 y WebM: como cualquier descarga.
+   - HLS (.m3u8): eliges la calidad y Atarraya junta las partes en un solo archivo .ts (o .mp4 si es CMAF).
+   - DASH (.mpd): el video y el audio quedan en dos archivos, "(video)" y "(audio)", sin unir. Para
+     juntarlos hace falta un programa aparte, como FFmpeg (Atarraya no lo trae).
+   No baja videos de YouTube ni videos protegidos o cifrados (DRM): ahí te dice "Este video está protegido".
 
-Si ya tenías la extensión de una versión anterior, recárgala: en chrome://extensions (o edge://extensions)
+Si ya tenías la extensión de una versión anterior, recárgala (la 0.3.0 la necesita para el botón de los
+videos): en chrome://extensions (o edge://extensions)
 busca Atarraya y pulsa el botón de recargar. Si pusiste esta versión en otra carpeta, carga otra vez la
 carpeta extension\chrome nueva y, en Atarraya, pulsa de nuevo "Navegadores" y "Conectar".
 

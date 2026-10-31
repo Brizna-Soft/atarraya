@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Atarraya",
-  "description": "Pasa tus descargas y enlaces magnet a Atarraya: varias conexiones, torrents y descargas que se reanudan. Gratis y sin publicidad.",
-  "version": "0.2.2",
+  "description": "Pasa a Atarraya tus descargas, videos y enlaces magnet: varias conexiones, torrents y descargas que se reanudan. Gratis.",
+  "version": "0.3.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEArPAUFgIkw184WjTekqT2AJZPn/QVqkdjpZJQA6MgSuLT82A92U+WO5iFb8rpNrQCl2rMva5a4ri7RYCAkGXrq73LcihvZvJhWVRp/30T87b1+i+jJ1IbKQFdURwtCKnVCwTVca0VLMIKAIgI0JiFZ+1P0zdFvs0NgEW1rTmBkNnCy8uDk0VxdpEWYjv64QhuALGzpipSaU+hg6H5YdBDXSIxmD5GSBCOKQhY9oWfnlfrneOHV8aFIMnYdUhlPVBKzkSbOYcV2YFYL8rTHnd9vHQBZuVeCuYcjUVciVEcHIWbGL6xLa0mXBtEsf9R2mTn7S5hlmVi1XX0TD12OfMLSQIDAQAB",
   "icons": {
     "16": "iconos/icono-16.png",
@@ -21,6 +21,46 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "exclude_matches": [
+        "*://*.youtube.com/*",
+        "*://youtu.be/*",
+        "*://*.youtube-nocookie.com/*",
+        "*://*.youtubekids.com/*",
+        "*://*.googlevideo.com/*",
+        "*://youtube.googleapis.com/*",
+        "*://*.netflix.com/*",
+        "*://*.disneyplus.com/*",
+        "*://*.primevideo.com/*",
+        "*://*.amazon.com/gp/video/*",
+        "*://*.max.com/*",
+        "*://*.hbomax.com/*",
+        "*://*.hulu.com/*",
+        "*://tv.apple.com/*",
+        "*://music.apple.com/*",
+        "*://*.paramountplus.com/*",
+        "*://*.peacocktv.com/*",
+        "*://*.crunchyroll.com/*",
+        "*://*.starplus.com/*",
+        "*://*.vix.com/*",
+        "*://*.clarovideo.com/*",
+        "*://*.spotify.com/*",
+        "*://*.deezer.com/*",
+        "*://*.tidal.com/*",
+        "*://*.dazn.com/*",
+        "*://*.mubi.com/*",
+        "*://globoplay.globo.com/*",
+        "*://*.blim.com/*"
+      ],
+      "js": ["medios.js", "videos.js"],
+      "all_frames": true,
+      "match_about_blank": true,
+      "match_origin_as_fallback": true,
+      "run_at": "document_idle"
+    }
+  ],
   "permissions": ["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"],
   "host_permissions": ["<all_urls>"],
   "minimum_chrome_version": "116"

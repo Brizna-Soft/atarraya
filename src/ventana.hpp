@@ -41,6 +41,10 @@ public:
 
     void Mostrar();                          // la trae al frente (también desde el ícono junto al reloj)
     void Pedido(const std::string& json);   // del navegador o de otra copia del programa
+    // Un video que pasó la extensión: un archivo (MP4, WebM...) va como cualquier descarga; HLS o DASH, a «Bajar video»
+    void PedidoVideo(const std::string& formato, const std::string& url, const std::wstring& titulo, const std::string& referer,
+                     const std::string& pagina, const std::string& cookies, const std::string& agente, const std::string& tipoMime,
+                     int64_t tamano);
     void NuevaDescarga(const hnd::DatosDescarga& previa, bool delNavegador, int64_t tamanoAnunciado = -1);
     void AbrirRecolector(bool sinFoco);                     // la ventana del recolector de enlaces
     void AbrirPagina(const std::wstring& url, bool buscarYa);

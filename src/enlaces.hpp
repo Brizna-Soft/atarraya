@@ -57,4 +57,8 @@ namespace hnd::enlaces
     // Sitios que no permiten bajar sus videos: Atarraya no los baja (YouTube)
     bool NoPermitido(const std::string& url);
     extern const wchar_t* TextoNoPermitido;
+    // Sitios que protegen sus videos con DRM (Netflix, Disney+, Prime Video, Max...): Atarraya no baja sus videos. La
+    // misma lista que la extensión.
+    bool SitioProtegido(const std::string& url);
+    extern const wchar_t* TextoSitioProtegido;
 }

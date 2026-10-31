@@ -91,6 +91,8 @@ namespace
         texto("tipoMime", 256);
         texto("agente", 1024);
         texto("cookies", 256 * 1024);
+        texto("formato", 16);    // videos: «archivo», «hls» o «dash»
+        texto("titulo", 1024);   // videos: el título de la pestaña
         auto tamano = j.find("tamano");
         if (tamano != j.end() && tamano->is_number_integer()) r["tamano"] = tamano->get<int64_t>();
         return r;
@@ -104,6 +106,15 @@ namespace
         for (auto& c : bajo) c = (char)tolower((unsigned char)c);
         return bajo.rfind("http://", 0) == 0 || bajo.rfind("https://", 0) == 0 || bajo.rfind("ftp://", 0) == 0
             || bajo.rfind("magnet:?", 0) == 0;
+    }
+
+    // Solo http o https (los videos de una página)
+    bool DireccionWeb(const std::string& url)
+    {
+        if (!DireccionValida(url)) return false;
+        std::string bajo = url.substr(0, 8);
+        for (auto& c : bajo) c = (char)tolower((unsigned char)c);
+        return bajo.rfind("http://", 0) == 0 || bajo.rfind("https://", 0) == 0;
     }
 }
 
@@ -124,11 +135,18 @@ int main()
             {
                 respuesta = { { "ok", true }, { "version", APP_VERSION }, { "abierto", BuscarPrograma() != nullptr } };
             }
-            else if (tipo == "descargar" || tipo == "mostrar")
+            else if (tipo == "descargar" || tipo == "mostrar" || tipo == "video")
             {
-                if (tipo == "descargar" && !DireccionValida(j.value("url", "")))
+                std::string url = j.value("url", "");
+                std::string formato = j.value("formato", "");
+                if (tipo == "descargar" && !DireccionValida(url))
                 {
                     respuesta = { { "ok", false }, { "error", "direccion no valida" } };
+                }
+                // Un video de la página: solo http o https, y un formato conocido
+                else if (tipo == "video" && (!DireccionWeb(url) || (formato != "archivo" && formato != "hls" && formato != "dash")))
+                {
+                    respuesta = { { "ok", false }, { "error", "video no valido" } };
                 }
                 else
                 {

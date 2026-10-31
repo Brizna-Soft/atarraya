@@ -367,13 +367,47 @@ std::string hnd::enlaces::Sitio(const std::string& url)
     return Bajo(s);
 }
 
+namespace
+{
+    // ¿El sitio es «dominio» o uno de sus subdominios?
+    bool DeDominio(const std::string& sitio, const std::string& dominio)
+    {
+        return sitio == dominio
+               || (sitio.size() > dominio.size() && sitio.compare(sitio.size() - dominio.size() - 1, dominio.size() + 1, "." + dominio) == 0);
+    }
+}
+
 bool hnd::enlaces::NoPermitido(const std::string& url)
 {
     std::string s = Sitio(url);
     for (const char* d : { "youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com", "youtubekids.com" })
     {
-        std::string dom = d;
-        if (s == dom || (s.size() > dom.size() && s.compare(s.size() - dom.size() - 1, dom.size() + 1, "." + dom) == 0)) return true;
+        if (DeDominio(s, d)) return true;
+    }
+    return false;
+}
+
+const wchar_t* hnd::enlaces::TextoSitioProtegido = L"Este sitio protege sus videos: Atarraya no los baja.";
+
+bool hnd::enlaces::SitioProtegido(const std::string& url)
+{
+    std::string s = Sitio(url);
+    if (s.empty()) return false;
+    for (const char* d : { "netflix.com", "nflxvideo.net", "disneyplus.com", "disney-plus.net", "dssott.com", "bamgrid.com",
+                           "primevideo.com", "amazonvideo.com", "aiv-cdn.net", "aiv-delivery.net", "max.com", "hbomax.com",
+                           "hbomaxcdn.com", "hulu.com", "hulustream.com", "tv.apple.com", "music.apple.com", "paramountplus.com",
+                           "peacocktv.com", "crunchyroll.com", "starplus.com", "vix.com", "clarovideo.com", "spotify.com",
+                           "deezer.com", "tidal.com", "dazn.com", "mubi.com", "globoplay.globo.com", "blim.com" })
+    {
+        if (DeDominio(s, d)) return true;
+    }
+    // Prime Video dentro de Amazon (amazon.com/gp/video/..., amazon.es/gp/video/...)
+    auto punto = s.rfind("amazon.");
+    if (punto != std::string::npos && (punto == 0 || s[punto - 1] == '.'))
+    {
+        auto ruta = url.find('/', url.find("://") == std::string::npos ? 0 : url.find("://") + 3);
+        std::string camino = ruta == std::string::npos ? std::string() : Bajo(url.substr(ruta));
+        if (camino.rfind("/gp/video/", 0) == 0) return true;
     }
     return false;
 }
