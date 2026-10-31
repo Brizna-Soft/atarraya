@@ -23,6 +23,7 @@
 #include <thread>
 
 #include "ayuda.hpp"
+#include "enlaces.hpp"
 #include "hilos.hpp"
 #include "jicaro.hpp"
 #include "navegadores.hpp"
@@ -697,6 +698,13 @@ namespace
     const wchar_t* const NotaSinUnir =
         L"El video y el audio vienen por separado: Atarraya los guarda en dos archivos, «(video)» y «(audio)», sin unirlos. "
         L"Para juntarlos hace falta un programa aparte, como FFmpeg (Atarraya no lo trae).";
+
+    // La opción elegida en una lista ordenada de la mejor a la peor (la mejor si no hay ninguna elegida); -1 si está vacía
+    int Elegida(const wxChoice* c, const std::vector<int>& orden)
+    {
+        int s = c->GetSelection();
+        return s >= 0 && s < (int)orden.size() ? orden[s] : (orden.empty() ? -1 : orden.front());
+    }
 }
 
 DialogoVideo::DialogoVideo(wxWindow* padre, const Ajustes& ajustes, Pedido pedido)
@@ -792,8 +800,10 @@ void DialogoVideo::NoSePuede(const wxString& estado, const wxString& nota)
     m_nota->Wrap(-1);   // wx no vuelve a partir el texto si se le pide el mismo ancho que la vez anterior
     m_nota->Wrap(FromDIP(560));
     m_calidad->Disable();
+    m_audio->Disable();
     m_descargar->Disable();
     m_luego->Disable();
+    m_listo = false;
     GetSizer()->Fit(this);
     Registrar("bajar video: no se puede (" + Utf8(estado.ToStdWstring()) + ")");
 }
@@ -807,14 +817,19 @@ void DialogoVideo::AlLeer(bool ok, const std::string& texto, const std::string& 
     }
     m_urlLista = urlFinal.empty() ? m_pedido.url : urlFinal;
     m_local = local;
+    // La lista es de esta PC o de la red de la casa (por dónde se conectó o por su nombre): antes de bajar nada de ahí
+    // se le pregunta a la persona
+    m_listaLocal = local || enlaces::DireccionLocal(m_urlLista) || enlaces::DireccionLocal(m_pedido.url);
     const wxString protegido = L"Este video está protegido";
     const wxString porQue = L"Usa DRM o está cifrado. Atarraya no baja videos protegidos ni cifrados.";
     const wxString enVivo = L"Es una transmisión en vivo";
+    const wxString grande = L"Este video es demasiado grande";
     double duracion = 0;
     wxString nota;
     if (m_pedido.formato == "hls")
     {
         m_hls = flujos::LeerHls(texto, m_urlLista);
+        if (m_hls.demasiadas) { NoSePuede(grande, wxString::FromUTF8(flujos::TextoDemasiadas)); return; }
         if (!m_hls.valida) { NoSePuede(L"No es una lista de video", L"La dirección no trae una lista HLS (.m3u8)."); return; }
         if (m_hls.cifrada) { NoSePuede(protegido, porQue); return; }
         if (!m_hls.maestra && m_hls.enVivo) { NoSePuede(enVivo, wxString::FromUTF8(flujos::TextoEnVivo)); return; }
@@ -845,6 +860,7 @@ void DialogoVideo::AlLeer(bool ok, const std::string& texto, const std::string& 
     else
     {
         m_dash = flujos::LeerDash(texto, m_urlLista);
+        if (m_dash.demasiadas) { NoSePuede(grande, wxString::FromUTF8(flujos::TextoDemasiadas)); return; }
         if (!m_dash.valido) { NoSePuede(L"No es un manifiesto de video", L"La dirección no trae un manifiesto DASH (.mpd)."); return; }
         if (m_dash.protegido) { NoSePuede(protegido, porQue); return; }
         if (m_dash.enVivo) { NoSePuede(enVivo, wxString::FromUTF8(flujos::TextoEnVivo)); return; }
@@ -895,10 +911,115 @@ void DialogoVideo::AlLeer(bool ok, const std::string& texto, const std::string& 
 
 void DialogoVideo::AlAceptar(bool empezar)
 {
-    if (!m_listo) return;
+    if (!m_listo || m_revisando) return;
     if (!CarpetaValida(this, m_carpeta, GetTitle())) return;
     m_empezar = empezar;
-    EndModal(wxID_OK);
+    // Un video de esta PC o de la red de la casa: la persona decide si Atarraya se conecta ahí
+    if (m_listaLocal && !m_localConfirmado)
+    {
+        wxString sitio = wxString::FromUTF8(enlaces::Sitio(m_urlLista));
+        wxMessageDialog d(this, L"Este video está en tu red: " + sitio + L" (esta PC u otro aparato de tu casa).\n\n"
+                                L"¿Lo bajas de ahí? Hazlo solo si confías en ese aparato.",
+                          L"Video de tu red", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
+        d.SetYesNoLabels(L"Sí, bajarlo", L"No");
+        if (d.ShowModal() != wxID_YES) return;
+        m_localConfirmado = true;
+    }
+    Revisar();
+}
+
+void DialogoVideo::Revisar()
+{
+    // Lo que se usa con lo elegido. En HLS con calidades: la lista de esa calidad, la de su audio y las de sus
+    // subtítulos, que todavía no se leyeron. Si no: las partes que ya se conocen (de la lista o del manifiesto).
+    std::vector<std::string> listas;
+    std::vector<std::pair<flujos::Trozo, std::vector<flujos::Trozo>>> conocidas;
+    if (m_pedido.formato == "hls")
+    {
+        if (m_hls.maestra)
+        {
+            int v = Elegida(m_calidad, m_ordenCalidad);
+            if (v < 0) return;
+            listas.push_back(m_hls.variantes[v].url);
+            for (const auto& u : flujos::ListasJuntas(m_hls, v)) listas.push_back(u);
+        }
+        else conocidas.push_back({ m_hls.inicio, m_hls.trozos });
+    }
+    else
+    {
+        int v = m_ordenCalidad.empty() ? -1 : Elegida(m_calidad, m_ordenCalidad);
+        int a = m_ordenAudio.empty() ? -1 : Elegida(m_audio, m_ordenAudio);
+        if (v >= 0) conocidas.push_back({ m_dash.videos[v].inicio, m_dash.videos[v].trozos });
+        if (a >= 0) conocidas.push_back({ m_dash.audios[a].inicio, m_dash.audios[a].trozos });
+    }
+    m_revisando = true;
+    m_descargar->Disable();
+    m_luego->Disable();
+    m_calidad->Disable();
+    m_audio->Disable();
+    m_estado->SetLabel(L"Revisando las listas del video...");
+    // Si la lista es de internet, nada de lo que pide puede ser de esta PC ni de su red
+    bool soloAfuera = !m_listaLocal;
+    Pedido p = m_pedido;
+    auto parar = m_parar;
+    DialogoVideo* yo = this;
+    std::thread([yo, parar, p, listas, conocidas, soloAfuera]() {
+        std::string error;
+        size_t total = 0;
+        try
+        {
+            if (listas.size() > flujos::MaximoListasJuntas + 1) error = flujos::TextoDemasiadas;
+            for (size_t k = 0; error.empty() && k < listas.size(); k++)
+            {
+                std::string texto, urlFinal;
+                bool local = false;
+                if (!BajarLista(listas[k], p.referer, p.cookies, p.agente, texto, urlFinal, local, error, parar.get(), soloAfuera)) break;
+                auto l = flujos::LeerHls(texto, urlFinal.empty() ? listas[k] : urlFinal);
+                if (l.demasiadas) error = flujos::TextoDemasiadas;
+                else if (!l.valida || l.maestra) error = "Una de las listas del video no es una lista HLS.";
+                else if (l.cifrada) error = flujos::TextoProtegido;   // también si es la del audio o la de los subtítulos
+                else if (l.enVivo) error = flujos::TextoEnVivo;
+                else
+                {
+                    error = flujos::RevisarTrozos(l.inicio, l.trozos, soloAfuera || !local);
+                    total += l.trozos.size() + (l.inicio.url.empty() ? 0 : 1);
+                }
+            }
+            for (const auto& [inicio, trozos] : conocidas)
+            {
+                if (!error.empty()) break;
+                error = flujos::RevisarTrozos(inicio, trozos, soloAfuera);
+                total += trozos.size() + (inicio.url.empty() ? 0 : 1);
+            }
+            if (error.empty() && total > flujos::MaximoPartes) error = flujos::TextoDemasiadas;
+        }
+        catch (...)
+        {
+            error = "La lista del video llegó en un formato que Atarraya no pudo leer.";
+        }
+        hilos::Enviar([yo, parar, error]() {
+            if (*parar) return;
+            yo->AlRevisar(error);
+        });
+    }).detach();
+}
+
+void DialogoVideo::AlRevisar(const std::string& error)
+{
+    m_revisando = false;
+    if (error.empty())
+    {
+        EndModal(wxID_OK);
+        return;
+    }
+    wxString texto = wxString::FromUTF8(error);
+    if (error == flujos::TextoProtegido)
+        NoSePuede(L"Este video está protegido", L"Usa DRM o está cifrado (también su audio o sus subtítulos). Atarraya no baja videos protegidos ni cifrados.");
+    else if (error == flujos::TextoEnVivo) NoSePuede(L"Es una transmisión en vivo", texto);
+    else if (error == flujos::TextoRedLocal) NoSePuede(L"Este video pide archivos de tu red", texto);
+    else if (error == flujos::TextoDemasiadas) NoSePuede(L"Este video es demasiado grande", texto);
+    else if (error == Utf8(enlaces::TextoNoPermitido)) NoSePuede(L"Atarraya no baja este video", texto);
+    else NoSePuede(L"No se pudo revisar el video", texto);
 }
 
 std::vector<DatosDescarga> DialogoVideo::Descargas() const
@@ -911,13 +1032,10 @@ std::vector<DatosDescarga> DialogoVideo::Descargas() const
     base.agente = m_pedido.agente;
     base.carpeta = m_carpeta->GetPath().ToStdWstring();
     base.conexiones = m_conexiones;
-    base.flujoLocal = m_local;
+    // Lo de esta PC o de su red solo si la persona lo confirmó (si no, ni se llega aquí)
+    base.flujoLocal = m_listaLocal && m_localConfirmado;
     std::wstring nombre = LimpiarNombre(m_nombre->GetValue().Strip(wxString::both).ToStdWstring());
     if (nombre.empty()) nombre = L"video";
-    auto elegida = [](const wxChoice* c, const std::vector<int>& orden) {
-        int s = c->GetSelection();
-        return s >= 0 && s < (int)orden.size() ? orden[s] : (orden.empty() ? -1 : orden.front());
-    };
     if (m_pedido.formato == "hls")
     {
         DatosDescarga d = base;
@@ -926,9 +1044,12 @@ std::vector<DatosDescarga> DialogoVideo::Descargas() const
         d.url = m_urlLista;
         if (m_hls.maestra)
         {
-            int v = elegida(m_calidad, m_ordenCalidad);
+            int v = Elegida(m_calidad, m_ordenCalidad);
             if (v < 0) return r;
             d.url = m_hls.variantes[v].url;
+            // Las otras listas de esta calidad (audio aparte, subtítulos): cada descarga las vuelve a revisar al empezar
+            auto juntas = flujos::ListasJuntas(m_hls, v);
+            d.flujoListas = juntas;
             int a = flujos::AudioDeVariante(m_hls, v);
             if (a >= 0)
             {
@@ -938,6 +1059,9 @@ std::vector<DatosDescarga> DialogoVideo::Descargas() const
                 au.formato = "hls";
                 au.url = m_hls.audios[a].url;
                 au.nombre = nombre + L" (audio)";
+                au.flujoListas.push_back(d.url);
+                for (const auto& u : juntas)
+                    if (u != au.url) au.flujoListas.push_back(u);
                 r.push_back(d);
                 r.push_back(au);
                 return r;
@@ -947,18 +1071,20 @@ std::vector<DatosDescarga> DialogoVideo::Descargas() const
         return r;
     }
     // DASH: el mejor video y el mejor audio (o los elegidos), cada uno en su archivo
-    int v = m_ordenCalidad.empty() ? -1 : elegida(m_calidad, m_ordenCalidad);
-    int a = m_ordenAudio.empty() ? -1 : elegida(m_audio, m_ordenAudio);
+    int v = m_ordenCalidad.empty() ? -1 : Elegida(m_calidad, m_ordenCalidad);
+    int a = m_ordenAudio.empty() ? -1 : Elegida(m_audio, m_ordenAudio);
     bool dos = v >= 0 && a >= 0;
     auto agregar = [&](const flujos::Representacion& rep, bool audio) {
         DatosDescarga d = base;
         std::wstring n = dos ? nombre + (audio ? L" (audio)" : L" (video)") : nombre;
         if (rep.unArchivo)
         {
-            // Todo el medio es un archivo: una descarga normal, con varias conexiones
+            // Todo el medio es un archivo: una descarga normal, con varias conexiones. Su dirección salió del
+            // manifiesto: si el manifiesto es de internet, no puede llevar a esta PC ni a su red.
             d.url = rep.trozos.front().url;
             d.nombre = n + flujos::ExtensionDash(rep);
             d.nombreFijo = true;
+            d.soloAfuera = !base.flujoLocal;
         }
         else
         {

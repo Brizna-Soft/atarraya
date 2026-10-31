@@ -307,15 +307,11 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
       });
     }
   } else {
+    // Un video «blob:»: solo la transmisión que pidió su propio marco
     entrada = medios.transmisionDe(tabId, frameId);
   }
   guardarPronto();
-  if (!entrada) {
-    return {
-      ok: false,
-      texto: "No encontré el archivo de este video. Abre la ventanita de Atarraya (el ícono de la extensión) para ver los videos de esta pestaña.",
-    };
-  }
+  if (!entrada) return { ok: false, texto: TEXTO_SIN_TRANSMISION };
   return enviarVideo(tabId, entrada);
 }
 

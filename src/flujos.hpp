@@ -16,11 +16,18 @@
 
 namespace hnd::flujos
 {
+    // Topes, para que una lista mal hecha (o hecha para molestar) no llene la memoria
+    constexpr size_t MaximoPartes = 150000;                  // partes de un video, sumando todas sus listas o representaciones
+    constexpr size_t MaximoLista = 16u * 1024 * 1024;        // bytes de una lista HLS o de un manifiesto DASH
+    constexpr size_t MaximoEnMemoria = 128u * 1024 * 1024;   // bytes de las partes adelantadas que esperan su turno
+    constexpr size_t MaximoListasJuntas = 40;                // listas de audio y subtítulos que se revisan con una calidad
+
     // Textos para la persona
     extern const char* const TextoProtegido;     // DRM o cifrado
     extern const char* const TextoEnVivo;
     extern const char* const TextoVariasPartes;  // DASH con más de un período
     extern const char* const TextoRedLocal;      // la lista pide partes de esta PC o de la red de la casa
+    extern const char* const TextoDemasiadas;    // más partes o más bytes que los topes: no se baja (nunca a medias)
 
     // Una dirección de la lista, completa: relativa a la de la lista (ya con sus redirecciones), como un navegador
     std::string Resolver(const std::string& base, const std::string& relativa);
@@ -41,11 +48,16 @@ namespace hnd::flujos
         int ancho = 0, alto = 0;    // RESOLUTION
         std::string codecs;
         std::string grupoAudio;     // AUDIO="...": el audio va aparte, en ese grupo
+        std::string grupoSubtitulos;   // SUBTITLES="...": sus subtítulos (Atarraya no los baja, pero los revisa)
     };
     struct AudioAparte
     {
         std::string url, grupo, nombre, idioma;
         bool porDefecto = false;
+    };
+    struct Subtitulos
+    {
+        std::string url, grupo;
     };
     struct ListaHls
     {
@@ -53,8 +65,10 @@ namespace hnd::flujos
         bool maestra = false;       // trae calidades (EXT-X-STREAM-INF), no partes
         bool cifrada = false;       // EXT-X-KEY o EXT-X-SESSION-KEY, con cualquier método
         bool enVivo = false;        // sin EXT-X-ENDLIST ni EXT-X-PLAYLIST-TYPE:VOD
+        bool demasiadas = false;    // más de MaximoPartes partes o más de MaximoLista bytes: no se baja (sin partes)
         std::vector<Variante> variantes;
         std::vector<AudioAparte> audios;
+        std::vector<Subtitulos> subtitulos;
         Trozo inicio;               // EXT-X-MAP (CMAF/fMP4); url vacía si no hay
         std::vector<Trozo> trozos;
         double duracion = 0;        // segundos
@@ -62,6 +76,9 @@ namespace hnd::flujos
     ListaHls LeerHls(const std::string& texto, const std::string& url);
     int MejorVariante(const ListaHls& l);                  // la de más bits por segundo (o más resolución); -1 si no hay
     int AudioDeVariante(const ListaHls& l, int variante);  // su audio aparte (el que es por defecto); -1 si va dentro
+    // Las otras listas que se usan con una calidad de la maestra: su audio aparte y sus subtítulos. Todas se leen y se
+    // revisan antes de bajar una sola parte (si alguna está cifrada, el video no se baja).
+    std::vector<std::string> ListasJuntas(const ListaHls& maestra, int variante);
 
     // ---- DASH ----
     struct Representacion
@@ -81,6 +98,7 @@ namespace hnd::flujos
         bool protegido = false;     // ContentProtection en cualquier parte
         bool enVivo = false;        // type="dynamic"
         bool variasPartes = false;  // más de un Period
+        bool demasiadas = false;    // más de MaximoPartes partes (sumando todas las representaciones) o más de MaximoLista bytes
         double duracion = 0;
         std::vector<Representacion> videos, audios;
     };
@@ -88,9 +106,9 @@ namespace hnd::flujos
     int MejorRepresentacion(const std::vector<Representacion>& r);   // -1 si no hay
     int BuscarRepresentacion(const std::vector<Representacion>& r, const std::string& id);   // -1 si no está
 
-    // ¿Las partes se pueden bajar? Solo http y https, nada de YouTube ni de sitios con DRM. El problema en español, o
-    // vacío si se pueden.
-    std::string RevisarTrozos(const Trozo& inicio, const std::vector<Trozo>& trozos);
+    // ¿Las partes se pueden bajar? Solo http y https, nada de YouTube ni de sitios con DRM y, con «soloAfuera» (la
+    // lista es de internet), nada de esta PC ni de la red de la casa. El problema en español, o vacío si se pueden.
+    std::string RevisarTrozos(const Trozo& inicio, const std::vector<Trozo>& trozos, bool soloAfuera = false);
 
     // Para la persona: «1080p · 5.0 Mb/s», «Audio · 128 kb/s»
     std::wstring TextoCalidad(int ancho, int alto, int64_t banda, bool soloAudio);
@@ -99,16 +117,20 @@ namespace hnd::flujos
     std::wstring ExtensionDash(const Representacion& r);
 
     // Junta las partes en el archivo, en orden aunque lleguen desordenadas. La que toca se escribe apenas llega cada
-    // pedazo (así una parte grande no se queda en memoria); las que llegan antes de su turno esperan en memoria. No es
-    // seguro entre hilos: quien lo usa lo protege.
+    // pedazo (así una parte grande no se queda en memoria); las que llegan antes de su turno esperan en memoria, con un
+    // tope de bytes: si no caben, se descartan y se vuelven a bajar cuando les toque. No es seguro entre hilos: quien lo
+    // usa lo protege.
     class Ensamblador
     {
     public:
         // «escribir(posición, datos, n)» escribe en el archivo; false si falló el disco
         using Escribir = std::function<bool(int64_t, const char*, size_t)>;
-        Ensamblador(size_t total, size_t yaEscritas, int64_t bytesYaEscritos, Escribir escribir);
+        Ensamblador(size_t total, size_t yaEscritas, int64_t bytesYaEscritos, Escribir escribir, size_t maximoEnMemoria = MaximoEnMemoria);
 
-        bool Pedazo(size_t parte, const char* datos, size_t n);   // false si falló el disco
+        enum class Paso { Bien, Lleno, Disco };
+        // Lleno: una parte adelantada ya no cabe en memoria; se descartó lo suyo y hay que bajarla otra vez cuando sea
+        // su turno (Siguiente() == parte). Disco: falló la escritura.
+        Paso Pedazo(size_t parte, const char* datos, size_t n);
         bool Terminar(size_t parte);                              // false si falló el disco
         void Descartar(size_t parte);   // falló a mitad: se olvida lo que tenía (lo escrito se pisa al reintentar)
 
@@ -123,6 +145,7 @@ namespace hnd::flujos
 
         size_t m_total, m_siguiente;
         int64_t m_bytes, m_actual = 0;
+        size_t m_maximo, m_enMemoria = 0;
         std::map<size_t, std::string> m_esperando;
         std::set<size_t> m_terminadas;
         Escribir m_escribir;

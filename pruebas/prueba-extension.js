@@ -10,7 +10,7 @@ const { PestanasDePedidos: Pestanas, paginaDeOrigen: origen } = enNode
 const M = enNode
   ? require("../extension/comun/medios.js")
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
-      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE };
+      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION };
 
 let fallas = 0;
 function decir(texto) {
@@ -114,9 +114,11 @@ comprobar(M.esSitioProtegido("https://www.netflix.com/watch/1") && M.esSitioProt
     "videos: la lista junta los videos de la pestaña y de sus marcos; cada uno con la dirección de su marco");
   comprobar(m.muestrasDeMarco(7, 3).length === 1 && m.muestrasDeMarco(7, 3)[0] === "https://seg.cdn2.net/s/1.ts" && m.muestrasDeMarco(7, 0).length === 0,
     "videos: se recuerdan los servidores de los trozos de cada marco (para sus cookies), sin googlevideo.com");
-  comprobar(m.transmisionDe(7, 3).url === "https://cdn.reproductor.net/hls/master.m3u8" && m.transmisionDe(7, 0).formato === "hls"
-    && m.transmisionDe(8, 0) === null && m.transmisionDe(99, 0) === null,
-    "videos: un video «blob:» usa la lista HLS o DASH de su marco (si no hay, la de la pestaña)");
+  comprobar(m.transmisionDe(7, 3).url === "https://cdn.reproductor.net/hls/master.m3u8" && m.transmisionDe(7, 0) === null
+    && m.transmisionDe(7, 5) === null && m.transmisionDe(8, 0) === null && m.transmisionDe(99, 0) === null,
+    "videos: un video «blob:» usa solo la lista HLS o DASH de su propio marco (nunca la de otro marco de la pestaña)");
+  comprobar(M.TEXTO_SIN_TRANSMISION === "No encontré este video todavía: dale play y vuelve a intentar.",
+    "videos: un «blob:» sin lista en su marco no baja nada y lo dice («dale play y vuelve a intentar»)");
 
   // La misma dirección otra vez (un video que se reproduce por partes, 206): una sola entrada, con el tamaño entero
   m.anotar(7, { url: "https://cdn.pagina.org/a.mp4", formato: "archivo", tamano: 7000000, frameId: 0 }, 3000);
@@ -261,6 +263,8 @@ if (enNode) {
     "extensión: el botón solo responde a un clic de la persona, no aparece en YouTube y no usa innerHTML");
   comprobar(/tipo: "revisarVideo"/.test(videos) && /case "revisarVideo"/.test(fondo) && /onBeforeRedirect/.test(fondo) && /bloquearMarco/.test(fondo),
     "extensión: antes de mostrar el botón pregunta si el video viene de YouTube (también por una redirección o por su marco)");
+  comprobar(/if \(!entrada\) return \{ ok: false, texto: TEXTO_SIN_TRANSMISION \}/.test(fondo) && !/flujos\[0\]/.test(leer("../extension/comun/medios.js")),
+    "extensión: el botón de un «blob:» sin lista en su marco no manda nada a Atarraya");
   const popup = leer("../extension/comun/popup.js");
   comprobar(!/innerHTML/.test(popup), "extensión: la ventanita muestra los nombres como texto (sin innerHTML)");
   for (const nav of ["chrome", "firefox"]) {

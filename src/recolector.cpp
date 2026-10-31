@@ -122,33 +122,8 @@ bool hnd::VaAlNavegador(const std::string& url, bool delNavegador)
 
 bool hnd::EsDireccionLocal(const std::string& url)
 {
-    std::string s = enlaces::Sitio(url);
-    if (s.empty()) return true;
-    if (s == "localhost" || TerminaEn(s, "localhost")) return true;
-    for (const char* d : { "local", "lan", "home", "internal", "intranet", "corp", "home.arpa" })
-    {
-        if (TerminaEn(s, d)) return true;
-    }
-    if (s[0] == '[')
-    {
-        // IPv6: la propia PC (::1), enlace local (fe80::) y direcciones privadas (fc00::/7)
-        std::string ip = s.substr(1, s.size() - 2);
-        return ip.rfind("::", 0) == 0 || ip.rfind("64:ff9b:", 0) == 0 || ip.rfind("fe8", 0) == 0 || ip.rfind("fe9", 0) == 0 || ip.rfind("fea", 0) == 0 || ip.rfind("feb", 0) == 0
-            || ip.rfind("fc", 0) == 0 || ip.rfind("fd", 0) == 0 || ip == "::";
-    }
-    if (s.find('.') == std::string::npos) return true;   // un nombre sin punto es de la red local (o un número raro)
-    // IPv4 escrita con números
-    int partes[4] = { -1, -1, -1, -1 };
-    if (sscanf_s(s.c_str(), "%d.%d.%d.%d", &partes[0], &partes[1], &partes[2], &partes[3]) == 4
-        && std::all_of(s.begin(), s.end(), [](char c) { return std::isdigit((unsigned char)c) || c == '.'; }))
-    {
-        int a = partes[0], b = partes[1];
-        return a == 127 || a == 10 || a == 0 || (a == 192 && b == 168) || (a == 172 && b >= 16 && b <= 31) || (a == 169 && b == 254)
-            || (a == 100 && b >= 64 && b <= 127);
-    }
-    // Formas raras de escribir una IP («0x7f.1», «127.1»...): mejor no consultarlas solas
-    if (s.find("0x") != std::string::npos) return true;
-    return std::all_of(s.begin(), s.end(), [](char c) { return std::isdigit((unsigned char)c) || c == '.'; });
+    // La misma revisión que usan los videos por partes (está en enlaces.cpp)
+    return enlaces::DireccionLocal(url);
 }
 
 bool hnd::EnlaceParaRecolectar(const std::string& url)

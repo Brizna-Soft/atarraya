@@ -19,6 +19,8 @@ const SITIOS_PROTEGIDOS = ["netflix.com", "nflxvideo.net", "disneyplus.com", "di
 const TEXTO_YOUTUBE = "Atarraya no baja videos de YouTube: sus condiciones no lo permiten.";
 const TEXTO_PROTEGIDO = "Este video está protegido: Atarraya no lo baja.";
 const TEXTO_SITIO_PROTEGIDO = "Este sitio protege sus videos: Atarraya no los baja.";
+// Un video «blob:» cuyo marco todavía no pidió su lista HLS o DASH
+const TEXTO_SIN_TRANSMISION = "No encontré este video todavía: dale play y vuelve a intentar.";
 
 // Extensiones de archivos de video y de audio que se bajan enteros
 const EXTENSIONES_MEDIO = {
@@ -301,13 +303,12 @@ class MediosPorPestana {
     return p && p.muestras[frameId] ? Object.values(p.muestras[frameId]) : [];
   }
 
-  // La transmisión (HLS o DASH) de un video que se reproduce desde un «blob:»: la primera que pidió ese marco (suele
-  // ser la lista principal); si no hay, la primera de la pestaña
+  // La transmisión (HLS o DASH) de un video que se reproduce desde un «blob:»: la primera que pidió ESE marco (suele
+  // ser la lista principal). Nunca la de otro marco: sería otro video, con las cookies y el «referer» de otra página.
   transmisionDe(tabId, frameId) {
     const p = this.pestana(tabId, false);
     if (!p) return null;
-    const flujos = p.medios.filter((e) => e.formato === "hls" || e.formato === "dash");
-    return flujos.find((e) => e.frameId === frameId) || flujos[0] || null;
+    return p.medios.find((e) => e.frameId === frameId && (e.formato === "hls" || e.formato === "dash")) || null;
   }
 
   // Lo que muestra la ventanita: sin los trozos y sin lo muy chico. Primero lo que se puede bajar (video antes que
@@ -402,7 +403,7 @@ function sitiosDeArriba(pagina) {
 
 if (typeof module !== "undefined")
   module.exports = {
-    SITIOS_YOUTUBE, SITIOS_PROTEGIDOS, TEXTO_YOUTUBE, TEXTO_PROTEGIDO, TEXTO_SITIO_PROTEGIDO, esYouTube,
+    SITIOS_YOUTUBE, SITIOS_PROTEGIDOS, TEXTO_YOUTUBE, TEXTO_PROTEGIDO, TEXTO_SITIO_PROTEGIDO, TEXTO_SIN_TRANSMISION, esYouTube,
     esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, calidadDe, textoTamano,
     cabecerasDe, MediosPorPestana, pedidoDeVideo, sitiosDeArriba, hostDe,
   };

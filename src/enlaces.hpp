@@ -61,4 +61,7 @@ namespace hnd::enlaces
     // misma lista que la extensión.
     bool SitioProtegido(const std::string& url);
     extern const wchar_t* TextoSitioProtegido;
+    // ¿La dirección es de esta PC o de la red de la casa, por su nombre? localhost, direcciones privadas (192.168...,
+    // 10..., 172.16-31...), nombres sin punto o .local / .lan. Lo que un nombre de afuera esconde se ve al conectar.
+    bool DireccionLocal(const std::string& url);
 }

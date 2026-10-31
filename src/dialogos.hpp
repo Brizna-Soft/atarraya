@@ -154,6 +154,10 @@ private:
     void AlLeer(bool ok, const std::string& texto, const std::string& urlFinal, bool local, const std::string& error);
     void NoSePuede(const wxString& estado, const wxString& nota);
     void AlAceptar(bool empezar);
+    // Antes de bajar nada: lee todas las listas que se van a usar con lo elegido (en HLS, la de la calidad, la de su
+    // audio y las de sus subtítulos) y revisa todas sus partes. Corre en un hilo; al terminar llama a AlRevisar.
+    void Revisar();
+    void AlRevisar(const std::string& error);
 
     Pedido m_pedido;
     int m_conexiones;
@@ -169,6 +173,9 @@ private:
     wxButton* m_descargar = nullptr;
     wxButton* m_luego = nullptr;
     bool m_listo = false, m_local = false, m_empezar = true;
+    bool m_listaLocal = false;        // la lista es de esta PC o de la red de la casa: se pregunta antes de bajar
+    bool m_localConfirmado = false;   // la persona dijo que sí
+    bool m_revisando = false;
     std::string m_urlLista;          // ya con sus redirecciones
     hnd::flujos::ListaHls m_hls;
     hnd::flujos::ManifiestoDash m_dash;

@@ -106,9 +106,18 @@ namespace
         return p;
     }
 
+#ifdef ATARRAYA_PRUEBAS
+    // Solo en las pruebas (ver hnd::pruebas): se fijan antes de bajar y no cambian mientras se baja
+    curl_slist* g_resolverPrueba = nullptr;
+    std::atomic<size_t> g_memoriaPrueba{ 0 };
+#endif
+
     void Preparar(CURL* c, const Peticion& p, const Proxy& proxy)
     {
         curl_easy_setopt(c, CURLOPT_URL, p.url.c_str());
+#ifdef ATARRAYA_PRUEBAS
+        if (g_resolverPrueba) curl_easy_setopt(c, CURLOPT_RESOLVE, g_resolverPrueba);
+#endif
         curl_easy_setopt(c, CURLOPT_FOLLOWLOCATION, 1L);
         curl_easy_setopt(c, CURLOPT_MAXREDIRS, 10L);
         curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https,ftp,ftps");
@@ -224,6 +233,46 @@ namespace
         return socket(a->family, a->socktype, a->protocol);
     }
 
+    // Videos por partes: a dónde se conectó cada pedido. Si la lista vino de internet, sus partes no pueden pedir nada
+    // de esta PC ni de su red (una lista no elige a qué aparatos de la casa se conecta Atarraya). Con proxy no se puede
+    // saber (la conexión va al proxy) y no se revisa.
+    struct DestinoVisto
+    {
+        bool soloAfuera = false;   // no deja conectar con esta PC ni con su red
+        bool local = false;        // se conectó (o quiso) con esta PC o su red
+        bool sinRedes = false;     // no se supo cuáles son las redes de la PC
+    };
+
+    curl_socket_t AbrirMirando(void* u, curlsocktype tipo, curl_sockaddr* a)
+    {
+        auto* v = static_cast<DestinoVisto*>(u);
+        if (tipo == CURLSOCKTYPE_IPCXN)
+        {
+            auto destino = hnd::red::Destino::SinRevisar;
+            try
+            {
+                destino = hnd::red::RevisarDestino(&a->addr);
+            }
+            catch (...)
+            {
+            }
+            if (destino == hnd::red::Destino::Local) v->local = true;
+            if (destino == hnd::red::Destino::SinRevisar) v->sinRedes = true;
+            if (v->soloAfuera && destino != hnd::red::Destino::Afuera) return CURL_SOCKET_BAD;
+        }
+        return socket(a->family, a->socktype, a->protocol);
+    }
+
+    // Con «soloAfuera» (y sin proxy), la conexión no puede ir a esta PC ni a su red
+    void MirarDestino(CURL* c, const Proxy& proxy, DestinoVisto& visto)
+    {
+        if (visto.soloAfuera && proxy.servidor.empty())
+        {
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirMirando);
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &visto);
+        }
+    }
+
     int AlProgresar(void* u, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
     {
         return static_cast<std::atomic<bool>*>(u)->load() ? 1 : 0;
@@ -241,16 +290,21 @@ namespace
         std::string etag, modificado, tipo, urlFinal, errorCurl;
         std::string disposicion;    // Content-Disposition, tal cual
         bool noPermitido = false;   // una redirección llevaba a YouTube
+        bool redLocal = false;      // con «soloAfuera»: quiso conectar con esta PC o su red (no se dejó)
     };
 
     // Pide el primer byte para saber el tamaño, el nombre y si se puede partir/reanudar.
-    // Sin «conRango» pide el archivo entero y corta apenas llegan las cabeceras.
-    Sondeo Sondear(const Peticion& p, const Proxy& proxy, std::atomic<bool>& parar, bool conRango = true)
+    // Sin «conRango» pide el archivo entero y corta apenas llegan las cabeceras. Con «soloAfuera» no se conecta con
+    // esta PC ni con su red.
+    Sondeo Sondear(const Peticion& p, const Proxy& proxy, std::atomic<bool>& parar, bool conRango = true, bool soloAfuera = false)
     {
         Sondeo s;
         CURL* c = curl_easy_init();
         if (!c) { s.res = CURLE_FAILED_INIT; return s; }
         Preparar(c, p, proxy);
+        DestinoVisto visto;
+        visto.soloAfuera = soloAfuera;
+        MirarDestino(c, proxy, visto);
         Cabeceras cab;
         char error[CURL_ERROR_SIZE] = {};
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, error);
@@ -270,6 +324,7 @@ namespace
         curl_easy_getinfo(c, CURLINFO_EFFECTIVE_URL, &efectiva);
         if (efectiva) s.urlFinal = efectiva;
         s.errorCurl = error[0] ? error : curl_easy_strerror(s.res);
+        s.redLocal = soloAfuera && (visto.local || visto.sinRedes) && s.res != CURLE_OK;
 
         auto valor = [&](const char* clave) {
             auto it = cab.v.find(clave);
@@ -426,36 +481,6 @@ namespace
         return hnd::Estado::Pausada;
     }
 
-    // Videos por partes: a dónde se conectó cada pedido. Si la lista vino de internet, sus partes no pueden pedir nada
-    // de esta PC ni de su red (una lista no elige a qué aparatos de la casa se conecta Atarraya). Con proxy no se puede
-    // saber (la conexión va al proxy) y no se revisa.
-    struct DestinoVisto
-    {
-        bool soloAfuera = false;   // no deja conectar con esta PC ni con su red
-        bool local = false;        // se conectó (o quiso) con esta PC o su red
-        bool sinRedes = false;     // no se supo cuáles son las redes de la PC
-    };
-
-    curl_socket_t AbrirMirando(void* u, curlsocktype tipo, curl_sockaddr* a)
-    {
-        auto* v = static_cast<DestinoVisto*>(u);
-        if (tipo == CURLSOCKTYPE_IPCXN)
-        {
-            auto destino = hnd::red::Destino::SinRevisar;
-            try
-            {
-                destino = hnd::red::RevisarDestino(&a->addr);
-            }
-            catch (...)
-            {
-            }
-            if (destino == hnd::red::Destino::Local) v->local = true;
-            if (destino == hnd::red::Destino::SinRevisar) v->sinRedes = true;
-            if (v->soloAfuera && destino != hnd::red::Destino::Afuera) return CURL_SOCKET_BAD;
-        }
-        return socket(a->family, a->socktype, a->protocol);
-    }
-
     bool EsPaginaWeb(const std::string& tipo)
     {
         std::string t = tipo;
@@ -483,6 +508,13 @@ namespace
             error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
             return false;
         }
+        // Una lista que salió de una lista de internet no lleva a esta PC ni a su red (por el nombre, antes de conectar;
+        // lo que un nombre de afuera esconde lo frena AbrirMirando)
+        if (soloAfuera && hnd::enlaces::DireccionLocal(p.url))
+        {
+            error = hnd::flujos::TextoRedLocal;
+            return false;
+        }
         CURL* c = curl_easy_init();
         if (!c)
         {
@@ -493,7 +525,7 @@ namespace
         curl_easy_setopt(c, CURLOPT_PROTOCOLS_STR, "http,https");
         curl_easy_setopt(c, CURLOPT_REDIR_PROTOCOLS_STR, "http,https");
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 120L);
-        Memoria m{ &texto, 16u * 1024 * 1024, false };
+        Memoria m{ &texto, hnd::flujos::MaximoLista, false };
         curl_easy_setopt(c, CURLOPT_WRITEFUNCTION, AlRecibirMemoria);
         curl_easy_setopt(c, CURLOPT_WRITEDATA, &m);
         Cabeceras cab;
@@ -523,7 +555,7 @@ namespace
         std::string tipo = it == cab.v.end() ? std::string() : it->second;
         if (cab.sitioNoPermitido) error = hnd::Utf8(hnd::enlaces::TextoNoPermitido);
         else if (soloAfuera && (visto.local || visto.sinRedes) && res != CURLE_OK) error = hnd::flujos::TextoRedLocal;
-        else if (m.excedido) error = "La lista del video es demasiado grande.";
+        else if (m.excedido) error = hnd::flujos::TextoDemasiadas;
         else if (res == CURLE_ABORTED_BY_CALLBACK) error = "Se canceló.";
         else if (res != CURLE_OK)
         {
@@ -550,6 +582,19 @@ namespace
 
 namespace hnd
 {
+#ifdef ATARRAYA_PRUEBAS
+    void pruebas::Resolver(const std::string& regla)
+    {
+        if (g_resolverPrueba) curl_slist_free_all(g_resolverPrueba);
+        g_resolverPrueba = regla.empty() ? nullptr : curl_slist_append(nullptr, regla.c_str());
+    }
+
+    void pruebas::TopeDeMemoria(size_t bytes)
+    {
+        g_memoriaPrueba = bytes;
+    }
+#endif
+
     int64_t DatosDescarga::Hecho() const
     {
         int64_t total = 0;
@@ -707,13 +752,15 @@ namespace hnd
     }
 
     bool BajarLista(const std::string& url, const std::string& referer, const std::string& cookies, const std::string& agente,
-                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar)
+                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar,
+                    bool soloAfuera)
     {
         std::atomic<bool> nunca{ false };
         bool temporal = false;
         Peticion p{ url, referer, cookies, agente };
-        // La primera lista la eligió la persona (pulsó el botón): puede ser de su red, como cualquier descarga
-        return BajarListaInterna(p, ProxyDelSistema(), false, texto, urlFinal, local, temporal, error, parar ? *parar : nunca);
+        // La primera lista la pidió el navegador y la eligió la persona (pulsó el botón): puede ser de su red, y entonces
+        // la ventana le pregunta antes de bajar nada. Las listas que salen de una lista de internet, no.
+        return BajarListaInterna(p, ProxyDelSistema(), soloAfuera, texto, urlFinal, local, temporal, error, parar ? *parar : nunca);
     }
 
     // Limita la velocidad total: cada conexión «gasta» fichas y espera si se acaban
@@ -898,6 +945,7 @@ namespace hnd
             bool pagina = false;          // llegó una página web: no se escribió nada
             bool rangoIgnorado = false;   // se pidió un trozo y el servidor mandó otra cosa
             bool errorDisco = false;
+            bool lleno = false;           // adelantada y sin lugar en memoria: se baja otra vez cuando sea su turno
             int64_t recibidos = 0;
             Cabeceras cab;
             std::function<void(int64_t)> limitar;
@@ -928,9 +976,15 @@ namespace hnd
             }
             {
                 std::lock_guard g(*k->mEns);
-                if (!k->ens->Pedazo(k->indice, b, total))
+                auto paso = k->ens->Pedazo(k->indice, b, total);
+                if (paso == flujos::Ensamblador::Paso::Disco)
                 {
                     k->errorDisco = true;
+                    return 0;
+                }
+                if (paso == flujos::Ensamblador::Paso::Lleno)
+                {
+                    k->lleno = true;
                     return 0;
                 }
                 std::lock_guard g2(k->x->m);
@@ -1364,7 +1418,8 @@ namespace hnd
                                                                 { "tamano", d.identidad.tamano }, { "modificado", d.identidad.modificado } }
                                                         : json() },
                     { "formato", d.formato }, { "pista", d.pista }, { "flujoTotal", d.flujoTotal }, { "flujoHechos", d.flujoHechos },
-                    { "flujoLocal", d.flujoLocal },
+                    { "flujoBytes", d.flujoBytes }, { "flujoLocal", d.flujoLocal }, { "flujoListas", d.flujoListas },
+                    { "soloAfuera", d.soloAfuera },
                 });
             }
         }
@@ -1421,7 +1476,13 @@ namespace hnd
                 d.pista = j.value("pista", "");
                 d.flujoTotal = std::max(0, j.value("flujoTotal", 0));
                 d.flujoHechos = std::clamp(j.value("flujoHechos", 0), 0, d.flujoTotal);
+                d.flujoBytes = std::max<int64_t>(0, j.value("flujoBytes", (int64_t)0));
                 d.flujoLocal = j.value("flujoLocal", false);
+                for (auto& u : j.value("flujoListas", json::array()))
+                {
+                    if (u.is_string() && d.flujoListas.size() < flujos::MaximoListasJuntas) d.flujoListas.push_back(u.get<std::string>());
+                }
+                d.soloAfuera = j.value("soloAfuera", false);
                 for (auto& s : j.value("segmentos", json::array()))
                 {
                     if (s.is_array() && s.size() == 3)
@@ -1472,29 +1533,47 @@ namespace hnd
         }
 
         Peticion p;
+        bool soloAfuera;
         {
             std::lock_guard g(x->m);
             p = { x->d.url, x->d.referer, x->d.cookies, x->d.agente };
+            soloAfuera = x->d.soloAfuera;
         }
         x->proxy = ProxyDelSistema();
         bool ftp = EsFtp(p.url);
+        // Su dirección salió de una lista de internet: nada de esta PC ni de su red (por el nombre, antes de conectar)
+        if (soloAfuera && enlaces::DireccionLocal(p.url))
+        {
+            terminar(Estado::Error, flujos::TextoRedLocal);
+            return;
+        }
 
         // 1. Preguntar al servidor (con reintentos si la conexión falla)
         Sondeo s;
         std::string error;
         for (int intento = 0;; intento++)
         {
-            s = Sondear(p, x->proxy, x->parar);
+            s = Sondear(p, x->proxy, x->parar, true, soloAfuera);
             if (x->parar) break;
             if (s.noPermitido)
             {
                 error = Utf8(enlaces::TextoNoPermitido);
                 break;
             }
+            if (s.redLocal)
+            {
+                error = flujos::TextoRedLocal;
+                break;
+            }
             // Algunos servidores rechazan cualquier pedido por partes: entonces se pide entero
             if (!ftp && (s.codigo == 400 || s.codigo == 405 || s.codigo == 501 || (s.codigo == 416 && s.tamano < 0)))
             {
-                Sondeo entero = Sondear(p, x->proxy, x->parar, false);
+                Sondeo entero = Sondear(p, x->proxy, x->parar, false, soloAfuera);
+                if (entero.redLocal)
+                {
+                    error = flujos::TextoRedLocal;
+                    break;
+                }
                 if (entero.codigo == 200) s = entero;
             }
             if (s.codigo == 200 || s.codigo == 206 || s.codigo == 416) break;
@@ -1742,19 +1821,22 @@ namespace hnd
         // 1. La lista (con reintentos si la conexión falla)
         std::string texto, urlFinal, error;
         bool local = false;
-        auto bajarLista = [&](const Peticion& pl) {
+        auto bajarLista = [&](const Peticion& pl, std::string& t, std::string& uf, bool& loc) {
             for (int intento = 0;; intento++)
             {
                 bool temporal = false;
-                if (BajarListaInterna(pl, x->proxy, soloAfuera, texto, urlFinal, local, temporal, error, x->parar)) return true;
+                if (BajarListaInterna(pl, x->proxy, soloAfuera, t, uf, loc, temporal, error, x->parar)) return true;
                 if (x->parar || !temporal || intento >= 4) return false;
                 Esperar(2.0 * (1 << intento), x->parar);
             }
         };
-        if (!bajarLista(p))
-        {
+        auto fallo = [&]() {
             if (x->parar && error == "Se canceló.") terminar(x->pausaPedida ? Estado::Pausada : Estado::EnCola, "");
             else terminar(Estado::Error, error);
+        };
+        if (!bajarLista(p, texto, urlFinal, local))
+        {
+            fallo();
             return;
         }
 
@@ -1764,19 +1846,23 @@ namespace hnd
         std::wstring extension;
         if (d0.formato == "hls")
         {
+            // Las otras listas del mismo video (su audio aparte, sus subtítulos)
+            std::vector<std::string> otras = d0.flujoListas;
             auto l = flujos::LeerHls(texto, urlFinal.empty() ? p.url : urlFinal);
-            if (l.valida && l.maestra && !l.cifrada)
+            if (l.valida && l.maestra && !l.cifrada && !l.demasiadas)
             {
-                // Llegó la lista con las calidades (la ventana guarda la que eligió la persona): la mejor
+                // Llegó la lista con las calidades (la ventana guarda la que eligió la persona): la mejor, con su audio
                 int v = flujos::MejorVariante(l);
                 if (v < 0) error = "La lista del video no trae ninguna calidad para bajar.";
                 else
                 {
+                    for (const auto& u : flujos::ListasJuntas(l, v))
+                        if (std::find(otras.begin(), otras.end(), u) == otras.end()) otras.push_back(u);
                     Peticion pv = p;
                     pv.url = l.variantes[v].url;
-                    if (!bajarLista(pv))
+                    if (!bajarLista(pv, texto, urlFinal, local))
                     {
-                        terminar(Estado::Error, error);
+                        fallo();
                         return;
                     }
                     l = flujos::LeerHls(texto, urlFinal.empty() ? pv.url : urlFinal);
@@ -1784,17 +1870,46 @@ namespace hnd
                 }
             }
             if (!error.empty()) {}
+            else if (l.demasiadas) error = flujos::TextoDemasiadas;
             else if (!l.valida) error = "La dirección no es una lista de video HLS (.m3u8).";
             else if (l.cifrada) error = flujos::TextoProtegido;
             else if (l.enVivo) error = flujos::TextoEnVivo;
             inicio = l.inicio;
             trozos = std::move(l.trozos);
             extension = flujos::ExtensionHls(l);
+            // Todas las listas que se usan se leen ANTES de bajar una sola parte: si alguna está cifrada (o en vivo, o no
+            // se puede leer), el video no se baja; y las partes de todas juntas no pueden pasar el tope
+            size_t total = trozos.size() + (inicio.url.empty() ? 0 : 1);
+            if (error.empty() && otras.size() > flujos::MaximoListasJuntas) error = flujos::TextoDemasiadas;
+            for (size_t k = 0; error.empty() && k < otras.size(); k++)
+            {
+                std::string t2, uf2;
+                bool local2 = false;
+                Peticion po = p;
+                po.url = otras[k];
+                if (!bajarLista(po, t2, uf2, local2))
+                {
+                    if (x->parar)
+                    {
+                        fallo();
+                        return;
+                    }
+                    error = "No se pudo revisar otra lista del mismo video (su audio o sus subtítulos): " + error;
+                    break;
+                }
+                auto o = flujos::LeerHls(t2, uf2.empty() ? po.url : uf2);
+                if (o.demasiadas) error = flujos::TextoDemasiadas;
+                else if (!o.valida || o.maestra) error = "Otra lista del mismo video (su audio o sus subtítulos) no es una lista HLS.";
+                else if (o.cifrada) error = flujos::TextoProtegido;
+                else if (o.enVivo) error = flujos::TextoEnVivo;
+                else if ((total += o.trozos.size() + (o.inicio.url.empty() ? 0 : 1)) > flujos::MaximoPartes) error = flujos::TextoDemasiadas;
+            }
         }
         else if (d0.formato == "dash")
         {
             auto m = flujos::LeerDash(texto, urlFinal.empty() ? p.url : urlFinal);
-            if (!m.valido) error = "La dirección no es un manifiesto de video DASH (.mpd).";
+            if (m.demasiadas) error = flujos::TextoDemasiadas;
+            else if (!m.valido) error = "La dirección no es un manifiesto de video DASH (.mpd).";
             else if (m.protegido) error = flujos::TextoProtegido;
             else if (m.enVivo) error = flujos::TextoEnVivo;
             else if (m.variasPartes) error = flujos::TextoVariasPartes;
@@ -1816,7 +1931,9 @@ namespace hnd
             }
         }
         else error = "Atarraya no sabe bajar este tipo de video.";
-        if (error.empty()) error = flujos::RevisarTrozos(inicio, trozos);
+        // Las partes pueden ser de esta PC o de su red solo si la lista también lo es (y la persona lo confirmó)
+        bool partesSoloAfuera = soloAfuera || !local;
+        if (error.empty()) error = flujos::RevisarTrozos(inicio, trozos, partesSoloAfuera);
         if (!error.empty())
         {
             terminar(Estado::Error, error);
@@ -1825,8 +1942,6 @@ namespace hnd
         std::vector<flujos::Trozo> partes;
         if (!inicio.url.empty()) partes.push_back(inicio);
         partes.insert(partes.end(), trozos.begin(), trozos.end());
-        // Las partes pueden ser de esta PC o de su red solo si la lista también lo es
-        bool partesSoloAfuera = soloAfuera || !local;
 
         // 3. Nombre, archivo parcial y desde dónde seguir
         std::set<std::wstring> ocupados;
@@ -1848,11 +1963,12 @@ namespace hnd
             if (d.flujoTotal != (int)partes.size() || d.segmentos.size() != 1)
             {
                 d.flujoHechos = 0;   // la lista cambió (o es la primera vez): desde el principio
+                d.flujoBytes = 0;
                 d.segmentos.clear();
             }
             if (d.segmentos.empty()) d.segmentos.push_back({ 0, -1, 0, false });
             if (d.carpeta.empty()) d.carpeta = CarpetaDescargas();
-            if (d.flujoHechos == 0 && d.segmentos[0].hecho == 0)
+            if (d.flujoHechos == 0 && d.flujoBytes == 0 && d.segmentos[0].hecho == 0)
             {
                 std::wstring n = LimpiarNombre(d.nombre.empty() ? NombreDeUrl(d.url) : d.nombre);
                 std::wstring bajo = Minusculas(n);
@@ -1878,7 +1994,10 @@ namespace hnd
             parcial = d.carpeta + L"\\" + d.nombre + L".atarraya";
             x->rutaParcial = parcial;
             yaEscritas = (size_t)std::max(0, d.flujoHechos);
-            yaBytes = d.segmentos[0].hecho;
+            // Solo cuentan las partes que se juntaron ENTERAS («flujoBytes»), no lo que se llevaba de la siguiente
+            // («segmentos[0].hecho», que es para mostrar el avance): si el programa se cerró de golpe a mitad de una
+            // parte, eso se corta aquí y la parte se baja otra vez desde su principio
+            yaBytes = std::max<int64_t>(0, d.flujoBytes);
             m_sucio = true;
         }
 
@@ -1893,7 +2012,8 @@ namespace hnd
         }
         LARGE_INTEGER actual = {};
         GetFileSizeEx(h, &actual);
-        if (actual.QuadPart < yaBytes || yaEscritas > partes.size())
+        // Lo guardado no cuadra con el archivo (más corto de lo que dice, partes sin bytes o al revés): desde el principio
+        if (actual.QuadPart < yaBytes || yaEscritas > partes.size() || (yaEscritas == 0) != (yaBytes == 0))
         {
             yaEscritas = 0;
             yaBytes = 0;
@@ -1905,18 +2025,23 @@ namespace hnd
         {
             std::lock_guard g(x->m);
             x->d.flujoHechos = (int)yaEscritas;
+            x->d.flujoBytes = yaBytes;
             x->d.segmentos[0].hecho = yaBytes;
         }
 
         // 5. Las partes: varias conexiones a la vez (las de cada descarga), con el límite de velocidad de siempre. El
         //    Ensamblador las junta en orden; las que se adelantan esperan en memoria (como mucho unas pocas).
+        size_t maximoEnMemoria = flujos::MaximoEnMemoria;
+#ifdef ATARRAYA_PRUEBAS
+        if (g_memoriaPrueba > 0) maximoEnMemoria = g_memoriaPrueba;
+#endif
         flujos::Ensamblador ens(partes.size(), yaEscritas, yaBytes, [h](int64_t posicion, const char* datos, size_t n) {
             OVERLAPPED ov = {};
             ov.Offset = (DWORD)(posicion & 0xFFFFFFFF);
             ov.OffsetHigh = (DWORD)(posicion >> 32);
             DWORD escritos = 0;
             return WriteFile(h, datos, (DWORD)n, &escritos, &ov) && escritos == n;
-        });
+        }, maximoEnMemoria);
         std::mutex mEns;
         size_t proxima = yaEscritas;
         int conexiones = std::clamp(d0.conexiones, 1, 16);
@@ -1983,8 +2108,11 @@ namespace hnd
                     CURLcode res = curl_easy_perform(c);
                     long codigo = 0;
                     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &codigo);
+                    curl_off_t anunciado = -1;
+                    curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &anunciado);
+                    // Una parte cuenta solo si llegó entera: con el largo que pidió (un trozo) o el que dijo el servidor
                     bool bien = res == CURLE_OK && codigo >= 200 && codigo < 300 && !k.pagina && !k.rangoIgnorado && !k.errorDisco
-                                && (!k.pidioRango || k.recibidos == tr.largo);
+                                && !k.lleno && (!k.pidioRango || k.recibidos == tr.largo) && (anunciado < 0 || k.recibidos == anunciado);
                     if (bien)
                     {
                         std::lock_guard g(mEns);
@@ -1995,6 +2123,7 @@ namespace hnd
                         }
                         std::lock_guard g2(x->m);
                         x->d.flujoHechos = (int)ens.Siguiente();
+                        x->d.flujoBytes = ens.BytesEscritos();
                         x->d.segmentos[0].hecho = ens.BytesEscritos() + ens.BytesDeLaActual();
                         lista = true;
                         break;
@@ -2004,6 +2133,21 @@ namespace hnd
                         ens.Descartar(i);   // lo que llegó de esta parte no sirve: se baja otra vez desde el principio
                     }
                     if (x->parar) break;
+                    if (k.lleno)
+                    {
+                        // Adelantada y sin lugar en memoria: espera su turno y se baja otra vez, entonces directo al disco.
+                        // No cuenta como un intento fallido.
+                        while (!x->parar)
+                        {
+                            {
+                                std::lock_guard g(mEns);
+                                if (ens.Siguiente() >= i) break;
+                            }
+                            Sleep(30);
+                        }
+                        intento--;
+                        continue;
+                    }
                     // Lo que no se arregla reintentando
                     if (k.pagina) { x->FijarError(TextoRespondioPagina); break; }
                     if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
@@ -2053,6 +2197,7 @@ namespace hnd
         {
             std::lock_guard g(x->m);
             x->d.flujoHechos = (int)escritas;
+            x->d.flujoBytes = bytes;
             x->d.segmentos[0].hecho = bytes;
             errorTexto = x->errorTexto;
         }
@@ -2095,10 +2240,12 @@ namespace hnd
     {
         Peticion p;
         std::wstring parcial;
+        DestinoVisto visto;
         {
             std::lock_guard g(x->m);
             p = { x->d.url, x->d.referer, x->d.cookies, x->d.agente };
             parcial = x->rutaParcial;
+            visto.soloAfuera = x->d.soloAfuera;
         }
         bool ftp = EsFtp(p.url);
 
@@ -2113,6 +2260,9 @@ namespace hnd
             return;
         }
         Preparar(c, p, x->proxy);
+        // Si su dirección salió de una lista de internet, ninguna conexión (ni las de una redirección) va a esta PC ni a
+        // su red
+        MirarDestino(c, x->proxy, visto);
         char errorCurl[CURL_ERROR_SIZE] = {};
         curl_easy_setopt(c, CURLOPT_ERRORBUFFER, errorCurl);
         curl_easy_setopt(c, CURLOPT_NOPROGRESS, 0L);
@@ -2210,6 +2360,7 @@ namespace hnd
             if (x->parar) break;
             if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
             if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
+            if (visto.soloAfuera && (visto.local || visto.sinRedes) && res != CURLE_OK) { x->FijarError(flujos::TextoRedLocal); break; }
             if (k.rangoIgnorado) { x->sinRangos = true; x->parar = true; break; }
 
             std::string ultimoError;

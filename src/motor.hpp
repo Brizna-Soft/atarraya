@@ -63,7 +63,14 @@ namespace hnd
         // «pista» dice cuál bajar: «video:<id>» o «audio:<id>». Se baja parte por parte y se junta en un archivo.
         std::string formato, pista;
         int flujoTotal = 0, flujoHechos = 0;   // partes en total y ya juntadas
+        int64_t flujoBytes = 0;                // bytes de las partes ya juntadas enteras: al reanudar, el archivo se corta ahí
         bool flujoLocal = false;               // la lista es de esta PC o de su red: sus partes también pueden serlo
+        // Las otras listas del mismo video (su audio aparte, sus subtítulos): antes de bajar una sola parte se leen
+        // todas y, si alguna está cifrada, el video no se baja
+        std::vector<std::string> flujoListas;
+        // Una descarga normal cuya dirección salió de una lista de internet (un video DASH de un solo archivo): no puede
+        // conectarse con esta PC ni con su red
+        bool soloAfuera = false;
 
         int64_t Hecho() const;
     };
@@ -111,8 +118,10 @@ namespace hnd
 
     // Baja la lista de un video por partes (HLS o DASH) con las cookies y el referer de su página. «local» dice si vino
     // de esta PC o de su red. Falso y un texto en español si falla (también si llegó una página web o lleva a YouTube).
+    // Con «soloAfuera» (una lista que salió de otra lista de internet) no se conecta con esta PC ni con su red.
     bool BajarLista(const std::string& url, const std::string& referer, const std::string& cookies, const std::string& agente,
-                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar = nullptr);
+                    std::string& texto, std::string& urlFinal, bool& local, std::string& error, const std::atomic<bool>* parar = nullptr,
+                    bool soloAfuera = false);
 
     class Motor
     {
@@ -188,4 +197,15 @@ namespace hnd
     // El error de una descarga cuyo sitio respondió con una página en vez del archivo (la ventana ofrece abrirla en
     // el navegador)
     extern const char* const TextoRespondioPagina;
+
+#ifdef ATARRAYA_PRUEBAS
+    namespace pruebas
+    {
+        // Solo en las pruebas: un «DNS que miente» («nombre:puerto:ip», como CURLOPT_RESOLVE; vacío lo quita), para ver
+        // que un nombre de afuera que lleva a esta PC se frena al conectar
+        void Resolver(const std::string& regla);
+        // Solo en las pruebas: un tope de memoria más chico para las partes adelantadas de un video (0 = el de siempre)
+        void TopeDeMemoria(size_t bytes);
+    }
+#endif
 }

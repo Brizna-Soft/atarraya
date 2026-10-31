@@ -166,16 +166,22 @@ Qué hace Atarraya con cada uno:
   abre cualquier reproductor, como VLC.
 - **DASH (.mpd):** baja el mejor video y el mejor audio (o los que elijas), cada uno en su archivo: «(video)» y
   «(audio)». **No los une**: para juntarlos hace falta un programa aparte, como FFmpeg, que Atarraya no trae.
+- **Antes de bajar nada**, Atarraya lee todas las listas que va a usar (la de la calidad, la del audio y las de los
+  subtítulos) y revisa todas sus partes. Si el video está en tu red (esta PC u otro aparato de tu casa), te pregunta
+  antes de bajarlo; una lista de internet nunca puede hacer que Atarraya se conecte a tu red.
+- **Si el programa se cierra de golpe**, al abrirlo sigue desde la última parte que quedó entera.
 
 Lo que no baja:
 
 - **Nada de YouTube**: ni botón ni lista en youtube.com, youtu.be, youtube-nocookie.com ni m.youtube.com, ni nada
   que venga de googlevideo.com, aunque llegue por una redirección o esté en un marco de otra página. Sus
   condiciones no lo permiten.
-- **Nada protegido ni cifrado.** Si el video usa DRM (en el navegador, EME), si la lista HLS trae una clave
-  (`EXT-X-KEY`, con cualquier método) o si el manifiesto DASH dice `ContentProtection`, te dice **Este video está
-  protegido** y no baja nada. Tampoco en Netflix, Disney+, Prime Video, Max y sitios parecidos.
-- Transmisiones en vivo y videos DASH partidos en varios períodos: te avisa que no se pueden.
+- **Nada protegido ni cifrado.** Si el video usa DRM (en el navegador, EME), si alguna de sus listas HLS (también la
+  del audio o la de los subtítulos) trae una clave (`EXT-X-KEY`, con cualquier método) o si el manifiesto DASH dice
+  `ContentProtection`, te dice **Este video está protegido** y no baja nada. Tampoco en Netflix, Disney+, Prime
+  Video, Max y sitios parecidos.
+- Transmisiones en vivo, videos DASH partidos en varios períodos y listas enormes (más de 150.000 partes o de 16 MB):
+  te avisa que no se pueden y no baja nada (nunca un video a medias).
 - Como siempre: no se salta esperas ni captchas, y una lista de internet no puede hacer que Atarraya se conecte a
   tu PC ni a tu red local.
 

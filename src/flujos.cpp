@@ -16,13 +16,14 @@ const char* const hnd::flujos::TextoEnVivo = "Es una transmisión en vivo: Atarr
 const char* const hnd::flujos::TextoVariasPartes = "Este video DASH viene en varios períodos: Atarraya todavía no lo baja.";
 const char* const hnd::flujos::TextoRedLocal =
     "La lista del video pide archivos de esta PC o de la red de tu casa: Atarraya no los baja.";
+const char* const hnd::flujos::TextoDemasiadas =
+    "La lista del video es demasiado grande (más de 150.000 partes o de 16 MB): Atarraya no la baja, para no llenar la memoria.";
 
 namespace
 {
     using namespace hnd::flujos;
 
-    // Topes, por si una lista viene mal hecha (o hecha para molestar)
-    constexpr size_t MaximoTrozos = 200000;
+    // Topes del XML, por si un manifiesto viene mal hecho (o hecho para molestar)
     constexpr size_t MaximoNodos = 200000;
     constexpr int MaximaProfundidad = 64;
 
@@ -497,8 +498,25 @@ std::string hnd::flujos::Resolver(const std::string& base, const std::string& re
 hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::string& url)
 {
     ListaHls l;
+    if (texto.size() > MaximoLista)
+    {
+        l.demasiadas = true;
+        return l;
+    }
     std::string t = texto;
     if (Empieza(t, "\xEF\xBB\xBF")) t = t.substr(3);   // BOM de UTF-8
+    // Calidades, audios, subtítulos y partes cuentan para el tope: pasado el tope la lista no se baja (nunca a medias)
+    size_t elementos = 0;
+    auto cabe = [&]() {
+        if (++elementos <= MaximoPartes) return true;
+        l.demasiadas = true;
+        l.trozos.clear();
+        l.trozos.shrink_to_fit();
+        l.variantes.clear();
+        l.audios.clear();
+        l.subtitulos.clear();
+        return false;
+    };
     size_t i = 0;
     bool primera = true, vod = false, fin = false;
     std::map<std::string, std::string> pendiente;   // EXT-X-STREAM-INF esperando su dirección
@@ -537,7 +555,9 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
             else if (etiqueta == "#EXT-X-MEDIA")
             {
                 auto a = Atributos(valor);
-                if (Bajo(a["type"]) == "audio" && !a["uri"].empty())
+                std::string tipo = Bajo(a["type"]);
+                if (l.demasiadas || a["uri"].empty() || (tipo != "audio" && tipo != "subtitles") || !cabe()) continue;
+                if (tipo == "audio")
                 {
                     AudioAparte au;
                     au.url = Resolver(url, a["uri"]);
@@ -547,6 +567,7 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
                     au.porDefecto = Bajo(a["default"]) == "yes";
                     l.audios.push_back(std::move(au));
                 }
+                else l.subtitulos.push_back({ Resolver(url, a["uri"]), a["group-id"] });
             }
             else if (etiqueta == "#EXTINF")
             {
@@ -581,6 +602,8 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
         if (esperaVariante)
         {
             esperaVariante = false;
+            l.maestra = true;
+            if (l.demasiadas || !cabe()) continue;
             Variante v;
             v.url = Resolver(url, linea);
             v.banda = Numero(pendiente["bandwidth"]);
@@ -594,11 +617,16 @@ hnd::flujos::ListaHls hnd::flujos::LeerHls(const std::string& texto, const std::
             }
             v.codecs = pendiente["codecs"];
             v.grupoAudio = pendiente["audio"];
+            v.grupoSubtitulos = pendiente["subtitles"];
             l.variantes.push_back(std::move(v));
-            l.maestra = true;
             continue;
         }
-        if (l.trozos.size() >= MaximoTrozos) continue;
+        if (l.demasiadas || !cabe())
+        {
+            rangoDesde = rangoLargo = -1;
+            esperaParte = false;
+            continue;
+        }
         Trozo tr;
         tr.url = Resolver(url, linea);
         if (rangoLargo > 0)
@@ -649,6 +677,23 @@ int hnd::flujos::AudioDeVariante(const ListaHls& l, int variante)
     return primero;
 }
 
+std::vector<std::string> hnd::flujos::ListasJuntas(const ListaHls& l, int variante)
+{
+    std::vector<std::string> r;
+    if (variante < 0 || variante >= (int)l.variantes.size()) return r;
+    int a = AudioDeVariante(l, variante);
+    if (a >= 0 && !l.audios[a].url.empty()) r.push_back(l.audios[a].url);
+    const std::string& grupo = l.variantes[variante].grupoSubtitulos;
+    if (!grupo.empty())
+    {
+        for (const auto& s : l.subtitulos)
+        {
+            if (s.grupo == grupo && !s.url.empty() && std::find(r.begin(), r.end(), s.url) == r.end()) r.push_back(s.url);
+        }
+    }
+    return r;
+}
+
 std::wstring hnd::flujos::ExtensionHls(const ListaHls& l)
 {
     if (!l.inicio.url.empty()) return L".mp4";   // CMAF / fMP4: inicio + partes es un MP4 fragmentado
@@ -667,6 +712,11 @@ std::wstring hnd::flujos::ExtensionHls(const ListaHls& l)
 hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const std::string& url)
 {
     ManifiestoDash m;
+    if (xml.size() > MaximoLista)
+    {
+        m.demasiadas = true;
+        return m;
+    }
     Nodo raiz;
     if (!LeerXml(xml, raiz)) return m;
     const Nodo* mpd = raiz.Hijo("MPD");
@@ -685,6 +735,20 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
 
     std::string baseMpd = BaseDe(mpd, url);
     std::string basePeriodo = BaseDe(periodo, baseMpd);
+    // Las partes de todas las representaciones cuentan juntas para el tope. Se cuentan ANTES de armarlas: pasado el
+    // tope, el manifiesto no se baja (nunca a medias) y no se arma ni una más.
+    size_t total = 0;
+    auto cabenMas = [&](double cuantas) {
+        if (cuantas >= 0 && (double)total + cuantas <= (double)MaximoPartes)
+        {
+            total += (size_t)cuantas;
+            return true;
+        }
+        m.demasiadas = true;
+        m.videos.clear();
+        m.audios.clear();
+        return false;
+    };
     for (const Nodo* conjunto : periodo->Hijos("AdaptationSet"))
     {
         std::string baseConjunto = BaseDe(conjunto, basePeriodo);
@@ -712,26 +776,43 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
                 int64_t escala = std::max<int64_t>(1, Numero(p.Valor("timescale"), 1));
                 int64_t numero = Numero(p.Valor("startNumber"), 1);
                 std::string ini = p.Valor("initialization");
-                if (!ini.empty()) r.inicio.url = Resolver(base, Plantilla(ini, r.id, numero, r.banda, 0));
+                if (!ini.empty())
+                {
+                    if (!cabenMas(1)) return m;
+                    r.inicio.url = Resolver(base, Plantilla(ini, r.id, numero, r.banda, 0));
+                }
                 std::string media = p.Valor("media");
                 if (p.lineaDeTiempo)
                 {
-                    int64_t t = 0;
                     int64_t finPeriodo = (int64_t)std::llround(duracionPeriodo * (double)escala);
+                    // Cada <S> trae una duración «d» y «r» repeticiones más (r=-1: hasta el final del período)
+                    struct Tramo { int64_t t; bool conT; int64_t d, repetir; };
+                    std::vector<Tramo> tramos;
+                    double cuantas = 0;
+                    int64_t t = 0;
+                    constexpr int64_t Absurdo = 1000000000000LL;   // más que esto en «t» o «d» no es un video: ahí termina
                     for (const Nodo* s : p.lineaDeTiempo->Hijos("S"))
                     {
-                        if (auto* v = s->Atributo("t")) t = Numero(*v);
-                        int64_t d = Numero(s->Valor("d"));
-                        if (d <= 0) break;
-                        int64_t repetir = Numero(s->Valor("r"), 0);
-                        if (repetir < 0)   // hasta el final del período
-                            repetir = finPeriodo > t ? (finPeriodo - t + d - 1) / d - 1 : 0;
-                        for (int64_t k = 0; k <= repetir && r.trozos.size() < MaximoTrozos; k++)
+                        Tramo tm{ 0, false, Numero(s->Valor("d")), Numero(s->Valor("r"), 0) };
+                        if (auto* v = s->Atributo("t")) { tm.t = Numero(*v); tm.conT = true; t = tm.t; }
+                        if (tm.d <= 0 || tm.d > Absurdo || t < 0 || t > Absurdo * 1000) break;
+                        if (tm.repetir < 0) tm.repetir = finPeriodo > t ? (finPeriodo - t + tm.d - 1) / tm.d - 1 : 0;
+                        cuantas += (double)tm.repetir + 1;
+                        tramos.push_back(tm);
+                        if (cuantas > (double)MaximoPartes) break;   // ya no cabe: no hace falta seguir contando
+                        t += tm.d * (tm.repetir + 1);
+                    }
+                    if (!cabenMas(cuantas)) return m;
+                    t = 0;
+                    for (const auto& tm : tramos)
+                    {
+                        if (tm.conT) t = tm.t;
+                        for (int64_t k = 0; k <= tm.repetir; k++)
                         {
                             Trozo tr;
                             tr.url = Resolver(base, Plantilla(media, r.id, numero, r.banda, t));
                             r.trozos.push_back(std::move(tr));
-                            t += d;
+                            t += tm.d;
                             numero++;
                         }
                     }
@@ -739,11 +820,11 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
                 else
                 {
                     int64_t d = Numero(p.Valor("duration"));
-                    if (d > 0 && duracionPeriodo > 0)
+                    if (d > 0 && d <= 1000000000000LL && duracionPeriodo > 0)
                     {
-                        double cuantos = std::ceil(duracionPeriodo * (double)escala / (double)d - 1e-9);
-                        int64_t n = (int64_t)std::min<double>(cuantos, (double)MaximoTrozos);
-                        for (int64_t k = 0; k < n; k++)
+                        double cuantas = std::ceil(duracionPeriodo * (double)escala / (double)d - 1e-9);
+                        if (!cabenMas(cuantas)) return m;
+                        for (int64_t k = 0; k < (int64_t)cuantas; k++)
                         {
                             Trozo tr;
                             tr.url = Resolver(base, Plantilla(media, r.id, numero + k, r.banda, k * d));
@@ -754,15 +835,17 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
             }
             else if (p.lista)
             {
-                if (auto* ini = p.lista->Hijo("Initialization"))
+                auto segmentos = p.lista->Hijos("SegmentURL");
+                auto* ini = p.lista->Hijo("Initialization");
+                if (!cabenMas((double)segmentos.size() + (ini ? 1 : 0))) return m;
+                if (ini)
                 {
                     std::string fuente = ini->Valor("sourceURL");
                     r.inicio.url = fuente.empty() ? base : Resolver(base, fuente);
                     RangoDash(ini->Valor("range"), r.inicio.desde, r.inicio.largo);
                 }
-                for (const Nodo* su : p.lista->Hijos("SegmentURL"))
+                for (const Nodo* su : segmentos)
                 {
-                    if (r.trozos.size() >= MaximoTrozos) break;
                     Trozo tr;
                     std::string media = su->Valor("media");
                     tr.url = media.empty() ? base : Resolver(base, media);
@@ -773,6 +856,7 @@ hnd::flujos::ManifiestoDash hnd::flujos::LeerDash(const std::string& xml, const 
             else
             {
                 // SegmentBase o solo BaseURL: el medio entero es un archivo
+                if (!cabenMas(1)) return m;
                 r.unArchivo = true;
                 Trozo tr;
                 tr.url = base;
@@ -813,15 +897,19 @@ std::wstring hnd::flujos::ExtensionDash(const Representacion& r)
 
 // ------------------------------------------------------------------------------------------------- Comunes
 
-std::string hnd::flujos::RevisarTrozos(const Trozo& inicio, const std::vector<Trozo>& trozos)
+std::string hnd::flujos::RevisarTrozos(const Trozo& inicio, const std::vector<Trozo>& trozos, bool soloAfuera)
 {
     if (trozos.empty()) return "La lista del video no trae partes para bajar.";
-    auto revisar = [](const std::string& u) -> std::string {
+    if (trozos.size() + (inicio.url.empty() ? 0 : 1) > MaximoPartes) return TextoDemasiadas;
+    auto revisar = [soloAfuera](const std::string& u) -> std::string {
         std::string b = Bajo(u.substr(0, 8));
         if (!Empieza(b, "http://") && !Empieza(b, "https://"))
             return "La lista del video pide archivos que no son de internet (http o https): Atarraya no los baja.";
         if (enlaces::NoPermitido(u)) return Utf8(enlaces::TextoNoPermitido);
         if (enlaces::SitioProtegido(u)) return TextoProtegido;
+        // Una lista de internet no elige a qué aparatos de la casa se conecta Atarraya (lo que un nombre de afuera
+        // esconde se revisa al conectar)
+        if (soloAfuera && enlaces::DireccionLocal(u)) return TextoRedLocal;
         return {};
     };
     if (!inicio.url.empty())
@@ -856,16 +944,15 @@ std::wstring hnd::flujos::TextoCalidad(int ancho, int alto, int64_t banda, bool 
 
 // ------------------------------------------------------------------------------------------------- Ensamblador
 
-hnd::flujos::Ensamblador::Ensamblador(size_t total, size_t yaEscritas, int64_t bytesYaEscritos, Escribir escribir)
-    : m_total(total), m_siguiente(std::min(yaEscritas, total)), m_bytes(bytesYaEscritos), m_escribir(std::move(escribir))
+hnd::flujos::Ensamblador::Ensamblador(size_t total, size_t yaEscritas, int64_t bytesYaEscritos, Escribir escribir, size_t maximoEnMemoria)
+    : m_total(total), m_siguiente(std::min(yaEscritas, total)), m_bytes(bytesYaEscritos), m_maximo(maximoEnMemoria),
+      m_escribir(std::move(escribir))
 {
 }
 
 size_t hnd::flujos::Ensamblador::EnMemoria() const
 {
-    size_t n = 0;
-    for (auto& [i, datos] : m_esperando) n += datos.size();
-    return n;
+    return m_enMemoria;
 }
 
 bool hnd::flujos::Ensamblador::Vaciar(size_t parte)
@@ -874,24 +961,33 @@ bool hnd::flujos::Ensamblador::Vaciar(size_t parte)
     if (it == m_esperando.end()) return true;
     std::string datos = std::move(it->second);
     m_esperando.erase(it);
+    m_enMemoria -= datos.size();
     if (datos.empty()) return true;
     if (!m_escribir(m_bytes + m_actual, datos.data(), datos.size())) return false;
     m_actual += (int64_t)datos.size();
     return true;
 }
 
-bool hnd::flujos::Ensamblador::Pedazo(size_t parte, const char* datos, size_t n)
+hnd::flujos::Ensamblador::Paso hnd::flujos::Ensamblador::Pedazo(size_t parte, const char* datos, size_t n)
 {
-    if (parte < m_siguiente || parte >= m_total || n == 0) return true;
+    if (parte < m_siguiente || parte >= m_total || n == 0) return Paso::Bien;
     if (parte == m_siguiente)
     {
-        if (!Vaciar(parte)) return false;
-        if (!m_escribir(m_bytes + m_actual, datos, n)) return false;
+        if (!Vaciar(parte)) return Paso::Disco;
+        if (!m_escribir(m_bytes + m_actual, datos, n)) return Paso::Disco;
         m_actual += (int64_t)n;
-        return true;
+        return Paso::Bien;
+    }
+    // Adelantada: espera en memoria, si cabe. Si no, se olvida lo suyo y se baja otra vez cuando sea su turno (entonces
+    // va directo al disco).
+    if (m_enMemoria + n > m_maximo)
+    {
+        Descartar(parte);
+        return Paso::Lleno;
     }
     m_esperando[parte].append(datos, n);
-    return true;
+    m_enMemoria += n;
+    return Paso::Bien;
 }
 
 bool hnd::flujos::Ensamblador::Terminar(size_t parte)
@@ -920,7 +1016,12 @@ bool hnd::flujos::Ensamblador::Terminar(size_t parte)
 
 void hnd::flujos::Ensamblador::Descartar(size_t parte)
 {
-    m_esperando.erase(parte);
+    auto it = m_esperando.find(parte);
+    if (it != m_esperando.end())
+    {
+        m_enMemoria -= it->second.size();
+        m_esperando.erase(it);
+    }
     m_terminadas.erase(parte);
     if (parte == m_siguiente) m_actual = 0;
 }

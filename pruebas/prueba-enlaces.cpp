@@ -1238,20 +1238,9 @@ namespace
                + std::to_string(cuerpo.size()) + "\r\n" + extra + "Connection: close\r\n\r\n" + cuerpo;
     }
 
-    // Baja un video por partes con el motor de verdad y espera a que termine o se detenga
-    Foto BajarVideo(const std::string& url, const std::string& formato, const std::string& pista, bool local, const std::wstring& carpeta,
-                    const std::wstring& nombre)
+    // Espera a que una descarga del motor termine o se detenga
+    Foto EsperarDescarga(Motor& m, uint64_t id)
     {
-        Motor m(carpeta + L"\\estado-video.json");
-        DatosDescarga d;
-        d.url = url;
-        d.formato = formato;
-        d.pista = pista;
-        d.flujoLocal = local;
-        d.carpeta = carpeta;
-        d.nombre = nombre;
-        d.conexiones = 3;
-        uint64_t id = m.Agregar(d, true);
         Foto f;
         for (int i = 0; i < 300; i++)
         {
@@ -1261,6 +1250,29 @@ namespace
         }
         m.Detener();
         return f;
+    }
+
+    // Baja con el motor de verdad (una descarga normal o un video por partes) y espera a que termine o se detenga
+    Foto Bajar(DatosDescarga d, const std::wstring& carpeta)
+    {
+        Motor m(carpeta + L"\\estado-video.json");
+        d.carpeta = carpeta;
+        d.conexiones = 3;
+        uint64_t id = m.Agregar(d, true);
+        return EsperarDescarga(m, id);
+    }
+
+    Foto BajarVideo(const std::string& url, const std::string& formato, const std::string& pista, bool local, const std::wstring& carpeta,
+                    const std::wstring& nombre, const std::vector<std::string>& otrasListas = {})
+    {
+        DatosDescarga d;
+        d.url = url;
+        d.formato = formato;
+        d.pista = pista;
+        d.flujoLocal = local;
+        d.nombre = nombre;
+        d.flujoListas = otrasListas;
+        return Bajar(d, carpeta);
     }
 
     void FlujosPruebas()
@@ -1473,7 +1485,32 @@ namespace
                               "<AdaptationSet mimeType=\"audio/mp4\"><SegmentTemplate duration=\"2\" initialization=\"init-$RepresentationID$.mp4\" "
                               "media=\"$RepresentationID$-$Number$.m4s\"/><Representation id=\"a1\" bandwidth=\"64000\"/></AdaptationSet></Period></MPD>";
         std::atomic<int> pedidosDeYoutube{ 0 };
+        // Para la revisión: un archivo único (DASH de un solo archivo, se baja por rangos), una lista enorme y listas de
+        // audio o subtítulos, bien o cifradas
+        std::string unico;
+        for (int i = 0; i < 5000; i++) unico += (char)('A' + i % 26);
+        std::string enorme = "#EXTM3U\n#EXT-X-PLAYLIST-TYPE:VOD\n";
+        for (size_t i = 0; i <= MaximoPartes; i++) enorme += "#EXTINF:1,\ns" + std::to_string(i) + ".ts\n";
+        enorme += "#EXT-X-ENDLIST\n";
         ServidorDePrueba web(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string& r) -> std::string {
+            if (ruta == "/unico/peli.mp4")
+            {
+                if (r.rfind("bytes=", 0) != 0) return Http(200, "video/mp4", unico, "Accept-Ranges: bytes\r\n");
+                int64_t a = _atoi64(r.c_str() + 6);
+                std::string fin = r.substr(r.find('-') + 1);
+                int64_t b = fin.empty() ? (int64_t)unico.size() - 1 : std::min<int64_t>(_atoi64(fin.c_str()), (int64_t)unico.size() - 1);
+                return Http(206, "video/mp4", unico.substr((size_t)a, (size_t)(b - a + 1)),
+                            "Accept-Ranges: bytes\r\nContent-Range: bytes " + std::to_string(a) + "-" + std::to_string(b) + "/"
+                                + std::to_string(unico.size()) + "\r\n");
+            }
+            if (ruta == "/audio/bien.m3u8")
+                return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXTINF:2,\n/hls/seg0.ts\n#EXTINF:2,\n/hls/seg1.ts\n#EXT-X-ENDLIST\n");
+            if (ruta == "/subs/cifrados.m3u8")
+                return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:2,\n/subs/s0.vtt\n#EXT-X-ENDLIST\n");
+            if (ruta == "/maestra/master.m3u8")
+                return Http(200, "application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"es\",DEFAULT=YES,"
+                            "URI=\"/cifrada/lista.m3u8\"\n#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"a\"\n/hls/lista.m3u8\n");
+            if (ruta == "/enorme/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", enorme);
             if (ruta == "/hls/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaHls);
             if (ruta == "/cmaf/lista.m3u8") return Http(200, "application/vnd.apple.mpegurl", listaCmaf);
             if (ruta == "/cmaf/init.mp4") return Http(200, "video/mp4", init);
@@ -1555,6 +1592,168 @@ namespace
         Foto lejos = BajarVideo(w + "/hls/lista.m3u8", "hls", "", false, carpeta, L"Lejos");
         Comprobar(lejos.datos.estado == Estado::Error && lejos.datos.error == TextoRedLocal && web.Pedidos() == antes,
                   "videos: una lista de internet no puede pedir nada de esta PC ni de su red (ni se conecta)");
+
+        // 8. Un DASH de internet que apunta a esta PC o a la red de la casa: ni su archivo único, ni su inicio, ni sus partes
+        {
+            auto unicoDash = LeerDash("<MPD mediaPresentationDuration=\"PT10S\"><Period><AdaptationSet mimeType=\"video/mp4\"><Representation "
+                                      "id=\"v\" bandwidth=\"1\"><BaseURL>http://127.0.0.1:8080/peli.mp4</BaseURL><SegmentBase indexRange=\"0-99\"/>"
+                                      "</Representation></AdaptationSet></Period></MPD>", "https://cdn.ejemplo.org/m.mpd");
+            bool locales = true;
+            for (const char* u : { "http://127.0.0.1/a.ts", "http://192.168.1.1/a.ts", "http://10.0.0.5/a.ts", "http://172.16.0.9/a.ts",
+                                   "http://router.lan/a.ts", "http://localhost./a.ts", "http://[::1]/a.ts", "http://0x7f.1/a.ts", "http://nas/a.ts" })
+                locales = locales && RevisarTrozos(Trozo{}, { { u } }, true) == TextoRedLocal;
+            Comprobar(unicoDash.valido && unicoDash.videos.size() == 1 && unicoDash.videos[0].unArchivo
+                          && RevisarTrozos(unicoDash.videos[0].inicio, unicoDash.videos[0].trozos, true) == TextoRedLocal
+                          && RevisarTrozos(unicoDash.videos[0].inicio, unicoDash.videos[0].trozos, false).empty()
+                          && RevisarTrozos({ "http://192.168.0.2/init.mp4" }, { { "https://cdn.ejemplo.org/a.m4s" } }, true) == TextoRedLocal
+                          && RevisarTrozos(Trozo{}, { { "https://cdn.ejemplo.org/a.m4s" } }, true).empty() && locales,
+                      "videos: un DASH de internet que apunta a esta PC o a la red de la casa (archivo único, inicio o partes) no se baja");
+
+            // Su archivo único va como descarga normal (con varias conexiones), pero con «soloAfuera»: no se conecta ni
+            // por el nombre ni por un nombre de afuera que lleva aquí (un DNS que miente)
+            int antesUnico = web.Pedidos();
+            DatosDescarga d;
+            d.url = w + "/unico/peli.mp4";
+            d.nombre = L"Unico.mp4";
+            d.nombreFijo = true;
+            d.soloAfuera = true;
+            Foto porNombre = Bajar(d, carpeta);
+            std::string afuera = "video.ejemplo-afuera.org:" + std::to_string(web.Puerto());
+            pruebas::Resolver(afuera + ":127.0.0.1");
+            d.url = "http://" + afuera + "/unico/peli.mp4";
+            Foto porDns = Bajar(d, carpeta);
+            int despuesDeFrenar = web.Pedidos();
+            d.soloAfuera = false;   // la persona confirmó que el video es de su red: entonces sí
+            Foto confirmado = Bajar(d, carpeta);
+            pruebas::Resolver("");
+            Comprobar(porNombre.datos.estado == Estado::Error && porNombre.datos.error == TextoRedLocal && porDns.datos.estado == Estado::Error
+                          && porDns.datos.error == TextoRedLocal && despuesDeFrenar == antesUnico && !ExisteArchivo(carpeta + L"\\Unico.mp4.atarraya")
+                          && confirmado.datos.estado == Estado::Completada && leer(L"Unico.mp4") == unico,
+                      "videos: el archivo único de un DASH de internet no se conecta con esta PC ni con su red (tampoco por un DNS que miente)");
+        }
+
+        // 9. HLS: la calidad elegida está bien, pero su audio o sus subtítulos están cifrados: no se baja ni una parte
+        {
+            std::string maestraSub = "#EXTM3U\n"
+                                     "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"es\",DEFAULT=YES,URI=\"audio/es.m3u8\"\n"
+                                     "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",NAME=\"es\",URI=\"subs/es.m3u8\"\n"
+                                     "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"s\",NAME=\"en\",URI=\"subs/en.m3u8\"\n"
+                                     "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"otro\",NAME=\"fr\",URI=\"subs/fr.m3u8\"\n"
+                                     "#EXT-X-STREAM-INF:BANDWIDTH=1000,AUDIO=\"a\",SUBTITLES=\"s\"\nv/index.m3u8\n";
+            auto ms = LeerHls(maestraSub, "https://cdn.ejemplo.org/p/master.m3u8");
+            auto juntas = ListasJuntas(ms, 0);
+            Comprobar(ms.maestra && ms.subtitulos.size() == 3 && juntas.size() == 3 && juntas[0] == "https://cdn.ejemplo.org/p/audio/es.m3u8"
+                          && juntas[1] == "https://cdn.ejemplo.org/p/subs/es.m3u8" && juntas[2] == "https://cdn.ejemplo.org/p/subs/en.m3u8"
+                          && ListasJuntas(ms, 5).empty(),
+                      "videos: HLS: las listas que van con una calidad (su audio y sus subtítulos) se leen todas antes de bajar");
+            int antesAudio = web.Pedidos();
+            Foto conAudioCifrado = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Audio cifrado", { w + "/cifrada/lista.m3u8" });
+            int despuesAudio = web.Pedidos();
+            Foto conSubsCifrados = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Subs cifrados",
+                                              { w + "/audio/bien.m3u8", w + "/subs/cifrados.m3u8" });
+            int despuesSubs = web.Pedidos();
+            Foto desdeMaestra = BajarVideo(w + "/maestra/master.m3u8", "hls", "", true, carpeta, L"Maestra");
+            int despuesMaestra = web.Pedidos();
+            Foto conAudioBien = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Audio bien", { w + "/audio/bien.m3u8" });
+            Comprobar(conAudioCifrado.datos.estado == Estado::Error && conAudioCifrado.datos.error == TextoProtegido && despuesAudio == antesAudio + 2
+                          && conSubsCifrados.datos.error == TextoProtegido && despuesSubs == despuesAudio + 3
+                          && desdeMaestra.datos.error == TextoProtegido && despuesMaestra == despuesSubs + 3
+                          && !ExisteArchivo(carpeta + L"\\Audio cifrado.ts") && !ExisteArchivo(carpeta + L"\\Audio cifrado.ts.atarraya")
+                          && conAudioBien.datos.estado == Estado::Completada && leer(L"Audio bien.ts") == todo,
+                      "videos: HLS con el audio o los subtítulos cifrados (aunque el video no lo esté): se leen las listas y no se baja ni una parte");
+        }
+
+        // 10. Listas enormes: pasado el tope no se bajan (nunca se recortan ni quedan a medias como terminadas)
+        {
+            std::string justa = "#EXTM3U\n";
+            for (size_t i = 0; i < MaximoPartes; i++) justa += "#EXTINF:1,\ns.ts\n";
+            auto lj = LeerHls(justa, base);
+            auto le = LeerHls(enorme, base);
+            auto pesada = LeerHls(std::string(MaximoLista + 1, '#'), base);
+            auto durMucho = LeerDash("<MPD mediaPresentationDuration=\"PT100000S\"><Period><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate "
+                                     "timescale=\"10\" duration=\"5\" media=\"$Number$.m4s\"/><Representation id=\"v\" bandwidth=\"1\"/>"
+                                     "</AdaptationSet></Period></MPD>", "https://h.org/m.mpd");
+            std::string dosRep = "<MPD mediaPresentationDuration=\"PT80000S\"><Period>"
+                                 "<AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate duration=\"1\" media=\"v$Number$.m4s\"/><Representation id=\"v\" bandwidth=\"1\"/></AdaptationSet>"
+                                 "<AdaptationSet mimeType=\"audio/mp4\"><SegmentTemplate duration=\"1\" media=\"a$Number$.m4s\"/><Representation id=\"a\" bandwidth=\"1\"/></AdaptationSet>"
+                                 "</Period></MPD>";
+            auto suma = LeerDash(dosRep, "https://h.org/m.mpd");
+            std::string unaRep = dosRep.substr(0, dosRep.find("<AdaptationSet mimeType=\"audio/mp4\">")) + "</Period></MPD>";
+            auto sola = LeerDash(unaRep, "https://h.org/m.mpd");
+            auto repetida = LeerDash("<MPD mediaPresentationDuration=\"PT10S\"><Period><AdaptationSet mimeType=\"video/mp4\"><SegmentTemplate "
+                                     "media=\"$Time$.m4s\"><SegmentTimeline><S t=\"0\" d=\"1\" r=\"1000000000\"/></SegmentTimeline></SegmentTemplate>"
+                                     "<Representation id=\"v\" bandwidth=\"1\"/></AdaptationSet></Period></MPD>", "https://h.org/m.mpd");
+            Comprobar(!lj.demasiadas && lj.trozos.size() == MaximoPartes && le.demasiadas && le.trozos.empty() && pesada.demasiadas
+                          && durMucho.demasiadas && durMucho.videos.empty() && suma.demasiadas && suma.videos.empty() && suma.audios.empty()
+                          && !sola.demasiadas && sola.videos.size() == 1 && sola.videos[0].trozos.size() == 80000
+                          && repetida.demasiadas && LeerDash(std::string(MaximoLista + 1, ' '), "").demasiadas,
+                      "videos: una lista o un manifiesto de más de 150.000 partes (sumando todas las representaciones) o de más de 16 MB se rechaza");
+            int antesEnorme = web.Pedidos();
+            Foto grande = BajarVideo(w + "/enorme/lista.m3u8", "hls", "", true, carpeta, L"Enorme");
+            Comprobar(grande.datos.estado == Estado::Error && grande.datos.error == TextoDemasiadas && web.Pedidos() == antesEnorme + 1
+                          && !ExisteArchivo(carpeta + L"\\Enorme.ts") && !ExisteArchivo(carpeta + L"\\Enorme.ts.atarraya"),
+                      "videos: el motor rechaza una lista enorme con un aviso claro y no baja ni una parte");
+        }
+
+        // 11. Memoria: las partes adelantadas tienen un tope de bytes; la que no cabe se baja otra vez cuando es su turno
+        {
+            std::string archivo;
+            auto escribir = [&](int64_t pos, const char* d, size_t n) {
+                if (archivo.size() < (size_t)pos + n) archivo.resize((size_t)pos + n);
+                memcpy(&archivo[(size_t)pos], d, n);
+                return true;
+            };
+            Ensamblador e(4, 0, 0, escribir, 10);
+            bool enMemoria = e.Pedazo(1, "11111111", 8) == Ensamblador::Paso::Bien && e.EnMemoria() == 8;
+            bool noCabe = e.Pedazo(2, "222", 3) == Ensamblador::Paso::Lleno && e.EnMemoria() == 8;
+            bool directo = e.Pedazo(0, std::string(16, '0').c_str(), 16) == Ensamblador::Paso::Bien && e.EnMemoria() == 8;
+            e.Terminar(0);
+            e.Terminar(1);
+            bool vacio = e.EnMemoria() == 0 && e.Siguiente() == 2;
+            e.Pedazo(2, "222", 3);
+            e.Terminar(2);
+            e.Pedazo(3, "3", 1);
+            e.Terminar(3);
+            Comprobar(enMemoria && noCabe && directo && vacio && e.Completo() && archivo == std::string(16, '0') + "11111111" + "2223",
+                      "videos: las partes adelantadas tienen un tope de memoria; la que no cabe se descarta y se baja en su turno");
+            pruebas::TopeDeMemoria(1200);
+            Foto poca = BajarVideo(w + "/hls/lista.m3u8", "hls", "", true, carpeta, L"Poca memoria");
+            pruebas::TopeDeMemoria(0);
+            Comprobar(poca.datos.estado == Estado::Completada && leer(L"Poca memoria.ts") == todo,
+                      "videos: con poca memoria para las partes adelantadas, el motor igual junta el video entero y en orden");
+        }
+
+        // 12. El programa se cerró de golpe a mitad de una parte: al reanudar, el archivo se corta en la última parte
+        //     entera (lo de la parte a medias no se queda pegado antes de la parte entera)
+        {
+            std::string dosPartes = parte(0) + parte(1);
+            auto estadoDe = [&](const std::wstring& nombre, int hechas, int64_t bytes, int64_t hecho) {
+                return "{\"version\":1,\"siguienteId\":2,\"descargas\":[{\"id\":1,\"url\":\"" + w + "/hls/lista.m3u8\",\"carpeta\":\""
+                       + Utf8(carpeta) + "\",\"nombre\":\"" + Utf8(nombre) + "\",\"estado\":\"pausada\",\"conexiones\":3,"
+                       "\"segmentos\":[[0,-1," + std::to_string(hecho) + "]],\"formato\":\"hls\",\"flujoTotal\":6,\"flujoHechos\":"
+                       + std::to_string(hechas) + ",\"flujoBytes\":" + std::to_string(bytes) + ",\"flujoLocal\":true}]}";
+            };
+            auto reanudar = [&](const std::wstring& nombre, int hechas, int64_t bytes, int64_t hecho, const std::string& parcial) {
+                std::string json = estadoDe(nombre, hechas, bytes, hecho);
+                // Las barras de la carpeta van escapadas en JSON
+                std::string escapado;
+                for (char ch : json) escapado += ch == '\\' ? std::string("\\\\") : std::string(1, ch);
+                EscribirSeguro(carpeta + L"\\estado-corte.json", escapado);
+                EscribirSeguro(carpeta + L"\\" + nombre + L".atarraya", parcial);
+                Motor m(carpeta + L"\\estado-corte.json");
+                m.Cargar();
+                m.Reanudar(1);
+                return EsperarDescarga(m, 1);
+            };
+            // Dos partes enteras y 500 bytes de la tercera; «hecho» (el avance que se muestra) llegó a contar esos 500
+            Foto corte = reanudar(L"Corte.ts", 2, (int64_t)dosPartes.size(), (int64_t)dosPartes.size() + 500, dosPartes + std::string(500, 'X'));
+            // Lo guardado no cuadra (partes juntadas sin bytes): se empieza de cero, sin pegar nada viejo
+            Foto raro = reanudar(L"Raro.ts", 2, 0, 777, std::string(777, 'Y'));
+            Comprobar(corte.datos.estado == Estado::Completada && leer(L"Corte.ts") == todo && corte.datos.flujoBytes == (int64_t)todo.size()
+                          && raro.datos.estado == Estado::Completada && leer(L"Raro.ts") == todo,
+                      "videos: si el programa se cerró a mitad de una parte, al reanudar se corta en la última parte entera y el video queda bien");
+        }
+
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         fs::remove_all(carpeta, ec);
     }
