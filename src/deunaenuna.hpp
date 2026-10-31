@@ -51,7 +51,8 @@ namespace hnd
     public:
         explicit DeUnaEnUna(std::wstring archivo);
 
-        // La cola se guarda en cada cambio: si se cierra Atarraya, sigue donde iba
+        // La cola se guarda en cada cambio: si se cierra Atarraya, sigue donde iba. Al cargar, las saltadas o con
+        // error que no llegaron al recolector siguen ahí hasta que lleguen.
         void Cargar();
         bool Guardar() const;
 
@@ -60,10 +61,10 @@ namespace hnd
         bool Agregar(std::vector<Parte> partes);
         // Pasa a «abierta» la siguiente que espera y devuelve su posición (-1 si no queda ninguna)
         int AbrirSiguiente();
-        // ¿Esta descarga que pasó el navegador es de una parte? «referer» y «pagina» (la pestaña donde se pulsó
-        // descargar) dicen de dónde salió. Se toma sin preguntar solo si:
-        //   - tiene el nombre de una parte abierta y viene de su sitio (su dominio, sus otros dominios o un servidor
-        //     suyo), o
+        // ¿Esta descarga que pasó el navegador es de una parte? «referer» y «pagina» (la página de la pestaña donde
+        // nació la descarga) dicen de dónde salió. Se toma sin preguntar solo si:
+        //   - tiene el nombre de una parte abierta, viene de su sitio (su dominio, sus otros dominios o un servidor
+        //     suyo) y no de otra página de ese sitio, o
         //   - viene de la página que Atarraya abrió para una parte y no tiene el nombre de otra parte de la cola.
         // Si viene del sitio de una parte pero no es seguro, se pregunta. Si no, no es de la cola.
         Emparejamiento Emparejar(const std::string& url, const std::string& referer, const std::string& pagina,

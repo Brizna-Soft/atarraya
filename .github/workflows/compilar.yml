@@ -65,6 +65,11 @@ jobs:
         shell: pwsh
         run: ./build/Release/prueba-enlaces.exe
 
+      # De qué página salió una descarga: la pestaña real donde nació, nunca la activa
+      - name: Pruebas de la extensión
+        shell: pwsh
+        run: node pruebas/prueba-extension.js
+
       # El modo de prueba solo existe en Atarraya-prueba.exe: el programa que se publica no lo trae
       - name: Comprobar que el programa no trae el modo de prueba
         shell: pwsh

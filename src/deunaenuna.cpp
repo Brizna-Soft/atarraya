@@ -115,10 +115,12 @@ bool hnd::MismoSitio(const std::string& a, const std::string& b)
     return !x.empty() && x == y;
 }
 
-bool hnd::MismaPagina(const std::string& a, const std::string& b)
+namespace
 {
-    auto partir = [](const std::string& url, std::string& sitio, std::string& ruta) {
-        sitio = enlaces::Sitio(url);
+    // El sitio (sin «www.») y la ruta (con «?...», sin «#...» ni «/» al final) de una dirección
+    bool Partir(const std::string& url, std::string& sitio, std::string& ruta)
+    {
+        sitio = hnd::enlaces::Sitio(url);
         if (sitio.rfind("www.", 0) == 0) sitio = sitio.substr(4);
         auto esquema = url.find("://");
         if (sitio.empty() || esquema == std::string::npos) return false;
@@ -128,9 +130,20 @@ bool hnd::MismaPagina(const std::string& a, const std::string& b)
         if (ruta.empty() || ruta[0] != '/') ruta = "/" + ruta;
         while (ruta.size() > 1 && ruta.back() == '/') ruta.pop_back();
         return true;
-    };
+    }
+
+    // ¿Dice una página, y no solo el sitio? (un referer como «https://ddownload.com/» solo dice el sitio)
+    bool EsPagina(const std::string& url)
+    {
+        std::string sitio, ruta;
+        return Partir(url, sitio, ruta) && ruta != "/";
+    }
+}
+
+bool hnd::MismaPagina(const std::string& a, const std::string& b)
+{
     std::string s1, r1, s2, r2;
-    if (!partir(a, s1, r1) || !partir(b, s2, r2) || s1 != s2 || r1 == "/" || r2 == "/") return false;
+    if (!Partir(a, s1, r1) || !Partir(b, s2, r2) || s1 != s2 || r1 == "/" || r2 == "/") return false;
     if (r1 == r2) return true;
     const std::string& corta = r1.size() < r2.size() ? r1 : r2;
     const std::string& larga = r1.size() < r2.size() ? r2 : r1;
@@ -190,7 +203,9 @@ void hnd::DeUnaEnUna::Cargar()
         m_partes.clear();
         CopyFileW(m_archivo.c_str(), (m_archivo + L".danado").c_str(), FALSE);
     }
-    if (Terminada()) m_partes.clear();   // ya no quedaba nada por hacer
+    // Si ya no queda nada por hacer ni por devolver, no hay nada que mostrar. Las saltadas o con error se quedan en la
+    // cola hasta que lleguen al recolector (por ejemplo, si la última vez no se pudo guardar el recolector).
+    if (Terminada() && Sobrantes().empty()) m_partes.clear();
 }
 
 bool hnd::DeUnaEnUna::Guardar() const
@@ -249,13 +264,17 @@ hnd::Emparejamiento hnd::DeUnaEnUna::Emparejar(const std::string& url, const std
     auto deSuSitio = [&](const Parte& p) { return MismoSitio(referer, p.url) || MismoSitio(pagina, p.url) || MismoSitio(url, p.url); };
     // Viene de la página que Atarraya abrió para la parte
     auto deSuPagina = [&](const Parte& p) { return MismaPagina(referer, p.url) || MismaPagina(pagina, p.url); };
+    // Se sabe de qué página viene (la pestaña o un referer con página, no solo con el sitio) y es otra
+    std::string origen = !pagina.empty() ? pagina : (EsPagina(referer) ? referer : std::string());
+    auto deOtraPagina = [&](const Parte& p) { return !origen.empty() && !MismaPagina(origen, p.url); };
     auto abierta = [](const Parte& p) { return p.estado == EstadoParte::Abierta; };
     auto falta = [](const Parte& p) { return p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Esperando; };
 
-    // 1. Tiene el nombre de una parte abierta y viene de su sitio
+    // 1. Tiene el nombre de una parte abierta, viene de su sitio y no de otra página (si viene de otra, se pregunta)
     for (size_t i = 0; i < m_partes.size(); i++)
     {
-        if (abierta(m_partes[i]) && tieneSuNombre(m_partes[i]) && deSuSitio(m_partes[i])) return { (int)i, true };
+        const auto& p = m_partes[i];
+        if (abierta(p) && tieneSuNombre(p) && deSuSitio(p) && !deOtraPagina(p)) return { (int)i, true };
     }
     // 2. Viene de la página de una parte abierta y no tiene el nombre de ninguna parte de la cola
     if (std::none_of(m_partes.begin(), m_partes.end(), tieneSuNombre))

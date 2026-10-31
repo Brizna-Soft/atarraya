@@ -587,8 +587,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     m_ultimoPortapapeles = std::hash<std::wstring>{}(sistema::TodoElPortapapeles(256 * 1024));
     AplicarAjustes();
 
-    // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola)
+    // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola). Si había terminado pero
+    // las que no bajaron no llegaron al recolector, se intenta otra vez.
     m_sitios.Cargar();
+    if (m_sitios.Terminada()) Avanzar();
     ActualizarBarraSitios();
 
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { Refrescar(); });

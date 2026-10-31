@@ -2,18 +2,23 @@
 // No guarda nada fuera del navegador, no manda datos a ningún servidor y solo habla con el programa
 // instalado en la misma PC (native messaging).
 
+// En Chrome la extensión corre como «service worker» y carga origen.js así; Firefox lo carga desde su manifiesto
+if (typeof importScripts === "function") importScripts("origen.js");
+
 const api = globalThis.browser ?? globalThis.chrome;
 const HOST = "com.briznasoft.atarraya";
 const AJUSTES = { capturar: true, minimoMB: 0 };
 
 let listoHasta = 0;            // hasta cuándo damos por hecho que el programa responde
 const devueltas = new Set();   // descargas que devolvimos al navegador: no se capturan otra vez
+const pestanas = new PestanasDePedidos();   // en qué pestaña nació cada pedido (ver origen.js)
 
 // Las descargas que salen de un formulario (POST) no se pueden repetir desde el programa: esas se quedan
 // en el navegador. Aquí se anotan las direcciones pedidas con otro método que no sea GET.
 const noRepetibles = new Map();   // url -> cuándo
 api.webRequest.onBeforeRequest.addListener(
   (d) => {
+    pestanas.anotar(d.url, d.tabId);
     if (!d.method || d.method === "GET") return;
     noRepetibles.set(d.url, Date.now());
     if (noRepetibles.size > 300) {
@@ -83,14 +88,18 @@ function nombreDe(ruta) {
   return partes[partes.length - 1] || "";
 }
 
-// La pestaña donde la persona pulsó descargar. Atarraya la usa para saber de qué página salió la descarga (por
-// ejemplo, en «de una en una»). Como todo lo demás, solo va al programa de esta PC.
-async function paginaActual() {
+// La página donde nació la descarga: la de la pestaña de su pedido (o la de la pestaña que la abrió), nunca la
+// pestaña activa. Atarraya la usa para saber de qué página salió (por ejemplo, en «de una en una»). Como todo lo
+// demás, solo va al programa de esta PC. Vacía si no se sabe.
+async function paginaDe(item) {
+  const tabId = pestanas.buscar([item.url, item.finalUrl]);
+  if (tabId < 0) return "";
   try {
-    const [tab] = await api.tabs.query({ active: true, lastFocusedWindow: true });
-    return tab && /^https?:/i.test(tab.url || "") ? tab.url : "";
+    const pestana = await api.tabs.get(tabId);
+    const abridora = pestana && pestana.openerTabId !== undefined ? await api.tabs.get(pestana.openerTabId).catch(() => null) : null;
+    return paginaDeOrigen(item, pestana, abridora);
   } catch (e) {
-    return "";
+    return ""; // la pestaña ya se cerró
   }
 }
 
@@ -122,7 +131,7 @@ api.downloads.onCreated.addListener(async (item) => {
     const datos = {
       url,
       referer: item.referrer || "",
-      pagina: await paginaActual(),
+      pagina: await paginaDe(item),
       nombre: nombreDe(item.filename),
       tamano,
       tipoMime: item.mime || "",

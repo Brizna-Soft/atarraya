@@ -18,7 +18,7 @@
     }
   },
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["origen.js", "background.js"]
   },
   "permissions": ["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"],
   "host_permissions": ["<all_urls>"],

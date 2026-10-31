@@ -284,6 +284,14 @@ namespace
         Comprobar(es(cola.Emparejar("https://files.cdn-ejemplo.net/x/peli.part1.rar", "https://ddownload.com/", "", L""), 0, true)
                       && es(cola.Emparejar("https://s7.ddownload.com/d/token/peli.part1.rar", "", "", L""), 0, true),
                   "de una en una: con su nombre y desde su sitio (aunque el archivo venga de otro servidor), se toma");
+        // El mismo nombre, pero desde otra página de ese sitio (por la pestaña o por un referer con página): se pregunta
+        Comprobar(es(cola.Emparejar("https://s7.ddownload.com/d/token/peli.part1.rar", "https://ddownload.com/",
+                                    "https://ddownload.com/zzz999yyy/otra-pagina", L""), 0, false)
+                      && es(cola.Emparejar("https://s7.ddownload.com/d/token/peli.part1.rar", "https://ddownload.com/zzz999yyy/otra-pagina", "", L""),
+                            0, false),
+                  "de una en una: el mismo nombre desde otra página del sitio: pregunta «¿Es la parte 1 de 3?»");
+        Comprobar(es(cola.Emparejar("https://s7.ddownload.com/d/token/peli.part1.rar", "https://ddownload.com/", p1, L""), 0, true),
+                  "de una en una: el mismo nombre desde su propia página: se toma");
         // Sin el nombre, solo si viene de la página que Atarraya abrió para esa parte
         Comprobar(es(cola.Emparejar("https://s7.ddownload.com/d/token/descarga", "https://ddownload.com/", p1, L""), 0, true)
                       && es(cola.Emparejar("https://s7.ddownload.com/d/token/descarga", p1, "", L""), 0, true),
@@ -357,7 +365,35 @@ namespace
             Comprobar(!GuardarEnRecolector(q.Sobrantes(), recSinLugar) && q.Partes().size() == 1,
                       "de una en una: si el recolector no se puede guardar, la cola no se vacía");
         }
-        for (const auto& f : { archivo, archivoCola, archivoRecolector }) DeleteFileW(f.c_str());
+        std::wstring archivoCola3 = base + L"-cola3.json", archivoCola4 = base + L"-cola4.json";
+        {
+            // Terminó con una saltada y una con error, y el recolector no se pudo guardar: al volver a abrir siguen ahí
+            DeUnaEnUna q(archivoCola3);
+            q.Agregar({ parte(a.c_str()), parte(b.c_str()), parte(p1.c_str()) });
+            q.Saltar(q.AbrirSiguiente());
+            int conError = q.AbrirSiguiente(), bien = q.AbrirSiguiente();
+            q.Tomar(conError, 201);
+            q.Tomar(bien, 202);
+            q.Terminar(201, false);
+            q.Terminar(202, true);
+            q.Guardar();
+            Recolector recSinLugar(base + L"-carpeta-que-no-existe\\recolector2.json");
+            bool llegaron = GuardarEnRecolector(q.Sobrantes(), recSinLugar);
+            DeUnaEnUna alVolver(archivoCola3);
+            alVolver.Cargar();
+            Comprobar(!llegaron && q.Terminada() && alVolver.Partes().size() == 3 && alVolver.Sobrantes().size() == 2 && alVolver.Terminada(),
+                      "de una en una: si el recolector no se pudo guardar, al volver a abrir las saltadas y las que fallaron siguen en la cola");
+            // Una cola que terminó con todo bajado no queda para la próxima vez
+            DeUnaEnUna toda(archivoCola4);
+            toda.Agregar({ parte(p1.c_str()) });
+            toda.Tomar(toda.AbrirSiguiente(), 301);
+            toda.Terminar(301, true);
+            toda.Guardar();
+            DeUnaEnUna despues(archivoCola4);
+            despues.Cargar();
+            Comprobar(despues.Partes().empty(), "de una en una: una cola que terminó con todo bajado no queda para la próxima vez");
+        }
+        for (const auto& f : { archivo, archivoCola, archivoRecolector, archivoCola3, archivoCola4 }) DeleteFileW(f.c_str());
     }
 
     // Varias consultas a la vez: cada una lee las redes por su cuenta, sin nada compartido que pueda chocar
