@@ -207,6 +207,11 @@ namespace
         return n;
     }
 
+    // ¿Ya se conocen los archivos? (un magnet empieza sin ellos)
+    bool ConDatos(const Entrada& e) { return e.hayEstado ? e.st.has_metadata : e.archivos > 0; }
+    // Llegaron los datos y falta que la persona elija qué bajar: no corre hasta entonces
+    bool EsperaEleccion(const Entrada& e) { return e.eligeArchivos && ConDatos(e); }
+
     std::wstring NombrePorDefecto(const std::string& v1, const std::string& v2)
     {
         std::string h = v1.empty() ? v2 : v1;
@@ -446,7 +451,8 @@ struct hnd::MotorTorrent::Datos
             return;
         }
         if (st.flags & lt::torrent_flags::paused) return;   // el estado lo pone el programa
-        if (e.eligeArchivos) return;
+        // Un magnet que espera la elección corre solo para traer los datos; al llegar se pausa (metadata_received_alert)
+        if (e.eligeArchivos && st.has_metadata) return;
         if (st.state == lt::torrent_status::checking_files || st.state == lt::torrent_status::checking_resume_data
             || st.state == lt::torrent_status::downloading_metadata)
         {
@@ -776,7 +782,7 @@ uint64_t hnd::MotorTorrent::Agregar(const NuevoTorrent& n, std::string& error)
 void hnd::MotorTorrent::Reanudar(uint64_t id)
 {
     Entrada* e = m->Encontrar(id);
-    if (!e || e->eligeArchivos) return;
+    if (!e || EsperaEleccion(*e)) return;   // primero hay que elegir los archivos
     switch (e->estado)
     {
     case Estado::Pausada:
@@ -1004,7 +1010,7 @@ bool hnd::MotorTorrent::Buscar(uint64_t id, Foto& f)
     f.hecho = e->hecho;
     f.subido = e->subido;
     f.compartir = e->compartir;
-    f.eligeArchivos = e->eligeArchivos;
+    f.eligeArchivos = EsperaEleccion(*e);
     f.archivos = e->archivos;
     f.mapa = e->mapa;
     bool corre = e->estado == Estado::Iniciando || e->estado == Estado::Descargando || e->estado == Estado::Compartiendo;
@@ -1115,7 +1121,7 @@ void hnd::MotorTorrent::Tick()
     }
     for (auto& e : m->lista)
     {
-        if (e->estado == Estado::EnCola && !e->eligeArchivos && e->h.is_valid() && bajando < maxSimultaneas)
+        if (e->estado == Estado::EnCola && !EsperaEleccion(*e) && e->h.is_valid() && bajando < maxSimultaneas)
         {
             m->Arrancar(*e);
             bajando++;
