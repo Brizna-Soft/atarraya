@@ -1564,10 +1564,10 @@ void VentanaPrincipal::ElegirArchivos(uint64_t id)
     }
     else if (m_torrents.Buscar(id, f))
     {
-        // Archivos que se suman a la selección y que el torrent nunca usó: si ya hay otros con ese nombre, se pregunta
+        // Archivos que se suman a la selección: si ya hay otros con ese nombre en la carpeta, se pregunta
         std::vector<bool> nuevos(elegidos.size(), false);
         for (size_t i = 0; i < elegidos.size() && i < info.archivos.size(); i++)
-            nuevos[i] = elegidos[i] && !info.archivos[i].bajar && info.archivos[i].hecho == 0;
+            nuevos[i] = elegidos[i] && !info.archivos[i].bajar;   // lo bajado de un archivo no elegido puede ser de las piezas vecinas
         auto choques = m_torrents.Choques(id, nuevos);
         if (!choques.empty())
         {

@@ -221,6 +221,7 @@ namespace
         if (b[0] == 0x01 && b[1] == 0x00 && ceros(2, 8)) return true;               // 100::/64 (se descarta)
         if (b[0] == 0x20 && b[1] == 0x01 && b[2] < 0x02) return true;               // 2001::/23 (Teredo y otros especiales)
         if (b[0] == 0x20 && b[1] == 0x01 && b[2] == 0x0D && b[3] == 0xB8) return true; // 2001:db8::/32 (documentación)
+        if (b[0] == 0x3F && b[1] == 0xFF && (b[2] & 0xF0) == 0) return true;        // 3fff::/20 (documentación)
         if (b[0] == 0x20 && b[1] == 0x02) return v4En(2);                            // 2002::/16 (6to4 lleva una IPv4)
         return (b[0] == 0xFE && (b[1] & 0xC0) == 0x80)                               // fe80::/10
             || (b[0] & 0xFE) == 0xFC                                                 // fc00::/7
@@ -536,16 +537,15 @@ namespace hnd
             return;
         }
         Peticion p{ url, referer, "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " APP_NOMBRE "/" APP_VERSION };
-        Proxy proxy = ProxyDelSistema();
-        Preparar(c, p, proxy);
+        // Sin proxy (ni el de Windows ni el de las variables de entorno): así se puede revisar cada dirección a la que
+        // se conecta. En una red que solo sale por proxy, la consulta falla y el tamaño «se sabrá al empezar».
+        Preparar(c, p, Proxy{});
+        curl_easy_setopt(c, CURLOPT_PROXY, "");
         curl_easy_setopt(c, CURLOPT_NOBODY, 1L);   // HEAD: solo las cabeceras, nunca el archivo
         curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
         bool local = false;
-        if (proxy.servidor.empty())
-        {
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirSoloAfuera);
-            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &local);
-        }
+        curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirSoloAfuera);
+        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &local);
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
         Cabeceras cab;
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
