@@ -263,7 +263,8 @@ void VentanaRecolector::Resumen(const std::vector<EnlaceRecolectado>& lista)
         if (e.estado == Comprobacion::Pagina || e.estado == Comprobacion::Sitio) paginas++;
         if (e.estado == Comprobacion::NoExiste) faltan++;
     }
-    wxString t = wxString::Format(L"%zu enlaces  ·  marcados: %zu", lista.size(), marcados);
+    wxString t = lista.size() == 1 ? wxString(L"1 enlace") : wxString::Format(L"%zu enlaces", lista.size());
+    t += wxString::Format(L"  ·  marcados: %zu", marcados);
     if (tamano > 0) t += L" (" + wxString(TextoTamano(tamano)) + L")";
     if (consultando > 0) t += wxString::Format(L"  ·  consultando: %zu", consultando);
     if (paginas > 0) t += wxString::Format(L"  ·  para el navegador: %zu", paginas);

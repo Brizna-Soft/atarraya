@@ -1060,11 +1060,14 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
     Registrar("recolector: " + std::to_string(descargas) + " descargas y " + std::to_string(torrents) + " torrents a la lista");
     if (noEstan > 0 || fallaron > 0)
     {
-        wxString t = wxString::Format(L"Pasaron a la lista %d descargas", descargas + torrents);
-        if (yaEstaban > 0) t += wxString::Format(L" (%d ya estaban)", yaEstaban);
+        int pasaron = descargas + torrents;
+        wxString t = pasaron == 1 ? wxString(L"Pasó a la lista 1 descarga") : wxString::Format(L"Pasaron a la lista %d descargas", pasaron);
+        if (yaEstaban > 0) t += yaEstaban == 1 ? wxString(L" (1 ya estaba)") : wxString::Format(L" (%d ya estaban)", yaEstaban);
         t += L".";
-        if (noEstan > 0) t += wxString::Format(L" %d ya no están en el servidor: se quedan en el recolector.", noEstan);
-        if (fallaron > 0) t += wxString::Format(L" %d no se pudieron agregar.", fallaron);
+        if (noEstan == 1) t += L" 1 ya no está en el servidor: se queda en el recolector.";
+        else if (noEstan > 1) t += wxString::Format(L" %d ya no están en el servidor: se quedan en el recolector.", noEstan);
+        if (fallaron == 1) t += L" 1 no se pudo agregar.";
+        else if (fallaron > 1) t += wxString::Format(L" %d no se pudieron agregar.", fallaron);
         ayuda::Aviso(t, L"Recolector de enlaces", wxOK | wxICON_INFORMATION, padre);
     }
     Refrescar();
