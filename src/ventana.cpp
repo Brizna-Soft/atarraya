@@ -2,6 +2,7 @@
 
 #include <wx/accel.h>
 #include <wx/app.h>
+#include <wx/button.h>
 #include <wx/dataview.h>
 #include <wx/dcbuffer.h>
 #include <wx/display.h>
@@ -28,6 +29,7 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <map>
 #include <thread>
 
 #include "ayuda.hpp"
@@ -35,6 +37,7 @@
 #include "enlaces.hpp"
 #include "hilos.hpp"
 #include "iconos.hpp"
+#include "navegadores.hpp"
 #include "nombres.hpp"
 #include "sistema.hpp"
 #include "util.hpp"
@@ -453,7 +456,7 @@ private:
 
 VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Recolector& recolector, hnd::Ajustes& ajustes)
     : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_recolector(recolector), m_ajustes(ajustes),
-      m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this)
+      m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this), m_sitios(hnd::CarpetaDatos() + L"\\de-una-en-una.json")
 {
     wxIconBundle iconos(wxString(L"AAAA_APP"), (WXHINSTANCE)GetModuleHandleW(nullptr));
     SetIcons(iconos);
@@ -463,6 +466,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
 
     auto* fondo = new wxPanel(this);
     auto* caja = new wxBoxSizer(wxVERTICAL);
+
+    // Barra de «de una en una» (se ve solo mientras hay páginas de sitios de descargas en la cola)
+    CrearBarraSitios(fondo);
+    caja->Add(m_barraSitios, 0, wxEXPAND);
 
     m_division = new wxSplitterWindow(fondo, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxSP_LIVE_UPDATE | wxSP_NOBORDER | wxSP_3DSASH);
     m_division->SetSashGravity(1.0);
@@ -580,6 +587,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // Portapapeles y Click'n'Load. Lo que ya está copiado al abrir el programa no se recolecta: solo lo que se copie después.
     m_ultimoPortapapeles = std::hash<std::wstring>{}(sistema::TodoElPortapapeles(256 * 1024));
     AplicarAjustes();
+
+    // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola)
+    m_sitios.Cargar();
+    ActualizarBarraSitios();
 
     Bind(wxEVT_TIMER, [this](wxTimerEvent&) { Refrescar(); });
     m_reloj.Start(500);
@@ -749,6 +760,7 @@ void VentanaPrincipal::Refrescar()
     m_motor.Tick();
     m_torrents.Tick();
     m_recolector.Tick();
+    RevisarPartes();
 
     // El botón del recolector dice cuántos enlaces esperan
     size_t enRecolector = m_recolector.Cantidad();
@@ -1049,12 +1061,17 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
                                                             bool porPaquete, bool empezar)
 {
     std::vector<uint64_t> hechos;
-    std::vector<const EnlaceRecolectado*> paginas;
+    std::vector<const EnlaceRecolectado*> paginas, sitios;
     int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
     for (const auto& e : lista)
     {
         if (e.estado == Comprobacion::NoExiste || e.estado == Comprobacion::NoPermitido) { noEstan++; continue; }   // se quedan en el recolector
-        if (e.estado == Comprobacion::Pagina || e.estado == Comprobacion::Sitio)
+        if (e.estado == Comprobacion::Sitio)
+        {
+            sitios.push_back(&e);   // de una en una
+            continue;
+        }
+        if (e.estado == Comprobacion::Pagina)
         {
             paginas.push_back(&e);
             continue;
@@ -1093,13 +1110,17 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         hechos.push_back(e.id);
     }
     wxWindow* padre = m_ventanaRecolector && m_ventanaRecolector->IsShown() ? (wxWindow*)m_ventanaRecolector : (wxWindow*)this;
+    // Las páginas de sitios de descargas se abren de una en una: la siguiente cuando termina la anterior
+    if (!sitios.empty() && EmpezarDeUnaEnUna(sitios, carpeta, porPaquete, empezar, padre))
+    {
+        for (auto* e : sitios) hechos.push_back(e->id);
+    }
     if (!paginas.empty())
     {
         const size_t tope = 10;
-        wxString texto = wxString::Format(L"%zu de los enlaces marcados son páginas web, por ejemplo de sitios de descargas.\n\n"
-                                          L"Atarraya no se salta las esperas ni los límites de esos sitios, y los captchas los resuelves tú: "
-                                          L"se abren en tu navegador para que bajes desde ahí. Si tienes la extensión de Atarraya, la "
-                                          L"descarga llega aquí sola.\n\n¿Abrirlos en el navegador?", paginas.size());
+        wxString texto = wxString::Format(L"%zu de los enlaces marcados son páginas web, no archivos.\n\n"
+                                          L"Se abren en tu navegador para que bajes desde ahí. Si tienes la extensión de Atarraya, la "
+                                          L"descarga llega aquí sola.\n\n¿Abrirlas en el navegador?", paginas.size());
         if (paginas.size() > tope) texto += wxString::Format(L"\n\nSe abren los primeros %zu; los demás se quedan en el recolector.", tope);
         wxMessageDialog p(padre, texto, L"Páginas para el navegador", wxYES_NO | wxYES_DEFAULT | wxICON_QUESTION);
         p.SetYesNoLabels(L"Abrir en el navegador", L"Ahora no");
@@ -1320,6 +1341,14 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     if (!nombre.empty()) d.nombre = LimpiarNombre(nombre);
     auto t = j.find("tamano");
     int64_t tamano = t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1;
+
+    // ¿Es la descarga de una página abierta «de una en una»? Se toma sin preguntar: la persona ya eligió la carpeta
+    int parte = m_sitios.Emparejar(d.url, d.referer, nombre);
+    if (parte >= 0)
+    {
+        TomarParte(parte, d);
+        return;
+    }
 
     if (m_ajustes.preguntarNavegador) NuevaDescarga(d, true, tamano);
     else
@@ -1627,8 +1656,9 @@ void VentanaPrincipal::MenuContextual(wxDataViewEvent&)
 
 void VentanaPrincipal::Avisar(const wxString& titulo, const wxString& texto, bool error)
 {
-    if (m_bandeja && m_bandeja->IsIconInstalled())
-        m_bandeja->ShowBalloon(titulo, texto, 6000, error ? wxICON_WARNING : wxICON_INFORMATION);
+    bool hay = m_bandeja && m_bandeja->IsIconInstalled();
+    Registrar("aviso: " + Utf8(titulo.ToStdWstring()) + (hay ? "" : " (sin ícono junto al reloj: no se mostró)"));
+    if (hay) m_bandeja->ShowBalloon(titulo, texto, 6000, error ? wxICON_WARNING : wxICON_INFORMATION);
 }
 
 void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
@@ -1654,6 +1684,15 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
     else if (f.datos.estado == Estado::Error && m_ajustes.avisarAlTerminar)
     {
         Avisar(L"La descarga se detuvo", nombre + L"\n" + wxString::FromUTF8(f.datos.error), true);
+    }
+
+    // De una en una: si era una parte, se abre la siguiente (este aviso va al último, para que sea el que se ve)
+    int parte = m_sitios.Terminar(f.datos.id, f.datos.estado == Estado::Completada);
+    if (parte >= 0)
+    {
+        m_sitios.Guardar();
+        Registrar("de una en una: parte " + std::to_string(parte + 1) + (f.datos.estado == Estado::Completada ? " lista" : " con error"));
+        Avanzar();
     }
 }
 
@@ -1729,5 +1768,286 @@ void VentanaPrincipal::Salir()
     m_motor.Detener();
     m_torrents.Detener();
     m_recolector.Detener();
+    m_sitios.Guardar();
     Destroy();
+}
+
+// --- De una en una ------------------------------------------------------------------------------------------------
+// Atarraya solo abre la página del sitio en el navegador y recibe lo que el navegador le pasa: no hace clics, no
+// resuelve captchas, no se salta esperas ni usa cuentas premium.
+
+bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolectado*>& sitios, const std::wstring& carpeta,
+                                         bool porPaquete, bool abrir, wxWindow* padre)
+{
+    // Sin la extensión, lo que se baje en esas páginas se queda en el navegador
+    bool conectada = false;
+    for (const auto& n : navegadores::Estado()) conectada = conectada || n.conectado;
+    if (!conectada)
+    {
+        wxMessageDialog p(padre,
+                          L"La extensión de Atarraya no está conectada con ningún navegador. Sin ella, lo que bajes en esas páginas "
+                          L"se queda en el navegador y Atarraya no puede abrir la siguiente sola.\n\n"
+                          L"Conéctala en «Navegadores» y vuelve a pulsar «Descargar los marcados». También puedes empezar igual y "
+                          L"pasar de una página a otra con los botones.",
+                          L"De una en una", wxYES_NO | wxCANCEL | wxYES_DEFAULT | wxICON_WARNING);
+        p.SetYesNoCancelLabels(L"Abrir «Navegadores»", L"Empezar igual", L"Cancelar");
+        int r = p.ShowModal();
+        Registrar(std::string("de una en una: la extensión no está conectada; la persona eligió ")
+                  + (r == wxID_YES ? "abrir Navegadores" : r == wxID_NO ? "empezar igual" : "cancelar"));
+        if (r == wxID_YES)
+        {
+            DialogoNavegadores d(padre);
+            d.ShowModal();
+            return false;   // los enlaces se quedan en el recolector
+        }
+        if (r != wxID_NO) return false;
+    }
+
+    std::vector<Parte> partes;
+    for (const auto* e : sitios)
+    {
+        Parte p;
+        p.url = e->url;
+        p.referer = e->referer;
+        p.nombre = NombreDeUrl(e->url);
+        p.paquete = PaqueteDe(*e);
+        p.carpeta = porPaquete ? carpeta + L"\\" + LimpiarNombre(p.paquete) : carpeta;
+        partes.push_back(std::move(p));
+    }
+    m_resumenSitios.clear();
+    m_sitios.Agregar(std::move(partes));
+    Registrar("de una en una: " + std::to_string(sitios.size()) + (sitios.size() == 1 ? " página" : " páginas") + " en la cola");
+    int i = abrir && !m_sitios.HayAbierta() ? m_sitios.AbrirSiguiente() : -1;
+    m_sitios.Guardar();
+    Mostrar();   // la barra con los botones está en la ventana principal
+    if (i >= 0) AbrirParte(i, false);
+    ActualizarBarraSitios();
+    return true;
+}
+
+void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
+{
+    m_barraSitios = new wxPanel(padre);
+    bool oscuro = TemaOscuro();
+    m_barraSitios->SetBackgroundColour(oscuro ? wxColour(0x3A, 0x33, 0x1C) : wxColour(0xFF, 0xF4, 0xCE));
+    auto* caja = new wxBoxSizer(wxVERTICAL);
+    m_textoSitios = new wxStaticText(m_barraSitios, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
+    m_textoSitios->SetForegroundColour(oscuro ? wxColour(0xF2, 0xE6, 0xC2) : wxColour(0x3D, 0x2E, 0x00));
+    caja->Add(m_textoSitios, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
+    auto* botones = new wxBoxSizer(wxHORIZONTAL);
+    auto boton = [&](const wxString& texto, const wxString& ayuda) {
+        auto* b = new wxButton(m_barraSitios, wxID_ANY, texto);
+        b->SetToolTip(ayuda);
+        botones->Add(b, 0, wxRIGHT, FromDIP(6));
+        return b;
+    };
+    m_bOtraVez = boton(L"Abrir otra vez", L"Vuelve a abrir esta página en el navegador (por ejemplo, si cerraste la pestaña)");
+    m_bSiguiente = boton(L"Abrir la siguiente ahora", L"Abre la página siguiente sin esperar a que termine la que se está bajando");
+    m_bSaltar = boton(L"Saltar esta", L"Deja esta página para después: al final vuelve al recolector. Se abre la siguiente.");
+    m_bParar = boton(L"Parar", L"Las páginas que faltan vuelven al recolector. Lo que ya se está bajando sigue.");
+    m_bCerrarSitios = boton(L"Cerrar", L"Quitar este aviso");
+    caja->Add(botones, 0, wxALL, FromDIP(8));
+    m_barraSitios->SetSizer(caja);
+    m_barraSitios->Hide();
+
+    m_bOtraVez->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        int i = m_sitios.Actual();
+        if (i >= 0 && m_sitios.Partes()[i].estado == EstadoParte::Abierta) AbrirParte(i, false);
+    });
+    m_bSiguiente->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        int i = m_sitios.AbrirSiguiente();
+        if (i < 0) return;
+        m_sitios.Guardar();
+        AbrirParte(i, false);
+        ActualizarBarraSitios();
+    });
+    m_bSaltar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        int i = m_sitios.Actual();
+        if (i < 0 || m_sitios.Partes()[i].estado != EstadoParte::Abierta) return;
+        m_sitios.Saltar(i);
+        m_sitios.Guardar();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + " saltada");
+        Avanzar();
+    });
+    m_bParar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        auto vuelven = m_sitios.Parar();
+        m_sitios.Guardar();
+        DevolverAlRecolector(vuelven);
+        Registrar("de una en una: parada; " + std::to_string(vuelven.size()) + " vuelven al recolector");
+        if (vuelven.empty()) m_resumenSitios = L"Paraste la cola.";
+        else if (vuelven.size() == 1) m_resumenSitios = L"Paraste la cola: la página que faltaba volvió al recolector.";
+        else m_resumenSitios = wxString::Format(L"Paraste la cola: las %zu páginas que faltaban volvieron al recolector.", vuelven.size());
+        ActualizarBarraSitios();
+        Refrescar();
+    });
+    m_bCerrarSitios->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        m_resumenSitios.clear();
+        ActualizarBarraSitios();
+    });
+}
+
+void VentanaPrincipal::ActualizarBarraSitios()
+{
+    if (!m_barraSitios) return;
+    const auto& partes = m_sitios.Partes();
+    wxString texto;
+    bool otraVez = false, saltar = false, activa = !partes.empty();
+    if (!activa) texto = m_resumenSitios;
+    else
+    {
+        int i = m_sitios.Actual();
+        size_t total = partes.size();
+        if (i >= 0 && partes[i].estado == EstadoParte::Abierta)
+        {
+            texto = wxString::Format(L"Parte %d de %zu en tu navegador (%s): resuelve el captcha y pulsa descargar. Atarraya la toma sola.",
+                                     i + 1, total, wxString::FromUTF8(enlaces::Sitio(partes[i].url)));
+            otraVez = saltar = true;
+        }
+        else if (i >= 0)
+        {
+            texto = wxString::Format(L"Parte %d de %zu bajando en Atarraya. ", i + 1, total);
+            texto += m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Es la última.";
+        }
+        else
+        {
+            size_t quedan = m_sitios.Cuantas(EstadoParte::Esperando);
+            texto = quedan == 1 ? wxString(L"Queda 1 página por abrir.") : wxString::Format(L"Quedan %zu páginas por abrir.", quedan);
+            texto += L" Pulsa «Abrir la siguiente ahora» para seguir.";
+        }
+    }
+    bool mostrar = !texto.empty();
+    bool cambio = mostrar != m_barraSitios->IsShown();
+    if (m_textoSitios->GetLabel() != texto)
+    {
+        m_textoSitios->SetLabel(texto);
+        m_textoSitios->SetToolTip(texto);
+        cambio = true;
+    }
+    auto ver = [&](wxButton* b, bool si) {
+        if (b->IsShown() != si)
+        {
+            b->Show(si);
+            cambio = true;
+        }
+    };
+    ver(m_bOtraVez, otraVez);
+    ver(m_bSiguiente, activa);
+    ver(m_bSaltar, activa);
+    ver(m_bParar, activa);
+    ver(m_bCerrarSitios, !activa && mostrar);
+    m_bSiguiente->Enable(m_sitios.QuedanPorAbrir());
+    m_bSaltar->Enable(saltar);
+    if (cambio)
+    {
+        m_barraSitios->Show(mostrar);
+        m_barraSitios->GetParent()->Layout();
+    }
+}
+
+void VentanaPrincipal::AbrirParte(int i, bool avisar)
+{
+    const auto& partes = m_sitios.Partes();
+    if (i < 0 || (size_t)i >= partes.size()) return;
+    std::string url = partes[i].url;
+    size_t total = partes.size();
+    std::wstring prueba = CarpetaDePrueba();
+    if (prueba.empty()) ayuda::AbrirEnlace(wxString::FromUTF8(url));
+    else
+    {
+        // Copia de prueba: no se abre ningún navegador, solo se anota la página
+        std::wstring archivo = prueba + L"\\paginas-abiertas.txt";
+        std::string antes;
+        LeerArchivo(archivo, antes);
+        EscribirSeguro(archivo, antes + url + "\n");
+    }
+    Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " abierta en el navegador ("
+              + SoloSitio(url) + ")");
+    if (avisar)
+        Avisar(wxString::Format(L"Parte %d de %zu en tu navegador", i + 1, total), L"Resuelve el captcha y pulsa descargar. Atarraya la toma sola.");
+}
+
+void VentanaPrincipal::Avanzar()
+{
+    if (m_sitios.Terminada())
+    {
+        size_t total = m_sitios.Partes().size(), listas = m_sitios.Cuantas(EstadoParte::Lista);
+        auto vuelven = m_sitios.Parar();   // las saltadas y las que fallaron: se pueden intentar después
+        m_sitios.Guardar();
+        DevolverAlRecolector(vuelven);
+        if (listas == total) m_resumenSitios = total == 1 ? wxString(L"Listo: bajó la única parte.") : wxString::Format(L"Listo: bajaron las %zu partes.", total);
+        else
+        {
+            m_resumenSitios = wxString::Format(L"Listo: bajaron %zu de %zu partes. ", listas, total);
+            m_resumenSitios += vuelven.size() == 1 ? wxString(L"La otra volvió al recolector, para intentarla después.")
+                                                   : wxString::Format(L"Las otras %zu volvieron al recolector, para intentarlas después.", vuelven.size());
+        }
+        Registrar("de una en una: terminó (" + std::to_string(listas) + " de " + std::to_string(total) + " listas)");
+        Avisar(L"De una en una: listo", m_resumenSitios);
+        ActualizarBarraSitios();
+        return;
+    }
+    if (!m_sitios.HayAbierta())
+    {
+        int i = m_sitios.AbrirSiguiente();
+        if (i >= 0)
+        {
+            m_sitios.Guardar();
+            AbrirParte(i, true);
+        }
+    }
+    ActualizarBarraSitios();
+}
+
+void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
+{
+    const auto& p = m_sitios.Partes()[i];
+    d.carpeta = p.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : p.carpeta;
+    SHCreateDirectoryExW(nullptr, d.carpeta.c_str(), nullptr);
+    // Una sola conexión, como el navegador: así no se pasa de lo que el sitio deja bajar sin cuenta premium
+    d.conexiones = 1;
+    uint64_t id = m_motor.Agregar(d, true);
+    m_sitios.Tomar(i, id);
+    m_sitios.Guardar();
+    size_t total = m_sitios.Partes().size();
+    Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " tomada (" + SoloSitio(d.url) + ")");
+    Avisar(wxString::Format(L"Parte %d de %zu: la baja Atarraya", i + 1, total),
+           m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.");
+    ActualizarBarraSitios();
+    Refrescar();
+}
+
+void VentanaPrincipal::DevolverAlRecolector(const std::vector<Parte>& partes)
+{
+    if (partes.empty()) return;
+    // Por paquete y por página de origen, como llegaron
+    std::map<std::pair<std::wstring, std::string>, std::vector<std::string>> grupos;
+    for (const auto& p : partes) grupos[{ p.paquete, p.referer }].push_back(p.url);
+    for (const auto& [clave, urls] : grupos) m_recolector.Agregar(urls, clave.first, clave.second, "de-una-en-una", true);
+    if (m_ventanaRecolector) m_ventanaRecolector->Refrescar();
+}
+
+void VentanaPrincipal::RevisarPartes()
+{
+    bool cambio = false;
+    const auto& partes = m_sitios.Partes();
+    for (size_t i = 0; i < partes.size(); i++)
+    {
+        if (partes[i].estado != EstadoParte::Tomada) continue;
+        hnd::Foto f;
+        if (!m_motor.Buscar(partes[i].descarga, f))
+        {
+            m_sitios.Saltar((int)i);   // la persona quitó su descarga de la lista
+            cambio = true;
+        }
+        else if (f.datos.estado == Estado::Completada)
+        {
+            m_sitios.Terminar(partes[i].descarga, true);   // terminó sin que la cola se enterara (un cierre de golpe)
+            cambio = true;
+        }
+    }
+    if (cambio)
+    {
+        m_sitios.Guardar();
+        Avanzar();
+    }
 }

@@ -101,8 +101,10 @@ bool Aplicacion::OnInit()
     if (!torrent.empty()) pedido = { { "tipo", "torrent" }, { "ruta", hnd::Utf8(torrent) } };
     else if (!url.empty()) pedido = { { "tipo", "descargar" }, { "url", url } };
 
-    // Una sola copia: si ya está abierto, se le pasa el pedido y esta copia se cierra
-    m_unica = std::make_unique<wxSingleInstanceChecker>(L"Atarraya-" + wxGetUserId());
+    // Una sola copia: si ya está abierto, se le pasa el pedido y esta copia se cierra. La copia de prueba
+    // (ATARRAYA_PRUEBA) cuenta aparte, con sus propios datos.
+    bool prueba = !hnd::CarpetaDePrueba().empty();
+    m_unica = std::make_unique<wxSingleInstanceChecker>((prueba ? L"Atarraya-prueba-" : L"Atarraya-") + wxGetUserId());
     if (m_unica->IsAnotherRunning())
     {
         HWND otra = FindWindowExW(HWND_MESSAGE, nullptr, ClaseMensajes, nullptr);
@@ -119,7 +121,7 @@ bool Aplicacion::OnInit()
         return false;
     }
 
-    hnd::Registrar(std::string("Atarraya ") + APP_VERSION_TEXTO + (bandeja ? " (en la bandeja)" : ""));
+    hnd::Registrar(std::string("Atarraya ") + APP_VERSION_TEXTO + (bandeja ? " (en la bandeja)" : "") + (prueba ? " (copia de prueba)" : ""));
     MSWEnableDarkMode();   // claro u oscuro, como Windows
     SetAppDisplayName(L"Atarraya");
 

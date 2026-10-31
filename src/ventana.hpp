@@ -9,12 +9,15 @@
 
 #include "ajustes.hpp"
 #include "clicknload.hpp"
+#include "deunaenuna.hpp"
 #include "hilos.hpp"
 #include "motor.hpp"
 #include "recolector.hpp"
 #include "torrents.hpp"
 
+class wxButton;
 class wxDataViewCtrl;
+class wxPanel;
 class wxDataViewEvent;
 class wxSplitterWindow;
 class wxStaticText;
@@ -78,6 +81,18 @@ private:
     void MenuContextual(wxDataViewEvent& e);
     void GuardarGeometria();
 
+    // «De una en una»: páginas de sitios de descargas, de a una en el navegador
+    // Pone las páginas en la cola (y abre la primera si «abrir»). false si la persona prefirió dejarlas en el recolector.
+    bool EmpezarDeUnaEnUna(const std::vector<const hnd::EnlaceRecolectado*>& sitios, const std::wstring& carpeta, bool porPaquete,
+                           bool abrir, wxWindow* padre);
+    void CrearBarraSitios(wxWindow* padre);
+    void ActualizarBarraSitios();
+    void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
+    void Avanzar();                        // terminó o se saltó una: abre la siguiente, o cierra la cola si no queda nada
+    void TomarParte(int i, hnd::DatosDescarga d);
+    void DevolverAlRecolector(const std::vector<hnd::Parte>& partes);
+    void RevisarPartes();                  // descargas de partes que la persona quitó de la lista
+
     hnd::Motor& m_motor;
     hnd::MotorTorrent& m_torrents;
     hnd::Recolector& m_recolector;
@@ -101,6 +116,16 @@ private:
     bool m_ocupada = false;                 // hay una ventana de elegir archivos abierta
     std::vector<uint64_t> m_porElegir;      // torrents que esperan que la persona elija archivos
     std::vector<uint64_t> m_avisadosElegir; // ya se avisó con un globo
+
+    hnd::DeUnaEnUna m_sitios;
+    wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
+    wxPanel* m_barraSitios = nullptr;
+    wxStaticText* m_textoSitios = nullptr;
+    wxButton* m_bOtraVez = nullptr;
+    wxButton* m_bSiguiente = nullptr;
+    wxButton* m_bSaltar = nullptr;
+    wxButton* m_bParar = nullptr;
+    wxButton* m_bCerrarSitios = nullptr;
 };
 
 // Ids de los comandos (los usa también el menú del ícono junto al reloj)

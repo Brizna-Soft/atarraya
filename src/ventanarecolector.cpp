@@ -66,7 +66,7 @@ VentanaRecolector::VentanaRecolector(wxWindow* padre, Recolector& recolector, Aj
 
     caja->Add(Nota(fondo, L"Aquí esperan los enlaces antes de bajarlos. Atarraya consulta el nombre y el tamaño de cada uno sin "
                           L"bajarlo, y los junta en paquetes. Marca los que quieras y pulsa «Descargar los marcados». Las páginas de "
-                          L"sitios de descargas se abren en tu navegador, y los captchas siempre los resuelves tú ahí.",
+                          L"sitios de descargas se abren en tu navegador de una en una, y los captchas siempre los resuelves tú ahí.",
                    FromDIP(820)),
               0, wxLEFT | wxRIGHT | wxTOP, borde);
 

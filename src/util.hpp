@@ -19,6 +19,11 @@ namespace hnd
     std::wstring CarpetaDatos();         // %LOCALAPPDATA%\Atarraya (la crea si no existe)
     std::wstring CarpetaDelPrograma();   // donde está el .exe
 
+    // Solo para probar el programa sin tocar la copia de verdad: si la variable ATARRAYA_PRUEBA trae una carpeta
+    // (ruta completa), los datos van ahí, esa copia no choca con la que ya está abierta y las páginas que se abrirían
+    // en el navegador solo se anotan en «paginas-abiertas.txt». Vacía en el uso normal.
+    std::wstring CarpetaDePrueba();
+
     bool ExisteArchivo(const std::wstring& ruta);
     bool ExisteCarpeta(const std::wstring& ruta);
     int64_t TamanoArchivo(const std::wstring& ruta); // -1 si no existe

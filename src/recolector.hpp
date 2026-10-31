@@ -57,8 +57,9 @@ namespace hnd
         void Guardar();
 
         // Agrega sin repetir. Devuelve cuántos entraron (hay un tope para que nadie lo llene sin fin).
+        // «comoSitio»: vuelven como páginas de sitios de descargas (las que no bajaron en «de una en una»).
         size_t Agregar(const std::vector<std::string>& urls, const std::wstring& paquete, const std::string& referer,
-                       const std::string& origen);
+                       const std::string& origen, bool comoSitio = false);
         std::vector<EnlaceRecolectado> Lista();
         void Marcar(const std::vector<uint64_t>& ids, bool si);
         void Quitar(const std::vector<uint64_t>& ids);

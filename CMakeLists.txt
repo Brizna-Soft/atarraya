@@ -82,7 +82,7 @@ target_compile_options(prueba-motor PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES
 target_link_libraries(prueba-motor PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt iphlpapi shlwapi winhttp ws2_32)
 
 add_executable(prueba-enlaces pruebas/prueba-enlaces.cpp src/enlaces.cpp src/motor.cpp src/nombres.cpp src/util.cpp
-    src/clicknload.cpp src/recolector.cpp src/redlocal.cpp)
+    src/clicknload.cpp src/recolector.cpp src/redlocal.cpp src/deunaenuna.cpp)
 target_include_directories(prueba-enlaces PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
 # ATARRAYA_PRUEBAS: deja simular fallas de Windows (solo aquí; el programa no lo trae)
 target_compile_definitions(prueba-enlaces PRIVATE ${DEFINICIONES} SIN_WX ATARRAYA_PRUEBAS)

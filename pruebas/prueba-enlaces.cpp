@@ -20,6 +20,8 @@
 #include <bcrypt.h>
 
 #include "clicknload.hpp"
+#include "deunaenuna.hpp"
+#include "nombres.hpp"
 #include "enlaces.hpp"
 #include "motor.hpp"
 #include "recolector.hpp"
@@ -231,6 +233,79 @@ namespace
         DeleteFileW(archivo.c_str());
         red::SimularFallaAlLeerRedes(false);
         Comprobar(Revisar(afuera) == red::Destino::Afuera, "sin redes: cuando Windows vuelve a dar la lista, se consulta otra vez");
+    }
+
+    // «De una en una»: emparejar las descargas que pasa el navegador con las páginas abiertas
+    void DeUnaEnUnaPruebas()
+    {
+        Comprobar(NombreComparable(L"Mi Peli.part01.rar") == NombreComparable(L"mi_peli.PART01.rar")
+                  && NombreComparable(L"peli.part1.rar.html") == NombreComparable(L"peli.part1.rar")
+                  && NombreComparable(L"peli.part1.rar") != NombreComparable(L"peli.part01.rar"),
+                  "de una en una: nombres comparables (mayúsculas, _ y .html)");
+        Comprobar(MismoSitio("https://ddownload.com/abc/peli.rar", "https://s12.ddownload.com:8443/d/xyz/peli.rar")
+                  && MismoSitio("https://ddownload.com/abc", "https://dl.ddl.to/x") && MismoSitio("https://rapidgator.net/file/1", "https://rg.to/2")
+                  && MismoSitio("https://mega.co.nz/x", "https://mega.nz/y") && MismoSitio("https://www.ejemplo.co.uk/a", "https://cdn.ejemplo.co.uk/b")
+                  && !MismoSitio("https://ddownload.com/a", "https://rapidgator.net/b") && !MismoSitio("https://uno.co.uk/a", "https://otro.co.uk/b")
+                  && !MismoSitio("", "https://ddownload.com/a") && MismoSitio("http://127.0.0.1:8080/a", "http://127.0.0.1:9090/b"),
+                  "de una en una: mismo sitio (sus servidores y sus otros dominios)");
+
+        wchar_t carpeta[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, carpeta);
+        std::wstring archivo = std::wstring(carpeta) + L"atarraya-prueba-de-una-en-una-" + std::to_wstring(GetCurrentProcessId()) + L".json";
+        DeUnaEnUna cola(archivo);
+        auto parte = [](const char* url) {
+            Parte p;
+            p.url = url;
+            p.nombre = NombreDeUrl(url);
+            p.carpeta = L"C:\\Descargas\\Peli";
+            return p;
+        };
+        cola.Agregar({ parte("https://ddownload.com/aaa111/peli.part1.rar"), parte("https://ddownload.com/bbb222/peli.part2.rar"),
+                       parte("https://ddownload.com/ccc333") });
+        Comprobar(cola.Actual() == -1 && cola.QuedanPorAbrir() && cola.AbrirSiguiente() == 0 && cola.Actual() == 0,
+                  "de una en una: se abre la primera");
+        Comprobar(cola.Emparejar("https://cdn.otrositio.org/f/peli.zip", "https://otrositio.org/", L"") == -1,
+                  "de una en una: una descarga de otro sitio no se toma");
+        Comprobar(cola.Emparejar("https://files.cdn-ejemplo.net/x/peli.part1.rar", "", L"") == 0,
+                  "de una en una: se empareja por el nombre, aunque venga de otro servidor");
+        Comprobar(cola.Emparejar("https://s7.ddownload.com/d/token/archivo.bin", "", L"") == 0
+                  && cola.Emparejar("https://servidor.sinnombre.com/d/token", "https://ddownload.com/aaa111/peli.part1.rar", L"") == 0,
+                  "de una en una: si el nombre no coincide, la siguiente que llega del mismo sitio");
+        cola.Tomar(0, 101);
+        Comprobar(cola.Actual() == 0 && !cola.HayAbierta() && cola.Emparejar("https://s7.ddownload.com/d/token/peli.part1.rar", "", L"") == -1,
+                  "de una en una: ya tomada, no recibe otra");
+        Comprobar(cola.Terminar(999, true) == -1 && cola.Terminar(101, true) == 0 && cola.Partes()[0].estado == EstadoParte::Lista,
+                  "de una en una: al terminar su descarga, la parte queda lista");
+        Comprobar(cola.AbrirSiguiente() == 1 && cola.AbrirSiguiente() == 2 && cola.AbrirSiguiente() == -1,
+                  "de una en una: abrir la siguiente ahora");
+        Comprobar(cola.Emparejar("https://s1.ddownload.com/d/t/peli.part2.rar", "", L"peli.part2.rar") == 1
+                  && cola.Emparejar("https://s1.ddownload.com/d/t/descarga", "", L"") == 1,
+                  "de una en una: con dos abiertas, el nombre elige; sin nombre, la primera del sitio");
+        cola.Tomar(1, 102);
+        Comprobar(cola.Emparejar("https://s1.ddownload.com/d/t/descarga", "", L"") == 2,
+                  "de una en una: la que sigue abierta recibe la siguiente");
+        cola.Tomar(2, 103);
+        Comprobar(cola.Terminar(103, false) == 2 && cola.Partes()[2].estado == EstadoParte::Fallo && !cola.Terminada(),
+                  "de una en una: una que falla no corta la cola");
+        Comprobar(cola.Guardar(), "de una en una: se guarda");
+        DeUnaEnUna otra(archivo);
+        otra.Cargar();
+        Comprobar(otra.Partes().size() == 3 && otra.Partes()[1].estado == EstadoParte::Tomada && otra.Partes()[1].descarga == 102
+                      && otra.Partes()[0].estado == EstadoParte::Lista && otra.Partes()[2].carpeta == L"C:\\Descargas\\Peli",
+                  "de una en una: al volver a abrir Atarraya, sigue donde iba");
+        Comprobar(otra.Terminar(102, true) == 1 && otra.Terminada() && otra.Cuantas(EstadoParte::Lista) == 2,
+                  "de una en una: termina la cola");
+        auto vuelven = otra.Parar();
+        Comprobar(vuelven.size() == 1 && vuelven[0].url == "https://ddownload.com/ccc333" && otra.Partes().empty(),
+                  "de una en una: la que falló vuelve al recolector");
+        otra.Agregar({ parte("https://rapidgator.net/file/x1/a.rar.html"), parte("https://rapidgator.net/file/x2/b.rar.html") });
+        int a = otra.AbrirSiguiente();
+        otra.Saltar(a);
+        Comprobar(otra.Partes()[0].estado == EstadoParte::Saltada && !otra.HayAbierta() && otra.AbrirSiguiente() == 1
+                      && otra.Emparejar("https://pr1.rapidgator.net/download/b.rar", "", L"") == 1,
+                  "de una en una: saltar esta y abrir la siguiente");
+        Comprobar(otra.Parar().size() == 2 && otra.Partes().empty(), "de una en una: parar devuelve las que faltan");
+        DeleteFileW(archivo.c_str());
     }
 
     // Varias consultas a la vez: cada una lee las redes por su cuenta, sin nada compartido que pueda chocar
@@ -467,6 +542,7 @@ int wmain(int argc, wchar_t** argv)
     RedDeEstaPc();
     SinRedes();
     AlMismoTiempo();
+    DeUnaEnUnaPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

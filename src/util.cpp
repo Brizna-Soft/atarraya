@@ -71,8 +71,25 @@ std::wstring hnd::CarpetaDescargas()
     return r;
 }
 
+std::wstring hnd::CarpetaDePrueba()
+{
+    wchar_t buf[MAX_PATH] = {};
+    DWORD n = GetEnvironmentVariableW(L"ATARRAYA_PRUEBA", buf, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) return {};
+    std::wstring r(buf, n);
+    // Solo una ruta completa con letra de unidad («C:\...»)
+    if (r.size() < 4 || r[1] != L':' || (r[2] != L'\\' && r[2] != L'/')) return {};
+    return r;
+}
+
 std::wstring hnd::CarpetaDatos()
 {
+    std::wstring prueba = CarpetaDePrueba();
+    if (!prueba.empty())
+    {
+        SHCreateDirectoryExW(nullptr, prueba.c_str(), nullptr);
+        return prueba;
+    }
     PWSTR ruta = nullptr;
     std::wstring r;
     if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_CREATE, nullptr, &ruta))) r = ruta;

@@ -53,9 +53,22 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 ## Sitios de descargas y captchas
 
 Atarraya no se salta las esperas, los límites ni los captchas de los sitios de descargas (Rapidgator, 1fichier,
-Mega y otros), ni los resuelve solo: **los captchas siempre los resuelves tú en tu navegador.** Cuando en el
-recolector hay una página de esos sitios, Atarraya la abre en tu navegador para que bajes desde ahí; si tienes la
-extensión de Atarraya, la descarga llega sola al programa. No abre contenedores DLC.
+Mega y otros), ni los resuelve solo: **los captchas siempre los resuelves tú en tu navegador.** Tampoco usa
+cuentas premium. No abre contenedores DLC.
+
+**De una en una.** Cuando en el recolector marcas páginas de esos sitios (por ejemplo, las 18 partes de una
+película) y pulsas «Descargar los marcados», Atarraya no las abre todas a la vez:
+
+1. Abre la primera en tu navegador. Arriba de la lista, Atarraya te dice «Parte 1 de 18 en tu navegador:
+   resuelve el captcha y pulsa descargar».
+2. Tú resuelves el captcha y pulsas descargar en la página. La extensión le pasa la descarga a Atarraya, que la
+   reconoce por el nombre del archivo (o, si no coincide, por ser la siguiente que llega de ese sitio) y la baja.
+3. Cuando termina, Atarraya abre la página siguiente y te avisa junto al reloj.
+
+Los botones «Abrir la siguiente ahora», «Saltar esta» y «Parar» te dejan ir a tu ritmo; lo que saltas o paras
+vuelve al recolector para otra vez. Si cierras Atarraya, al abrirlo sigue donde iba. Atarraya no toca la
+página: solo la abre y recibe lo que el navegador le pasa. Baja cada parte con una sola conexión, como el
+navegador. Necesita la extensión conectada (ver abajo); si no lo está, te avisa.
 
 ## Conectar con el navegador
 

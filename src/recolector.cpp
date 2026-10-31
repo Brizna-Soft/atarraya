@@ -258,7 +258,7 @@ void hnd::Recolector::Guardar()
 }
 
 size_t hnd::Recolector::Agregar(const std::vector<std::string>& urls, const std::wstring& paquete, const std::string& referer,
-                                const std::string& origen)
+                                const std::string& origen, bool comoSitio)
 {
     std::lock_guard g(m_m);
     std::set<std::string> ya;
@@ -285,7 +285,7 @@ size_t hnd::Recolector::Agregar(const std::vector<std::string>& urls, const std:
         else
         {
             e.nombre = NombreDeUrl(url);
-            if (EsSitioDeDescargas(url)) e.estado = Comprobacion::Sitio;
+            if (comoSitio || EsSitioDeDescargas(url)) e.estado = Comprobacion::Sitio;
             else if (EsDireccionLocal(url)) e.estado = Comprobacion::Local;
         }
         if (e.nombre.empty()) e.nombre = Ancho(enlaces::Sitio(url));
