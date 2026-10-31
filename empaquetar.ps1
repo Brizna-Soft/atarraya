@@ -20,15 +20,18 @@ Copy-Item (Join-Path $programa 'Atarraya.exe'), (Join-Path $programa 'atarraya-p
 Copy-Item (Join-Path $raiz 'LICENSE') (Join-Path $temporal 'LICENCIA.txt')
 Copy-Item (Join-Path $raiz 'AVISOS-DE-TERCEROS.txt') $temporal
 $leeme = @"
-Atarraya $version - gestor de descargas gratis de Brizna Soft
-=============================================================
+Atarraya $version - descargas, torrents y enlaces magnet, gratis, de Brizna Soft
+================================================================================
 
 1. Abre Atarraya.exe (no hace falta instalar nada).
 2. Si Windows dice "Windows protegió su PC": pulsa "Más información" y luego "Ejecutar de todas formas".
    Sale porque el programa es nuevo y todavía no tiene firma digital.
 3. Para que el navegador le pase las descargas: en Atarraya pulsa "Navegadores" y sigue los pasos.
    La extensión para Chrome, Edge y Brave está en la carpeta extension\chrome.
+4. Para bajar muchos enlaces de una vez usa el "Recolector": ahí ves el nombre y el tamaño de cada uno
+   y eliges cuáles bajar. Nada empieza hasta que lo confirmas.
 
+Los captchas de los sitios de descargas siempre los resuelves tú en tu navegador.
 Ayuda, novedades y reportes de problemas: https://github.com/Brizna-Soft/atarraya
 Sin publicidad, sin virus y sin recoger tus datos. Licencia MIT.
 "@
