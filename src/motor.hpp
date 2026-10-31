@@ -204,6 +204,10 @@ namespace hnd
     // videos de las páginas y las consultas del recolector nunca lo usan.
     std::string ProxyEnUso();
 
+    // ¿La dirección (http o https) es de esta PC o de la red de la casa? Por su nombre (localhost, 192.168..., .local...)
+    // o por las direcciones a las que lleva su nombre (lo busca como la PC). Para preguntar antes de bajar un video de ahí.
+    bool EsDeLaCasa(const std::string& url);
+
 #ifdef ATARRAYA_PRUEBAS
     namespace pruebas
     {

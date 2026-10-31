@@ -1476,6 +1476,23 @@ void VentanaPrincipal::PedidoVideo(const std::string& formato, const std::string
         d.agente = agente;
         d.conexiones = m_ajustes.conexiones;
         d.sinProxy = true;   // los videos de las páginas van directo, nunca por proxy (como las consultas del recolector)
+        // Como las listas: nada de esta PC ni de su red, tampoco por una redirección (el filtro del socket ve cada
+        // conexión). Si el video o su página son de ahí, se pregunta antes; con un sí, se conecta ahí.
+        std::string deLaCasa;
+        for (const std::string* u : { &url, &referer, &pagina })
+        {
+            if (deLaCasa.empty() && EsDeLaCasa(*u)) deLaCasa = *u;
+        }
+        if (!deLaCasa.empty())
+        {
+            Registrar("video: archivo de la red de la casa (" + SoloSitio(deLaCasa) + "): se pregunta");
+            if (!PreguntarVideoDeRed(IsShown() ? this : nullptr, deLaCasa))
+            {
+                Registrar("video: la persona no quiso bajarlo de su red");
+                return;
+            }
+        }
+        d.soloAfuera = deLaCasa.empty();
         std::wstring deUrl = NombreDeUrl(url);
         std::wstring t = wxString(titulo).Strip(wxString::both).ToStdWstring();
         if (!t.empty())

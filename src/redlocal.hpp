@@ -51,5 +51,8 @@ namespace hnd::red
 #ifdef ATARRAYA_PRUEBAS
     // Solo en las pruebas: hace como si Windows no pudiera dar las redes de la PC
     void SimularFallaAlLeerRedes(bool fallar);
+    // Solo en las pruebas: una IPv4 de esta PC (por ejemplo «127.0.0.2») que cuenta como de internet, para tener un
+    // «sitio de afuera» en la misma PC; nullptr lo quita
+    void SimularAfuera(const char* ipv4);
 #endif
 }

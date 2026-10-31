@@ -134,6 +134,9 @@ private:
 // «Bajar video»: un video por partes (HLS o DASH) que pasó la extensión. Lee su lista con las cookies y el referer de su
 // página, muestra las calidades (la mejor ya elegida) y avisa si está protegido o es en vivo (entonces no se baja). En
 // DASH, y en HLS con el audio aparte, el video y el audio quedan en dos archivos sin unir: Atarraya no trae FFmpeg.
+// Un video de esta PC o de la red de la casa («url» dice de cuál): ¿la persona quiere que Atarraya se conecte ahí?
+bool PreguntarVideoDeRed(wxWindow* padre, const std::string& url);
+
 class DialogoVideo : public wxDialog
 {
 public:

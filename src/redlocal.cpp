@@ -68,6 +68,7 @@ namespace
 
 #ifdef ATARRAYA_PRUEBAS
     std::atomic<bool> g_simularFalla{ false };
+    std::atomic<uint32_t> g_simularAfuera{ 0 };   // una IPv4 de esta PC que cuenta como de internet (en orden de red)
 #endif
 
     ULONG LeerTarjetas(ULONG opciones, IP_ADAPTER_ADDRESSES* lista, ULONG* largo)
@@ -83,6 +84,12 @@ namespace
 void hnd::red::SimularFallaAlLeerRedes(bool fallar)
 {
     g_simularFalla = fallar;
+}
+
+void hnd::red::SimularAfuera(const char* ipv4)
+{
+    in_addr a{};
+    g_simularAfuera = ipv4 && inet_pton(AF_INET, ipv4, &a) == 1 ? a.s_addr : 0;
 }
 #endif
 
@@ -169,6 +176,11 @@ std::vector<hnd::red::Subred> hnd::red::LeerSubredesDeLaPc(bool* ok)
 
 hnd::red::Destino hnd::red::RevisarDestino(const sockaddr* destino)
 {
+#ifdef ATARRAYA_PRUEBAS
+    if (g_simularAfuera && destino->sa_family == AF_INET
+        && reinterpret_cast<const sockaddr_in*>(destino)->sin_addr.s_addr == g_simularAfuera)
+        return Destino::Afuera;
+#endif
     if (EsRangoLocal(destino)) return Destino::Local;
     bool ok = false;
     auto redes = LeerSubredesDeLaPc(&ok);

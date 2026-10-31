@@ -172,12 +172,14 @@ DatosDescarga DialogoAgregar::Datos() const
 {
     DatosDescarga d = m_previa;
     std::string url = Utf8(m_url->GetValue().Strip(wxString::both).ToStdWstring());
-    // Otra dirección: las cookies no corresponden, y ya no es el video de la página (una descarga normal, con el proxy)
+    // Otra dirección: las cookies no corresponden, y ya no es el video de la página (una descarga normal que la persona
+    // escribió: con el proxy y sin el filtro de los videos)
     if (url != d.url)
     {
         d.cookies.clear();
         d.referer.clear();
         d.sinProxy = false;
+        d.soloAfuera = false;
     }
     d.url = url;
     d.carpeta = m_carpeta->GetPath().ToStdWstring();
@@ -923,15 +925,20 @@ void DialogoVideo::AlAceptar(bool empezar)
     // Un video de esta PC o de la red de la casa: la persona decide si Atarraya se conecta ahí
     if (m_listaLocal && !m_localConfirmado)
     {
-        wxString sitio = wxString::FromUTF8(enlaces::Sitio(m_urlLista));
-        wxMessageDialog d(this, L"Este video está en tu red: " + sitio + L" (esta PC u otro aparato de tu casa).\n\n"
-                                L"¿Lo bajas de ahí? Hazlo solo si confías en ese aparato.",
-                          L"Video de tu red", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
-        d.SetYesNoLabels(L"Sí, bajarlo", L"No");
-        if (d.ShowModal() != wxID_YES) return;
+        if (!PreguntarVideoDeRed(this, m_urlLista)) return;
         m_localConfirmado = true;
     }
     Revisar();
+}
+
+bool PreguntarVideoDeRed(wxWindow* padre, const std::string& url)
+{
+    wxString sitio = wxString::FromUTF8(enlaces::Sitio(url));
+    wxMessageDialog d(padre, L"Este video está en tu red: " + sitio + L" (esta PC u otro aparato de tu casa).\n\n"
+                             L"¿Lo bajas de ahí? Hazlo solo si confías en ese aparato.",
+                      L"Video de tu red", wxYES_NO | wxNO_DEFAULT | wxICON_QUESTION);
+    d.SetYesNoLabels(L"Sí, bajarlo", L"No");
+    return d.ShowModal() == wxID_YES;
 }
 
 void DialogoVideo::Revisar()

@@ -56,6 +56,7 @@ namespace
 #ifdef ATARRAYA_PRUEBAS
     // Solo en las pruebas (ver hnd::pruebas): se fijan antes de bajar y no cambian mientras se baja
     curl_slist* g_resolverPrueba = nullptr;
+    std::map<std::string, std::string> g_dnsPrueba;   // nombre -> IP: lo mismo, para EsDeLaCasa
     std::atomic<size_t> g_memoriaPrueba{ 0 };
     bool g_proxyFijo = false;
     Proxy g_proxyPrueba;
@@ -604,6 +605,31 @@ namespace
 
 namespace hnd
 {
+    bool EsDeLaCasa(const std::string& url)
+    {
+        std::string bajo = url.substr(0, 8);
+        std::transform(bajo.begin(), bajo.end(), bajo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+        if (bajo.rfind("http://", 0) != 0 && bajo.rfind("https://", 0) != 0) return false;
+        if (enlaces::DireccionLocal(url)) return true;
+        std::string host = enlaces::Sitio(url);
+        if (host.size() > 2 && host.front() == '[' && host.back() == ']') host = host.substr(1, host.size() - 2);
+        if (host.empty()) return false;
+#ifdef ATARRAYA_PRUEBAS
+        if (auto it = g_dnsPrueba.find(host); it != g_dnsPrueba.end()) host = it->second;
+#endif
+        // Un nombre de afuera que lleva a la casa: se busca como lo buscaría la PC (el navegador acaba de buscarlo, así
+        // que suele ser al instante). Si no se puede buscar, no se sabe: lo decide el filtro al conectar.
+        addrinfo pista{};
+        pista.ai_family = AF_UNSPEC;
+        pista.ai_socktype = SOCK_STREAM;
+        addrinfo* r = nullptr;
+        if (getaddrinfo(host.c_str(), nullptr, &pista, &r) != 0 || !r) return false;
+        bool casa = false;
+        for (auto* a = r; a && !casa; a = a->ai_next) casa = Revisar(a->ai_addr) != red::Destino::Afuera;
+        freeaddrinfo(r);
+        return casa;
+    }
+
     std::string ProxyEnUso()
     {
         // Solo «host:puerto»: nunca un usuario o una clave que vengan en la dirección del proxy
@@ -620,12 +646,17 @@ namespace hnd
     {
         if (g_resolverPrueba) curl_slist_free_all(g_resolverPrueba);
         g_resolverPrueba = nullptr;
+        g_dnsPrueba.clear();
         size_t desde = 0;
         while (desde < reglas.size())
         {
             auto fin = reglas.find(',', desde);
             std::string regla = reglas.substr(desde, fin == std::string::npos ? std::string::npos : fin - desde);
             if (!regla.empty()) g_resolverPrueba = curl_slist_append(g_resolverPrueba, regla.c_str());
+            // «nombre:puerto:ip»
+            auto dp1 = regla.find(':');
+            auto dp2 = dp1 == std::string::npos ? std::string::npos : regla.find(':', dp1 + 1);
+            if (dp2 != std::string::npos) g_dnsPrueba[regla.substr(0, dp1)] = regla.substr(dp2 + 1);
             if (fin == std::string::npos) break;
             desde = fin + 1;
         }

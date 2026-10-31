@@ -446,7 +446,8 @@ namespace
         {
             std::function<std::string(const std::string&, const std::string&)> f;
         };
-        explicit ServidorDePrueba(PorRuta porRuta) : m_porRuta(std::move(porRuta.f))
+        // «ip»: otra dirección de esta PC donde escuchar (por ejemplo «127.0.0.2»)
+        explicit ServidorDePrueba(PorRuta porRuta, const char* ip = nullptr) : m_porRuta(std::move(porRuta.f)), m_ip(ip)
         {
             Iniciar();
         }
@@ -459,6 +460,7 @@ namespace
             sockaddr_in a{};
             a.sin_family = AF_INET;
             a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            if (m_ip) inet_pton(AF_INET, m_ip, &a.sin_addr);
             bind(m_escucha, reinterpret_cast<sockaddr*>(&a), sizeof(a));
             listen(m_escucha, 8);
             int largo = sizeof(a);
@@ -529,6 +531,7 @@ namespace
 
         std::function<std::string(int, const std::string&)> m_responder;
         std::function<std::string(const std::string&, const std::string&)> m_porRuta;
+        const char* m_ip = nullptr;
         SOCKET m_escucha = INVALID_SOCKET;
         int m_puerto = 0;
         std::atomic<int> m_pedidos{ 0 };
@@ -1875,6 +1878,42 @@ namespace
                       "recolector con proxy configurado: consulta sin proxy y no consulta direcciones de la casa");
             pruebas::ProxyFijo("");
             pruebas::Resolver("");
+        }
+
+        // 14. El MP4 del botón «Descargar este video» va sin proxy y con «soloAfuera», como las listas: aunque su sitio
+        //     sea de internet, una redirección hacia esta PC se frena en el socket. Si el video (o su página) es de la
+        //     casa, la ventana pregunta antes («Video de tu red») y, con un sí, va sin ese filtro.
+        {
+            // Un «sitio de internet» en 127.0.0.2 (para la prueba cuenta como de afuera) que redirige a esta PC
+            ServidorDePrueba afuera(ServidorDePrueba::PorRuta{ [&](const std::string& ruta, const std::string&) -> std::string {
+                if (ruta == "/peli.mp4") return Http(302, "text/plain", "", "Location: " + w + "/unico/peli.mp4\r\n");
+                return Http(404, "text/plain", "no existe");
+            } }, "127.0.0.2");
+            red::SimularAfuera("127.0.0.2");
+            std::string sitioAfuera = "video.ejemplo.org:" + std::to_string(afuera.Puerto());
+            pruebas::Resolver(sitioAfuera + ":127.0.0.2,nas.ejemplo.org:80:192.168.1.5");
+            int w0 = web.Pedidos(), a0 = afuera.Pedidos();
+            DatosDescarga d;   // como lo arma la ventana para el botón cuando ni el video ni su página son de la casa
+            d.url = "http://" + sitioAfuera + "/peli.mp4";
+            d.nombre = L"Boton.mp4";
+            d.nombreFijo = true;
+            d.sinProxy = true;
+            d.soloAfuera = true;
+            Foto frenado = Bajar(d, carpeta);
+            int w1 = web.Pedidos(), a1 = afuera.Pedidos();
+            d.soloAfuera = false;   // la persona confirmó que el video es de su red
+            d.nombre = L"Boton confirmado.mp4";
+            Foto confirmado = Bajar(d, carpeta);
+            // Cuándo se pregunta: el video o su página son de esta PC o de la casa (por el nombre o por a dónde lleva)
+            bool casa = EsDeLaCasa("http://127.0.0.1:8080/v.mp4") && EsDeLaCasa("http://nas.ejemplo.org/v.mp4")
+                        && EsDeLaCasa("http://192.168.0.10/ver.html") && !EsDeLaCasa("http://" + sitioAfuera + "/peli.mp4")
+                        && !EsDeLaCasa("") && !EsDeLaCasa("about:blank");
+            red::SimularAfuera(nullptr);
+            pruebas::Resolver("");
+            Comprobar(frenado.datos.estado == Estado::Error && frenado.datos.error == TextoRedLocal && a1 == a0 + 1 && w1 == w0
+                          && !ExisteArchivo(carpeta + L"\\Boton.mp4") && !ExisteArchivo(carpeta + L"\\Boton.mp4.atarraya")
+                          && confirmado.datos.estado == Estado::Completada && leer(L"Boton confirmado.mp4") == unico && casa,
+                      "videos: el MP4 del botón que redirige a 127.0.0.1 se rechaza; si es de la casa se pregunta y, con un sí, se baja");
         }
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
