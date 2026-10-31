@@ -2241,12 +2241,9 @@ void VentanaPrincipal::RevisarPartes()
         }
         else if (f.datos.estado == Estado::Completada)
         {
-            m_sitios.Terminar(partes[i].descarga, true);   // terminó sin que la cola se enterara (un cierre de golpe)
-            if (!f.datos.identidad.Valida() && !f.datos.nombre.empty())
-            {
-                GuardarIdentidad(f.datos.id, f.datos.carpeta + L"\\" + f.datos.nombre);
-                m_motor.Buscar(f.datos.id, f);
-            }
+            // Terminó sin que la cola se enterara (un cierre de golpe). Si no se guardó cómo era su archivo al terminar,
+            // no se toma el de ahora como si fuera ese: esa parte nunca se manda a la Papelera.
+            m_sitios.Terminar(partes[i].descarga, true);
             listas.push_back(f.datos);
             cambio = true;
         }
@@ -2506,23 +2503,35 @@ void VentanaPrincipal::BorrarPartes()
     auto& r = m_resultadosJicaro.front();
     if (r.r != jicaro::Resultado::Listo || r.borradas) return;
     // Solo las partes de este paquete (por id) que siguen siendo el mismo archivo que bajó Atarraya: mismo volumen, número
-    // de archivo, tamaño y fecha. Las que no coinciden se quedan donde están.
+    // de archivo, tamaño y fecha que al terminar. Las que no coinciden o no tienen guardado cómo eran se quedan donde están.
     auto b = jicaro::BorrarPartes(r.t.partes, [](const std::wstring& ruta) { return sistema::MandarAPapelera(ruta); });
     r.borradas = true;
     Registrar("jícaro: " + std::to_string(b.mandadas) + " partes a la Papelera; " + std::to_string(b.distintas) + " distintas, "
-              + std::to_string(b.fallaron) + " no se pudieron, " + std::to_string(b.faltaban) + " ya no estaban");
+              + std::to_string(b.sinIdentidad) + " sin identidad, " + std::to_string(b.fallaron) + " no se pudieron, "
+              + std::to_string(b.faltaban) + " ya no estaban");
     wxString nombre = L"«" + r.t.nombre + L"»";
     wxString texto;
     if (b.mandadas == 1) texto = L"La parte de " + nombre + L" está en la Papelera.";
     else if (b.mandadas > 1) texto = wxString::Format(L"Las %zu partes de ", b.mandadas) + nombre + L" están en la Papelera.";
+    // Las que se quedan, con el porqué: alguien las cambió o reemplazó, o no se sabe cómo eran al terminar
+    wxString aviso;
     if (b.distintas > 0)
-    {
-        // Avisa: alguien cambió o reemplazó esas partes después de bajarlas
-        wxString aviso = b.distintas == 1
+        aviso = b.distintas == 1
             ? L"Una parte de " + nombre + L" no se mandó a la Papelera: ya no es el mismo archivo que bajó Atarraya (alguien lo cambió o lo reemplazó)."
             : wxString::Format(L"%zu partes de ", b.distintas) + nombre
                   + L" no se mandaron a la Papelera: ya no son los mismos archivos que bajó Atarraya (alguien los cambió o los reemplazó).";
-        texto += (texto.empty() ? L"" : L" ") + aviso + (b.distintas == 1 ? L" Sigue en su carpeta." : L" Siguen en su carpeta.");
+    if (b.sinIdentidad > 0)
+        aviso += (aviso.empty() ? wxString() : wxString(L" "))
+                 + (b.sinIdentidad == 1
+                        ? L"Una parte de " + nombre + L" no se mandó a la Papelera: Atarraya no guardó cómo era al terminar de bajarla "
+                          L"(por ejemplo, porque se bajó con una versión anterior), así que no puede saber si es la misma."
+                        : wxString::Format(L"%zu partes de ", b.sinIdentidad) + nombre
+                              + L" no se mandaron a la Papelera: Atarraya no guardó cómo eran al terminar de bajarlas (por ejemplo, porque se "
+                                L"bajaron con una versión anterior), así que no puede saber si son las mismas.");
+    size_t quedan = b.distintas + b.sinIdentidad;
+    if (quedan > 0)
+    {
+        texto += (texto.empty() ? L"" : L" ") + aviso + (quedan == 1 ? L" Sigue en su carpeta." : L" Siguen en su carpeta.");
         Avisar(L"Borrar las partes", aviso, true);
     }
     if (b.fallaron > 0)
@@ -2530,7 +2539,7 @@ void VentanaPrincipal::BorrarPartes()
                                                                               : wxString::Format(L"%zu partes no se pudieron mandar a la Papelera", b.fallaron))
                  + L" (puede que estén abiertas): siguen en su carpeta.";
     if (texto.empty()) texto = L"Las partes de " + nombre + L" ya no estaban en su carpeta.";
-    else if (b.mandadas > 0 && b.distintas == 0 && b.fallaron == 0) texto += L" Lo descomprimido sigue en su carpeta.";
+    else if (b.mandadas > 0 && quedan == 0 && b.fallaron == 0) texto += L" Lo descomprimido sigue en su carpeta.";
     r.texto = texto;
     ActualizarBarraJicaro();
 }

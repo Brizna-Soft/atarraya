@@ -321,9 +321,15 @@ hnd::jicaro::Borrado hnd::jicaro::BorrarPartes(const std::vector<ParteBajada>& p
                 continue;
             }
         }
-        // Tiene que ser el mismo archivo que quedó al terminar de bajarlo; si no (o si no se puede saber), no se toca
+        // Sin la identidad de cuando terminó, no se sabe si es el mismo archivo: nunca se toca
+        if (!p.identidad.Valida())
+        {
+            r.sinIdentidad++;
+            continue;
+        }
+        // Tiene que ser el mismo archivo que quedó al terminar de bajarlo; si no (o si no se puede revisar), no se toca
         IdentidadArchivo ahora;
-        if (!p.identidad.Valida() || !LeerIdentidad(p.ruta, ahora) || !(ahora == p.identidad))
+        if (!LeerIdentidad(p.ruta, ahora) || !(ahora == p.identidad))
         {
             r.distintas++;
             continue;

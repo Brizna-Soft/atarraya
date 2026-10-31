@@ -1162,7 +1162,7 @@ namespace
             Comprobar(mismaFecha && reemplazo.tamano == partes[1].identidad.tamano && reemplazo.modificado == partes[1].identidad.modificado
                           && reemplazo.volumen == partes[1].identidad.volumen && reemplazo.indice != partes[1].identidad.indice,
                       "jícaro: una parte reemplazada por otro archivo del mismo tamaño y fecha tiene otro número de archivo");
-            Comprobar(r.mandadas == 1 && r.distintas == 3 && r.faltaban == 1 && r.fallaron == 0 && aLaPapelera.size() == 1
+            Comprobar(r.mandadas == 1 && r.distintas == 2 && r.sinIdentidad == 1 && r.faltaban == 1 && r.fallaron == 0 && aLaPapelera.size() == 1
                           && aLaPapelera[0] == partes[0].ruta && !ExisteArchivo(partes[0].ruta) && ExisteArchivo(partes[1].ruta)
                           && ExisteArchivo(partes[2].ruta) && ExisteArchivo(partes[3].ruta),
                       "jícaro: «Borrar las partes» no toca una parte reemplazada (mismo tamaño), una cambiada ni una sin identidad; avisa cuántas");
@@ -1174,6 +1174,27 @@ namespace
             auto falla = BorrarPartes({ laDeAhora }, [](const std::wstring&) { return false; });
             Comprobar(otraVez.distintas == 1 && falla.fallaron == 1 && falla.mandadas == 0 && ExisteArchivo(partes[1].ruta),
                       "jícaro: si coincide pero Windows no la manda a la Papelera, se cuenta aparte y se queda");
+
+            // Al recuperar la cola (o con datos de una versión anterior) una parte puede no tener guardado cómo era al
+            // terminar: no se toma el archivo de ahora como si fuera ese. Nunca se manda a la Papelera, aunque alguien la
+            // haya reemplazado por otro archivo del mismo tamaño o aunque nadie la haya tocado.
+            ParteBajada vieja;
+            vieja.descarga = 30;
+            vieja.ruta = b + L"\\vieja.part1.rar";
+            EscribirSeguro(vieja.ruta, std::string(1000, 'V'));
+            EscribirSeguro(vieja.ruta, std::string(1000, 'W'));   // reemplazada por otro archivo del mismo tamaño
+            ParteBajada intacta;
+            intacta.descarga = 31;
+            intacta.ruta = b + L"\\vieja.part2.rar";
+            EscribirSeguro(intacta.ruta, std::string(1000, 'I'));
+            bool llamada = false;
+            auto sin = BorrarPartes({ vieja, intacta }, [&](const std::wstring&) {
+                llamada = true;
+                return true;
+            });
+            Comprobar(sin.sinIdentidad == 2 && sin.mandadas == 0 && sin.distintas == 0 && !llamada && ExisteArchivo(vieja.ruta)
+                          && ExisteArchivo(intacta.ruta),
+                      "jícaro: una parte sin la identidad de cuando terminó nunca va a la Papelera (se queda y se avisa aparte)");
             fs::remove_all(b, ec);
         }
     }

@@ -80,13 +80,15 @@ namespace hnd::jicaro
     std::vector<Plan> Planear(const std::vector<ParteBajada>& propias, const std::wstring& paquete);
 
     // «Borrar las partes»: manda a la Papelera solo las que siguen siendo el mismo archivo que bajó Atarraya (mismo
-    // volumen, número de archivo, tamaño y fecha). Las que no coinciden (o no se pueden revisar) se quedan donde están.
+    // volumen, número de archivo, tamaño y fecha que al terminar). Las que no coinciden, las que no se pueden revisar y
+    // las que no tienen guardado cómo eran al terminar (por ejemplo, de una versión anterior) se quedan donde están.
     struct Borrado
     {
-        size_t mandadas = 0;    // a la Papelera
-        size_t distintas = 0;   // ya no son el archivo que bajó Atarraya: no se tocaron
-        size_t fallaron = 0;    // eran las mismas, pero Windows no las pudo mandar a la Papelera
-        size_t faltaban = 0;    // ya no estaban
+        size_t mandadas = 0;       // a la Papelera
+        size_t distintas = 0;      // ya no son el archivo que bajó Atarraya (o no se pudo revisar): no se tocaron
+        size_t sinIdentidad = 0;   // no se guardó cómo era al terminar: no se sabe si es la misma, así que nunca se toca
+        size_t fallaron = 0;       // eran las mismas, pero Windows no las pudo mandar a la Papelera
+        size_t faltaban = 0;       // ya no estaban
     };
     Borrado BorrarPartes(const std::vector<ParteBajada>& partes, const std::function<bool(const std::wstring&)>& aPapelera);
 
