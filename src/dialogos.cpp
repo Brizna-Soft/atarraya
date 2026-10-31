@@ -15,6 +15,7 @@
 #include <wx/statline.h>
 #include <wx/stattext.h>
 #include <wx/textctrl.h>
+#include <wx/toplevel.h>
 #include <wx/weakref.h>
 
 #include <thread>
@@ -66,6 +67,14 @@ namespace
         }
         fila->Add(new wxButton(d, wxID_CANCEL, L"Cancelar"));
         return fila;
+    }
+
+    // Sobre la ventana de Atarraya si se ve; si no (por ejemplo, desde el navegador), en el centro de la pantalla
+    void Centrar(wxDialog* d, wxWindow* padre)
+    {
+        auto* marco = wxDynamicCast(padre, wxTopLevelWindow);
+        if (padre && padre->IsShown() && !(marco && marco->IsIconized())) d->CentreOnParent();
+        else d->CentreOnScreen();
     }
 
     bool CarpetaValida(wxWindow* padre, wxDirPickerCtrl* c, const wxString& titulo)
@@ -129,7 +138,7 @@ DialogoAgregar::DialogoAgregar(wxWindow* padre, const Ajustes& ajustes, const Da
 
     SetSizerAndFit(caja);
     SetMinSize(GetSize());
-    CentreOnScreen();
+    Centrar(this, padre);
     if (url.empty()) m_url->SetFocus();
     else descargar->SetFocus();
 }
@@ -259,7 +268,7 @@ DialogoTorrent::DialogoTorrent(wxWindow* padre, const Ajustes& ajustes, const In
     SetSizerAndFit(caja);
     SetMinSize(FromDIP(wxSize(520, m_lista ? 420 : 240)));
     Resumen();
-    CentreOnScreen();
+    Centrar(this, padre);
     principal->SetFocus();
 }
 
@@ -362,7 +371,7 @@ DialogoVarios::DialogoVarios(wxWindow* padre, const Ajustes& ajustes)
     SetSizerAndFit(caja);
     SetMinSize(FromDIP(wxSize(480, 360)));
     Contar();
-    CentreOnScreen();
+    Centrar(this, padre);
     m_texto->SetFocus();
 }
 
@@ -497,7 +506,7 @@ DialogoPagina::DialogoPagina(wxWindow* padre, const Ajustes& ajustes, const std:
 
     SetSizerAndFit(caja);
     SetMinSize(FromDIP(wxSize(620, 520)));
-    CentreOnScreen();
+    Centrar(this, padre);
     Resumen();
     m_url->SetFocus();
     if (buscarYa && !inicial.empty()) CallAfter([this]() { Buscar(); });

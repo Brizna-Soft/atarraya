@@ -65,6 +65,18 @@ async function cookiesPara(...urls) {
   return [...lineas].join("\n");
 }
 
+// Atarraya no baja videos de YouTube (sus condiciones no lo permiten): esas descargas se quedan en el navegador
+function sitioNoPermitido(url) {
+  try {
+    const sitio = new URL(url).hostname.toLowerCase();
+    return ["youtube.com", "youtu.be", "youtube-nocookie.com", "googlevideo.com", "youtubekids.com"].some(
+      (d) => sitio === d || sitio.endsWith("." + d)
+    );
+  } catch (e) {
+    return false;
+  }
+}
+
 function nombreDe(ruta) {
   if (!ruta) return "";
   const partes = ruta.split(/[\\/]/);
@@ -86,6 +98,7 @@ api.downloads.onCreated.addListener(async (item) => {
     const a = await ajustes();
     if (!a.capturar) return;
     if (!/^(https?|ftp):/i.test(url)) return;            // blob:, data: y file: se quedan en el navegador
+    if (sitioNoPermitido(url)) return;
     if (item.state && item.state !== "in_progress") return;
     if (item.byExtensionId) return;                        // la pidió una extensión (o nosotros mismos)
     if (noRepetibles.has(item.url) || noRepetibles.has(url)) return;   // salió de un formulario
@@ -139,10 +152,12 @@ if (api.runtime.onStartup) api.runtime.onStartup.addListener(crearMenus);
 
 api.contextMenus.onClicked.addListener(async (info, tab) => {
   const url = info.linkUrl || info.srcUrl;
-  if (!url || !/^(https?|ftp):/i.test(url)) return;
+  if (!url || !/^(https?:|ftp:|magnet:\?)/i.test(url)) return;
   let ok = false;
   try {
-    ok = await enviar({ url, referer: info.pageUrl || (tab && tab.url) || "", cookies: await cookiesPara(url) });
+    // Un enlace magnet no lleva cookies ni página de origen: es para torrents
+    const magnet = /^magnet:/i.test(url);
+    ok = await enviar(magnet ? { url } : { url, referer: info.pageUrl || (tab && tab.url) || "", cookies: await cookiesPara(url) });
   } catch (e) {}
   if (!ok) {
     api.action.setBadgeText({ text: "!" });

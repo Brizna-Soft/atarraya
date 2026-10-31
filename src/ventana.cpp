@@ -443,8 +443,9 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     m_modelo->DecRef();
     m_lista->SetRowHeight(FromDIP(28));
     auto texto = [&](const wxString& titulo, int col, int ancho, wxAlignment al = wxALIGN_LEFT) {
-        m_lista->AppendColumn(new wxDataViewColumn(titulo, new wxDataViewTextRenderer(L"string", wxDATAVIEW_CELL_INERT, al), col,
-                                                   FromDIP(ancho), al, wxDATAVIEW_COL_RESIZABLE));
+        // Centrado en el alto de la fila, igual que el nombre con su ícono
+        m_lista->AppendColumn(new wxDataViewColumn(titulo, new wxDataViewTextRenderer(L"string", wxDATAVIEW_CELL_INERT, al | wxALIGN_CENTER_VERTICAL),
+                                                   col, FromDIP(ancho), al, wxDATAVIEW_COL_RESIZABLE));
     };
     m_lista->AppendColumn(new wxDataViewColumn(L"Nombre", new wxDataViewIconTextRenderer(), ModeloLista::Nombre, FromDIP(320),
                                                wxALIGN_LEFT, wxDATAVIEW_COL_RESIZABLE));

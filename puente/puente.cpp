@@ -2,7 +2,7 @@
 //
 // El navegador abre este programa y le habla por la entrada estándar: 4 bytes con el largo y luego un JSON
 // en UTF-8. El puente pasa cada pedido a Atarraya con WM_COPYDATA (lo abre si no está abierto) y responde
-// de la misma forma. No guarda nada, no se conecta a internet y solo acepta direcciones http, https o ftp.
+// de la misma forma. No guarda nada, no se conecta a internet y solo acepta direcciones http, https, ftp o magnet.
 
 #include <windows.h>
 #include <fcntl.h>
@@ -94,11 +94,14 @@ namespace
         return r;
     }
 
+    // http, https, ftp o un enlace magnet (clic derecho en un magnet → «Descargar con Atarraya»)
     bool DireccionValida(const std::string& url)
     {
+        if (url.size() > 8192 || url.find_first_of(" \t\r\n\"<>") != std::string::npos) return false;
         std::string bajo = url.substr(0, 8);
         for (auto& c : bajo) c = (char)tolower((unsigned char)c);
-        return bajo.rfind("http://", 0) == 0 || bajo.rfind("https://", 0) == 0 || bajo.rfind("ftp://", 0) == 0;
+        return bajo.rfind("http://", 0) == 0 || bajo.rfind("https://", 0) == 0 || bajo.rfind("ftp://", 0) == 0
+            || bajo.rfind("magnet:?", 0) == 0;
     }
 }
 
