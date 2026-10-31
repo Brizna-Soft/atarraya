@@ -66,12 +66,15 @@ bool hnd::EsNombreDePagina(const std::wstring& nombre)
     return ext.size() > 8 || !std::all_of(ext.begin(), ext.end(), [](wchar_t c) { return std::iswalnum(c) != 0; });
 }
 
-bool hnd::RespondioPagina(const std::string& tipoMime, bool adjunto, const std::wstring& nombreEsperado)
+bool hnd::RespondioPagina(const std::string& tipoMime, const std::string& disposicion, const std::wstring& nombreEsperado)
 {
     std::string tipo = tipoMime;
     std::transform(tipo.begin(), tipo.end(), tipo.begin(), [](unsigned char c) { return (char)std::tolower(c); });
     bool pagina = tipo.find("text/html") != std::string::npos || tipo.find("application/xhtml+xml") != std::string::npos;
-    return pagina && !adjunto && !EsNombreDePagina(nombreEsperado);
+    if (!pagina || EsNombreDePagina(nombreEsperado)) return false;
+    // El servidor dice qué archivo manda: vale solo si no es una página y es el que se esperaba
+    std::wstring delServidor = NombreDeContentDisposition(disposicion);
+    return delServidor.empty() || EsNombreDePagina(delServidor) || Minusculas(delServidor) != Minusculas(nombreEsperado);
 }
 
 std::wstring hnd::NombreDeContentDisposition(const std::string& valor)

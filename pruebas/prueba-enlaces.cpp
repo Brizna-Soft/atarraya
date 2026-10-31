@@ -9,10 +9,13 @@
 
 #include <curl/curl.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -400,16 +403,21 @@ namespace
     // enlaces de sitios de descargas que se agregan a mano
     void PaginaEnVezDeArchivo()
     {
-        Comprobar(RespondioPagina("text/html; charset=UTF-8", false, L"Juego-elamigos.part1.rar")
-                      && RespondioPagina("application/xhtml+xml", false, L"pelicula.mp4") && RespondioPagina("TEXT/HTML", false, L"setup.exe")
-                      && RespondioPagina("text/html", false, L"disco.iso") && RespondioPagina("text/html", false, L"peli.7z.001"),
+        Comprobar(RespondioPagina("text/html; charset=UTF-8", "", L"Juego-elamigos.part1.rar")
+                      && RespondioPagina("application/xhtml+xml", "", L"pelicula.mp4") && RespondioPagina("TEXT/HTML", "", L"setup.exe")
+                      && RespondioPagina("text/html", "", L"disco.iso") && RespondioPagina("text/html", "", L"peli.7z.001"),
                   "página en vez del archivo: un .rar, un video, un .exe o un .iso que llega como página no se guarda");
-        Comprobar(!RespondioPagina("text/html", true, L"peli.rar") && !RespondioPagina("application/octet-stream", false, L"peli.rar")
-                      && !RespondioPagina("application/x-rar-compressed", false, L"peli.rar"),
-                  "página en vez del archivo: un adjunto o un archivo de verdad se bajan como siempre");
-        Comprobar(!RespondioPagina("text/html", false, L"index.html") && !RespondioPagina("text/html", false, L"noticia.php")
-                      && !RespondioPagina("text/html", false, L"descarga") && !RespondioPagina("text/html", false, L""),
-                  "página en vez del archivo: si se esperaba una página (o no se sabe), se guarda la página");
+        Comprobar(!RespondioPagina("text/html", "attachment; filename=\"PELI.rar\"", L"peli.rar")
+                      && !RespondioPagina("application/octet-stream", "", L"peli.rar") && !RespondioPagina("application/x-rar-compressed", "", L"peli.rar"),
+                  "página en vez del archivo: un archivo de verdad (o uno que el servidor nombra como el esperado) se baja como siempre");
+        Comprobar(RespondioPagina("text/html", "inline; filename=error.html", L"peli.rar")
+                      && RespondioPagina("text/html", "attachment; filename=\"error.htm\"", L"peli.rar")
+                      && RespondioPagina("text/html", "attachment; filename=\"otro.zip\"", L"peli.rar") && RespondioPagina("text/html", "attachment", L"peli.rar"),
+                  "página en vez del archivo: «filename=error.html», otro nombre o un adjunto sin nombre no la salvan");
+        Comprobar(!RespondioPagina("text/html", "", L"index.html") && !RespondioPagina("text/html", "inline; filename=error.html", L"error.html")
+                      && !RespondioPagina("text/html", "", L"noticia.php") && !RespondioPagina("text/html", "", L"descarga")
+                      && !RespondioPagina("text/html", "", L""),
+                  "página en vez del archivo: si se pidió una página (o no se sabe), se guarda la página");
         Comprobar(VaAlNavegador("https://ddownload.com/abc123def456/Juego-elamigos.part1.rar", false)
                       && VaAlNavegador("https://rapidgator.net/file/0123456789abcdef/peli.rar.html", false)
                       && VaAlNavegador("https://1fichier.com/?abcdefghij", false),
@@ -418,6 +426,157 @@ namespace
                       && !VaAlNavegador("https://ejemplo.org/peli.rar", false)
                       && !VaAlNavegador("magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567", false),
                   "agregar enlace: lo que pasa el navegador y los enlaces de otros sitios se bajan como siempre");
+    }
+
+    // Un servidor de prueba en 127.0.0.1 (en un puerto libre): cada pedido recibe lo que diga «responder», según su
+    // número (desde 1) y su cabecera Range. Lo que devuelve se manda tal cual y se cierra la conexión.
+    class ServidorDePrueba
+    {
+    public:
+        explicit ServidorDePrueba(std::function<std::string(int, const std::string&)> responder) : m_responder(std::move(responder))
+        {
+            m_escucha = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            sockaddr_in a{};
+            a.sin_family = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            bind(m_escucha, reinterpret_cast<sockaddr*>(&a), sizeof(a));
+            listen(m_escucha, 8);
+            int largo = sizeof(a);
+            getsockname(m_escucha, reinterpret_cast<sockaddr*>(&a), &largo);
+            m_puerto = ntohs(a.sin_port);
+            m_hilo = std::thread([this]() { Atender(); });
+        }
+        ~ServidorDePrueba()
+        {
+            m_parar = true;
+            m_hilo.join();
+            closesocket(m_escucha);
+        }
+        int Puerto() const { return m_puerto; }
+
+    private:
+        void Atender()
+        {
+            while (!m_parar)
+            {
+                fd_set listos;
+                FD_ZERO(&listos);
+                FD_SET(m_escucha, &listos);
+                timeval espera{ 0, 100000 };
+                if (select(0, &listos, nullptr, nullptr, &espera) <= 0) continue;
+                SOCKET c = accept(m_escucha, nullptr, nullptr);
+                if (c == INVALID_SOCKET) continue;
+                std::string pedido;
+                char buf[4096];
+                while (pedido.find("\r\n\r\n") == std::string::npos && pedido.size() < 65536)
+                {
+                    int n = recv(c, buf, sizeof(buf), 0);
+                    if (n <= 0) break;
+                    pedido.append(buf, n);
+                }
+                std::string bajo = pedido, rango;
+                std::transform(bajo.begin(), bajo.end(), bajo.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
+                auto p = bajo.find("\r\nrange:");
+                if (p != std::string::npos)
+                {
+                    auto fin = pedido.find("\r\n", p + 2);
+                    rango = pedido.substr(p + 8, fin - (p + 8));
+                    while (!rango.empty() && rango.front() == ' ') rango.erase(rango.begin());
+                }
+                std::string respuesta = m_responder(++m_pedidos, rango);
+                for (size_t enviado = 0; enviado < respuesta.size();)
+                {
+                    int n = send(c, respuesta.data() + enviado, (int)std::min<size_t>(respuesta.size() - enviado, 65536), 0);
+                    if (n <= 0) break;
+                    enviado += n;
+                }
+                shutdown(c, SD_SEND);
+                closesocket(c);
+            }
+        }
+
+        std::function<std::string(int, const std::string&)> m_responder;
+        SOCKET m_escucha = INVALID_SOCKET;
+        int m_puerto = 0;
+        int m_pedidos = 0;
+        std::atomic<bool> m_parar{ false };
+        std::thread m_hilo;
+    };
+
+    // Baja «/archivos/peli.rar» con el motor de verdad, con una conexión, y espera a que termine o se detenga
+    Foto BajarConMotor(int puerto, const std::wstring& carpeta, std::wstring& parcial, std::wstring& final)
+    {
+        Motor m(carpeta + L"\\estado.json");
+        DatosDescarga d;
+        d.url = "http://127.0.0.1:" + std::to_string(puerto) + "/archivos/peli.rar";
+        d.carpeta = carpeta;
+        d.conexiones = 1;
+        uint64_t id = m.Agregar(d, true);
+        Foto f;
+        for (int i = 0; i < 300; i++)
+        {
+            m.Tick();
+            if (m.Buscar(id, f) && (f.datos.estado == Estado::Error || f.datos.estado == Estado::Completada)) break;
+            Sleep(100);
+        }
+        parcial = m.RutaParcial(id);
+        final = carpeta + L"\\peli.rar";
+        m.Detener();
+        return f;
+    }
+
+    // Una parte, o un reintento después de que se cortó la conexión, recibe una página en vez del archivo (por
+    // ejemplo, porque el enlace venció): se para sin escribirla y queda con el error de siempre
+    void PaginaEnUnaParte()
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring carpeta = std::wstring(temporal) + L"atarraya-prueba-motor-" + std::to_wstring(GetCurrentProcessId());
+        CreateDirectoryW(carpeta.c_str(), nullptr);
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", carpeta.c_str());   // el registro de esta prueba va aquí también
+        const std::string pagina = "<!doctype html><html><body>El enlace vencio: resuelve el captcha otra vez.</body></html>";
+        auto tipo = [](const char* estado, const std::string& cabeceras, const std::string& cuerpo) {
+            return std::string("HTTP/1.1 ") + estado + "\r\n" + cabeceras + "Content-Length: " + std::to_string(cuerpo.size())
+                 + "\r\nConnection: close\r\n\r\n" + cuerpo;
+        };
+        const std::string sondeo = tipo("206 Partial Content", "Content-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\n"
+                                                             "Content-Range: bytes 0-0/200000\r\n", "A");
+        auto sinHtml = [](const std::wstring& ruta) {
+            std::string datos;
+            LeerArchivo(ruta, datos);
+            return datos.find("<html") == std::string::npos && datos.find("vencio") == std::string::npos;
+        };
+        {
+            // La consulta dice «archivo», pero la parte recibe una página
+            ServidorDePrueba s([&](int n, const std::string&) { return n == 1 ? sondeo : tipo("200 OK", "Content-Type: text/html; charset=UTF-8\r\n", pagina); });
+            std::wstring parcial, final;
+            Foto f = BajarConMotor(s.Puerto(), carpeta, parcial, final);
+            Comprobar(f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina && !ExisteArchivo(final) && sinHtml(parcial),
+                      "motor: una parte que recibe una página se para sin escribirla y avisa");
+        }
+        for (const wchar_t* f : { L"\\estado.json", L"\\peli.rar.atarraya" }) DeleteFileW((carpeta + f).c_str());
+        {
+            // La parte empieza bien, se corta a la mitad, y el reintento recibe una página
+            std::string mitad = std::string("HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\n"
+                                            "Content-Range: bytes 0-199999/200000\r\nContent-Length: 200000\r\nConnection: close\r\n\r\n")
+                              + std::string(100000, 'A');
+            ServidorDePrueba s([&](int n, const std::string&) {
+                if (n == 1) return sondeo;
+                if (n == 2) return mitad;   // se corta antes de tiempo
+                return tipo("200 OK", "Content-Type: text/html\r\nContent-Disposition: inline; filename=error.html\r\n", pagina);
+            });
+            std::wstring parcial, final;
+            Foto f = BajarConMotor(s.Puerto(), carpeta, parcial, final);
+            std::string datos;
+            LeerArchivo(parcial, datos);
+            bool loBueno = datos.size() >= 100000 && std::all_of(datos.begin(), datos.begin() + 100000, [](char c) { return c == 'A'; });
+            Comprobar(f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina && !ExisteArchivo(final) && loBueno && sinHtml(parcial)
+                          && f.hecho == 100000,
+                      "motor: un reintento que recibe una página (con «filename=error.html») no la escribe: queda lo bueno y avisa");
+        }
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
+        std::error_code e;
+        std::filesystem::remove_all(carpeta, e);
     }
 
     // Varias consultas a la vez: cada una lee las redes por su cuenta, sin nada compartido que pueda chocar
@@ -656,6 +815,7 @@ int wmain(int argc, wchar_t** argv)
     AlMismoTiempo();
     DeUnaEnUnaPruebas();
     PaginaEnVezDeArchivo();
+    PaginaEnUnaParte();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

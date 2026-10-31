@@ -24,7 +24,9 @@ namespace hnd
     // «extensión» rara, larga o con símbolos, que no es de un archivo)
     bool EsNombreDePagina(const std::wstring& nombre);
     // Se pidió un archivo y el servidor respondió con una página web: llega como página (text/html o
-    // application/xhtml+xml), no como adjunto, y el nombre que se esperaba no es de página (.rar, .zip, .7z, .exe,
-    // .iso, un video...). Pasa, por ejemplo, con la página de un sitio de descargas que pide un captcha.
-    bool RespondioPagina(const std::string& tipoMime, bool adjunto, const std::wstring& nombreEsperado);
+    // application/xhtml+xml) y el nombre que se esperaba no es de página (.rar, .zip, .7z, .exe, .iso, un video...).
+    // Pasa, por ejemplo, con la página de un sitio de descargas que pide un captcha o con un enlace que venció.
+    // «disposicion» (Content-Disposition) solo la salva si el nombre que trae no es de página y es el que se esperaba:
+    // «inline; filename=error.html» no salva nada.
+    bool RespondioPagina(const std::string& tipoMime, const std::string& disposicion, const std::wstring& nombreEsperado);
 }

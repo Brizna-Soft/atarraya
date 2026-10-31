@@ -238,8 +238,8 @@ namespace
         bool rangos = false;
         std::wstring nombre;
         std::string etag, modificado, tipo, urlFinal, errorCurl;
+        std::string disposicion;    // Content-Disposition, tal cual
         bool noPermitido = false;   // una redirección llevaba a YouTube
-        bool adjunto = false;       // llega como adjunto (Content-Disposition con «attachment» o con nombre)
     };
 
     // Pide el primer byte para saber el tamaño, el nombre y si se puede partir/reanudar.
@@ -305,10 +305,8 @@ namespace
                 s.tamano = _atoi64(rango.c_str() + barra + 1);
                 s.rangos = true;
             }
-            std::string disposicion = valor("content-disposition");
-            s.nombre = hnd::NombreDeContentDisposition(disposicion);
-            std::transform(disposicion.begin(), disposicion.end(), disposicion.begin(), [](unsigned char ch) { return (char)std::tolower(ch); });
-            s.adjunto = disposicion.find("attachment") != std::string::npos || !s.nombre.empty();
+            s.disposicion = valor("content-disposition");
+            s.nombre = hnd::NombreDeContentDisposition(s.disposicion);
             s.noPermitido = cab.sitioNoPermitido;
             s.etag = valor("etag");
             s.modificado = valor("last-modified");
@@ -669,6 +667,7 @@ namespace hnd
             bool ftp = false;
             bool primera = true;
             bool rangoIgnorado = false;
+            bool respondioPagina = false;   // llegó una página en vez del archivo: no se escribió nada
             bool errorDisco = false;
             int64_t recibidos = 0;
             Cabeceras cab;
@@ -686,6 +685,26 @@ namespace hnd
                 k->primera = false;
                 long codigo = 0;
                 curl_easy_getinfo(k->c, CURLINFO_RESPONSE_CODE, &codigo);
+                // Cada respuesta buena se revisa antes de escribir su primer byte: una parte, un reintento o una
+                // reanudación pueden recibir una página (por ejemplo, si el enlace venció) y eso no va al archivo. Las
+                // de error (403, 503...) siguen su camino de siempre.
+                if (!k->ftp && (codigo == 200 || codigo == 206))
+                {
+                    auto valor = [&](const char* clave) {
+                        auto it = k->cab.v.find(clave);
+                        return it == k->cab.v.end() ? std::string() : it->second;
+                    };
+                    std::wstring esperado;
+                    {
+                        std::lock_guard g(k->x->m);
+                        esperado = k->x->d.nombre;
+                    }
+                    if (RespondioPagina(valor("content-type"), valor("content-disposition"), esperado))
+                    {
+                        k->respondioPagina = true;
+                        return 0;   // curl corta aquí, sin escribir nada
+                    }
+                }
                 if (!k->ftp && k->pidioRango)
                 {
                     if (codigo != 206) { k->rangoIgnorado = (codigo == 200); return 0; }
@@ -1241,7 +1260,7 @@ namespace hnd
                 std::lock_guard g(x->m);
                 esperado = !x->d.nombre.empty() ? x->d.nombre : NombreDeUrl(x->d.url);
             }
-            if (RespondioPagina(s.tipo, s.adjunto, esperado))
+            if (RespondioPagina(s.tipo, s.disposicion, esperado))
             {
                 terminar(Estado::Error, TextoRespondioPagina);
                 return;
@@ -1564,6 +1583,7 @@ namespace hnd
             }
             if (k.recibidos > 0) intentos = 0;
             if (listo) continue;
+            if (k.respondioPagina) { x->FijarError(TextoRespondioPagina); break; }   // como en el sondeo: no se reintenta
             if (x->parar) break;
             if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
             if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
