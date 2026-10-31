@@ -1,5 +1,7 @@
 #include "motor.hpp"
 
+#include <winsock2.h>
+#include <ws2tcpip.h>
 #include <windows.h>
 #include <winioctl.h>
 #include <winhttp.h>
@@ -15,6 +17,7 @@
 #include <map>
 #include <set>
 
+#include "enlaces.hpp"
 #include "nombres.hpp"
 #include "util.hpp"
 #include "version.h"
@@ -142,7 +145,17 @@ namespace
     {
         long codigo = 0;
         std::map<std::string, std::string> v;   // claves en minúsculas, solo de la última respuesta
+        bool sitioNoPermitido = false;          // una redirección llevaba a YouTube: se cortó
     };
+
+    // ¿Una redirección («Location:») lleva a un sitio que no permite bajar sus videos? Las relativas se quedan en el
+    // mismo sitio, que ya se revisó antes de empezar.
+    bool RedirigeANoPermitido(const std::string& destino)
+    {
+        std::string d = destino;
+        if (d.rfind("//", 0) == 0) d = "https:" + d;
+        return d.find("://") != std::string::npos && hnd::enlaces::NoPermitido(d);
+    }
 
     size_t AlRecibirCabecera(char* b, size_t t, size_t n, void* u)
     {
@@ -166,9 +179,49 @@ namespace
                 size_t i = 0;
                 while (i < valor.size() && (valor[i] == ' ' || valor[i] == '\t')) i++;
                 c->v[clave] = valor.substr(i);
+                if (clave == "location" && RedirigeANoPermitido(c->v[clave]))
+                {
+                    c->sitioNoPermitido = true;
+                    return 0;   // curl corta aquí: no sigue la redirección
+                }
             }
         }
         return t * n;
+    }
+
+    // ¿Es una dirección de esta PC, de la red de la casa o reservada? (IPv4, IPv6 y IPv4 escrita dentro de IPv6)
+    bool EsIpv4Local(uint32_t ip)
+    {
+        uint32_t a = ip >> 24, b = (ip >> 16) & 0xFF;
+        return a == 0 || a == 10 || a == 127 || (a == 169 && b == 254) || (a == 172 && b >= 16 && b <= 31) || (a == 192 && b == 168)
+            || (a == 100 && b >= 64 && b <= 127) || (a == 192 && b == 0 && ((ip >> 8) & 0xFF) == 0) || (a == 198 && (b == 18 || b == 19))
+            || a >= 224;
+    }
+
+    bool EsIpLocal(const sockaddr* s)
+    {
+        if (s->sa_family == AF_INET)
+            return EsIpv4Local(ntohl(reinterpret_cast<const sockaddr_in*>(s)->sin_addr.s_addr));
+        if (s->sa_family != AF_INET6) return true;
+        const uint8_t* b = reinterpret_cast<const sockaddr_in6*>(s)->sin6_addr.u.Byte;
+        auto v4 = [&]() { return EsIpv4Local((uint32_t)b[12] << 24 | (uint32_t)b[13] << 16 | (uint32_t)b[14] << 8 | b[15]); };
+        bool ceros = std::all_of(b, b + 10, [](uint8_t x) { return x == 0; });
+        if (ceros && b[10] == 0xFF && b[11] == 0xFF) return v4();                    // ::ffff:a.b.c.d
+        if (ceros && b[10] == 0 && b[11] == 0) return true;                           // ::, ::1 y las viejas ::a.b.c.d
+        if (b[0] == 0 && b[1] == 0x64 && b[2] == 0xFF && b[3] == 0x9B) return v4();   // 64:ff9b::a.b.c.d
+        return (b[0] == 0xFE && (b[1] & 0xC0) == 0x80) || (b[0] & 0xFE) == 0xFC || b[0] == 0xFF;
+    }
+
+    // Para las consultas automáticas: no conectar nunca con una dirección local, aunque un nombre de afuera apunte a
+    // ella o una redirección lleve ahí
+    curl_socket_t AbrirSoloAfuera(void* u, curlsocktype tipo, curl_sockaddr* a)
+    {
+        if (tipo == CURLSOCKTYPE_IPCXN && EsIpLocal(&a->addr))
+        {
+            *static_cast<bool*>(u) = true;
+            return CURL_SOCKET_BAD;
+        }
+        return socket(a->family, a->socktype, a->protocol);
     }
 
     int AlProgresar(void* u, curl_off_t, curl_off_t, curl_off_t, curl_off_t)
@@ -186,6 +239,7 @@ namespace
         bool rangos = false;
         std::wstring nombre;
         std::string etag, modificado, tipo, urlFinal, errorCurl;
+        bool noPermitido = false;   // una redirección llevaba a YouTube
     };
 
     // Pide el primer byte para saber el tamaño, el nombre y si se puede partir/reanudar.
@@ -252,6 +306,7 @@ namespace
                 s.rangos = true;
             }
             s.nombre = hnd::NombreDeContentDisposition(valor("content-disposition"));
+            s.noPermitido = cab.sitioNoPermitido;
             s.etag = valor("etag");
             s.modificado = valor("last-modified");
             s.tipo = valor("content-type");
@@ -444,7 +499,8 @@ namespace hnd
         auto it = cab.v.find("content-type");
         if (it != cab.v.end()) tipo = it->second;
 
-        if (m.excedido) error = "La página es demasiado grande (más de " + Utf8(TextoTamano((int64_t)maximo)) + ").";
+        if (cab.sitioNoPermitido) error = Utf8(enlaces::TextoNoPermitido);
+        else if (m.excedido) error = "La página es demasiado grande (más de " + Utf8(TextoTamano((int64_t)maximo)) + ").";
         else if (res == CURLE_ABORTED_BY_CALLBACK) error = "Se canceló.";
         else if (res != CURLE_OK) error = TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));
         else if (codigo >= 400) error = TextoErrorPagina(codigo);
@@ -466,8 +522,16 @@ namespace hnd
             return;
         }
         Peticion p{ url, referer, "", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " APP_NOMBRE "/" APP_VERSION };
-        Preparar(c, p, ProxyDelSistema());
+        Proxy proxy = ProxyDelSistema();
+        Preparar(c, p, proxy);
         curl_easy_setopt(c, CURLOPT_NOBODY, 1L);   // HEAD: solo las cabeceras, nunca el archivo
+        curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
+        bool local = false;
+        if (proxy.servidor.empty())
+        {
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirSoloAfuera);
+            curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &local);
+        }
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
         Cabeceras cab;
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
@@ -487,6 +551,9 @@ namespace hnd
         curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &largo);
         curl_easy_cleanup(c);
         bool ftp = EsFtp(url);
+        r.local = local;
+        r.noPermitido = cab.sitioNoPermitido;
+        if (local || cab.sitioNoPermitido) return;
         if (res != CURLE_OK)
         {
             r.error = res == CURLE_ABORTED_BY_CALLBACK ? std::string("Se canceló.") : TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));
@@ -1008,7 +1075,7 @@ namespace hnd
             }
         }
         json todo = { { "version", 1 }, { "siguienteId", siguiente }, { "descargas", lista } };
-        if (EscribirSeguro(m_archivo, todo.dump(1)))
+        if (EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace)))
         {
             m_sucio = false;
             m_ultimoGuardado = AhoraUnix();
@@ -1096,6 +1163,11 @@ namespace hnd
         {
             s = Sondear(p, x->proxy, x->parar);
             if (x->parar) break;
+            if (s.noPermitido)
+            {
+                error = Utf8(enlaces::TextoNoPermitido);
+                break;
+            }
             // Algunos servidores rechazan cualquier pedido por partes: entonces se pide entero
             if (!ftp && (s.codigo == 400 || s.codigo == 405 || s.codigo == 501 || (s.codigo == 416 && s.tamano < 0)))
             {
@@ -1433,6 +1505,7 @@ namespace hnd
             if (listo) continue;
             if (x->parar) break;
             if (k.errorDisco) { x->FijarError("No se pudo escribir en el disco. ¿Está lleno o se desconectó?"); break; }
+            if (k.cab.sitioNoPermitido) { x->FijarError(Utf8(enlaces::TextoNoPermitido)); break; }
             if (k.rangoIgnorado) { x->sinRangos = true; x->parar = true; break; }
 
             std::string ultimoError;

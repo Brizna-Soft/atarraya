@@ -21,6 +21,7 @@
 #include <thread>
 
 #include "ayuda.hpp"
+#include "hilos.hpp"
 #include "navegadores.hpp"
 #include "nombres.hpp"
 #include "sistema.hpp"
@@ -524,7 +525,9 @@ void DialogoPagina::Buscar()
     m_estado->SetForegroundColour(wxSystemSettings::GetColour(wxSYS_COLOUR_WINDOWTEXT));
     m_estado->SetLabel(L"Buscando enlaces...");
     m_buscar->Disable();
-    wxWeakRef<DialogoPagina> yo(this);
+    // «parar» hace también de señal de vida: el destructor lo pone en verdadero. El hilo no toca el diálogo: solo le
+    // manda el resultado al hilo de la ventana, y allí se mira «parar» antes de usarlo.
+    DialogoPagina* yo = this;
     std::string u = Utf8(url);
     std::thread([yo, parar, u]() {
         enlaces::Pagina p;
@@ -539,8 +542,8 @@ void DialogoPagina::Buscar()
             ok = false;
             error = "La página respondió algo que Atarraya no pudo leer.";
         }
-        wxTheApp->CallAfter([yo, parar, ok, p, error, u]() {
-            if (!yo || *parar) return;
+        hilos::Enviar([yo, parar, ok, p, error, u]() {
+            if (*parar) return;
             yo->AlTerminarBusqueda(ok, p, error, u);
         });
     }).detach();

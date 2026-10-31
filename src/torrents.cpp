@@ -549,7 +549,7 @@ struct hnd::MotorTorrent::Datos
             });
         }
         json todo = { { "version", 1 }, { "siguienteId", siguiente }, { "torrents", l } };
-        if (EscribirSeguro(archivoLista, todo.dump(1)))
+        if (EscribirSeguro(archivoLista, todo.dump(1, ' ', false, json::error_handler_t::replace)))
         {
             sucio = false;
             ultimoGuardado = AhoraUnix();

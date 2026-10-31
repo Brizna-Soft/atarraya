@@ -33,6 +33,7 @@
 #include "ayuda.hpp"
 #include "dialogos.hpp"
 #include "enlaces.hpp"
+#include "hilos.hpp"
 #include "iconos.hpp"
 #include "nombres.hpp"
 #include "sistema.hpp"
@@ -560,6 +561,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
 
 VentanaPrincipal::~VentanaPrincipal()
 {
+    *m_vivo = false;   // lo que llegue tarde de otros hilos ya no toca esta ventana
     m_motor.alTerminar = nullptr;
     m_torrents.alTerminar = nullptr;
 }
@@ -923,11 +925,12 @@ void VentanaPrincipal::AplicarAjustes()
     // Click'n'Load: solo en 127.0.0.1
     if (m_ajustes.clickNLoad && !m_cnl->Activo())
     {
-        wxWeakRef<VentanaPrincipal> yo(this);
+        VentanaPrincipal* yo = this;
+        hilos::Vivo vivo = m_vivo;
         std::string error;
-        bool ok = m_cnl->Iniciar([yo](std::vector<std::string> lista, std::wstring paquete, std::string origen) {
-            wxTheApp->CallAfter([yo, lista, paquete, origen]() {
-                if (yo) yo->AlRecibirCnL(lista, paquete, origen);
+        bool ok = m_cnl->Iniciar([yo, vivo](std::vector<std::string> lista, std::wstring paquete, std::string origen) {
+            hilos::Enviar([yo, vivo, lista, paquete, origen]() {
+                if (*vivo) yo->AlRecibirCnL(lista, paquete, origen);
             });
         }, error);
         m_estadoCnl = ok ? wxString(L"Click'n'Load: listo en 127.0.0.1:9666 (solo desde esta PC). Lo que llegue espera aquí.")
@@ -999,7 +1002,7 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
     int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
     for (const auto& e : lista)
     {
-        if (e.estado == Comprobacion::NoExiste) { noEstan++; continue; }   // se quedan en el recolector
+        if (e.estado == Comprobacion::NoExiste || e.estado == Comprobacion::NoPermitido) { noEstan++; continue; }   // se quedan en el recolector
         if (e.estado == Comprobacion::Pagina || e.estado == Comprobacion::Sitio)
         {
             paginas.push_back(&e);
@@ -1431,17 +1434,18 @@ void VentanaPrincipal::CalcularHuella()
     std::wstring ruta = f.torrent ? m_torrents.RutaFinal(f.datos.id) : m_motor.RutaFinal(f.datos.id);
     wxString nombre = ruta.substr(ruta.find_last_of(L'\\') + 1);
     m_resumen->SetLabel(L"Calculando la huella SHA-256 de " + nombre + L"...");
-    wxWeakRef<VentanaPrincipal> yo(this);
-    std::thread([yo, ruta, nombre]() {
+    VentanaPrincipal* yo = this;
+    hilos::Vivo vivo = m_vivo;
+    std::thread([yo, vivo, ruta, nombre]() {
         std::string huella = Sha256Archivo(ruta);
-        wxTheApp->CallAfter([yo, huella, nombre]() {
-            if (!yo) return;
+        hilos::Enviar([yo, vivo, huella, nombre]() {
+            if (!*vivo) return;
             if (huella.empty())
             {
-                ayuda::Aviso(L"No se pudo leer el archivo.", L"Huella SHA-256", wxOK | wxICON_WARNING, yo.get());
+                ayuda::Aviso(L"No se pudo leer el archivo.", L"Huella SHA-256", wxOK | wxICON_WARNING, yo);
                 return;
             }
-            wxMessageDialog d(yo.get(), nombre + L"\n\nSHA-256:\n" + wxString::FromUTF8(huella)
+            wxMessageDialog d(yo, nombre + L"\n\nSHA-256:\n" + wxString::FromUTF8(huella)
                                   + L"\n\nCompárala con la que publica el sitio de descarga: si es igual, el archivo llegó entero.",
                               L"Huella SHA-256", wxYES_NO | wxICON_INFORMATION);
             d.SetYesNoLabels(L"Copiar", L"Cerrar");
@@ -1519,13 +1523,14 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
     if (f.datos.estado == Estado::Completada)
     {
         std::wstring ruta = f.datos.carpeta + L"\\" + f.datos.nombre;
-        wxWeakRef<VentanaPrincipal> yo(this);
-        sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, nombre](bool existe) {
+        VentanaPrincipal* yo = this;
+        hilos::Vivo vivo = m_vivo;
+        sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, vivo, nombre](bool existe) {
             if (existe) return;
-            wxTheApp->CallAfter([yo, nombre]() {
-                if (!yo) return;
+            hilos::Enviar([yo, vivo, nombre]() {
+                if (!*vivo) return;
                 ayuda::Aviso(L"Windows (o tu antivirus) bloqueó o quitó «" + nombre + L"» porque podría ser peligroso.",
-                             L"Archivo bloqueado", wxOK | wxICON_WARNING, yo.get());
+                             L"Archivo bloqueado", wxOK | wxICON_WARNING, yo);
             });
         });
         bool esTorrent = Minusculas(f.datos.nombre).size() > 8 && Minusculas(f.datos.nombre).substr(f.datos.nombre.size() - 8) == L".torrent";
@@ -1541,14 +1546,15 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
 void VentanaPrincipal::AlTerminarTorrent(const hnd::Foto& f, const std::vector<std::wstring>& archivos)
 {
     wxString nombre = NombreVisible(f.datos);
-    wxWeakRef<VentanaPrincipal> yo(this);
-    sistema::MarcarVariosComoDescargados(archivos, [yo, nombre](size_t faltan) {
+    VentanaPrincipal* yo = this;
+    hilos::Vivo vivo = m_vivo;
+    sistema::MarcarVariosComoDescargados(archivos, [yo, vivo, nombre](size_t faltan) {
         if (faltan == 0) return;
-        wxTheApp->CallAfter([yo, nombre, faltan]() {
-            if (!yo) return;
+        hilos::Enviar([yo, vivo, nombre, faltan]() {
+            if (!*vivo) return;
             ayuda::Aviso(wxString::Format(L"Windows (o tu antivirus) bloqueó o quitó %zu %s de «", faltan, faltan == 1 ? L"archivo" : L"archivos")
                              + nombre + L"» porque podría ser peligroso.",
-                         L"Archivo bloqueado", wxOK | wxICON_WARNING, yo.get());
+                         L"Archivo bloqueado", wxOK | wxICON_WARNING, yo);
         });
     });
     if (m_ajustes.avisarAlTerminar)

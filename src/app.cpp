@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "ajustes.hpp"
+#include "hilos.hpp"
 #include "motor.hpp"
 #include "nombres.hpp"
 #include "recolector.hpp"
@@ -151,6 +152,7 @@ bool Aplicacion::OnInit()
 
 int Aplicacion::OnExit()
 {
+    hnd::hilos::Cerrar();   // los hilos que terminen tarde ya no mandan nada a la aplicación
     if (m_mensajes) DestroyWindow(m_mensajes);
     m_mensajes = nullptr;
     m_recolector.reset();

@@ -9,6 +9,7 @@
 
 #include "ajustes.hpp"
 #include "clicknload.hpp"
+#include "hilos.hpp"
 #include "motor.hpp"
 #include "recolector.hpp"
 #include "torrents.hpp"
@@ -96,6 +97,7 @@ private:
     std::unique_ptr<Bandeja> m_bandeja;
     wxTimer m_reloj;
     bool m_saliendo = false;
+    hnd::hilos::Vivo m_vivo = hnd::hilos::NuevoVivo();   // falso cuando la ventana se destruye
     bool m_ocupada = false;                 // hay una ventana de elegir archivos abierta
     std::vector<uint64_t> m_porElegir;      // torrents que esperan que la persona elija archivos
     std::vector<uint64_t> m_avisadosElegir; // ya se avisó con un globo

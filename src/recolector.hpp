@@ -27,6 +27,7 @@ namespace hnd
         Desconocido,  // no se pudo saber sin bajarlo
         Torrent,      // enlace magnet
         Local,        // dirección de esta PC o de la red de la casa: no se consulta sola
+        NoPermitido,  // lleva a YouTube: no se baja
     };
 
     struct EnlaceRecolectado

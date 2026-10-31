@@ -34,6 +34,7 @@ namespace
         case C::Desconocido: return "desconocido";
         case C::Torrent: return "torrent";
         case C::Local: return "local";
+        case C::NoPermitido: return "nopermitido";
         }
         return "pendiente";
     }
@@ -48,6 +49,7 @@ namespace
         if (s == "desconocido") return C::Desconocido;
         if (s == "torrent") return C::Torrent;
         if (s == "local") return C::Local;
+        if (s == "nopermitido") return C::NoPermitido;
         return C::Pendiente;
     }
 
@@ -88,6 +90,7 @@ const wchar_t* hnd::TextoComprobacion(Comprobacion c)
     case Comprobacion::Desconocido: return L"Se sabrá al empezar";
     case Comprobacion::Torrent: return L"Torrent (magnet)";
     case Comprobacion::Local: return L"Dirección de tu red: no se consulta sola";
+    case Comprobacion::NoPermitido: return L"Lleva a YouTube: no se baja";
     }
     return L"";
 }
@@ -123,7 +126,7 @@ bool hnd::EsDireccionLocal(const std::string& url)
     {
         // IPv6: la propia PC (::1), enlace local (fe80::) y direcciones privadas (fc00::/7)
         std::string ip = s.substr(1, s.size() - 2);
-        return ip == "::1" || ip.rfind("fe8", 0) == 0 || ip.rfind("fe9", 0) == 0 || ip.rfind("fea", 0) == 0 || ip.rfind("feb", 0) == 0
+        return ip.rfind("::", 0) == 0 || ip.rfind("64:ff9b:", 0) == 0 || ip.rfind("fe8", 0) == 0 || ip.rfind("fe9", 0) == 0 || ip.rfind("fea", 0) == 0 || ip.rfind("feb", 0) == 0
             || ip.rfind("fc", 0) == 0 || ip.rfind("fd", 0) == 0 || ip == "::";
     }
     if (s.find('.') == std::string::npos) return true;   // un nombre sin punto es de la red local (o un número raro)
@@ -248,7 +251,8 @@ void hnd::Recolector::Guardar()
         }
     }
     json todo = { { "version", 1 }, { "enlaces", l } };
-    if (EscribirSeguro(m_archivo, todo.dump(1))) m_guardada = version;
+    // «replace»: un texto que no es UTF-8 válido (por ejemplo, de Click'n'Load) no impide guardar
+    if (EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace))) m_guardada = version;
 }
 
 size_t hnd::Recolector::Agregar(const std::vector<std::string>& urls, const std::wstring& paquete, const std::string& referer,
@@ -372,7 +376,17 @@ void hnd::Recolector::Consultar(std::shared_ptr<std::atomic<bool>> fin)
             e.estado = Comprobacion::Pendiente;
             break;
         }
-        if (!info.error.empty())
+        if (info.local)
+        {
+            e.estado = Comprobacion::Local;
+            e.detalle = "El nombre del sitio lleva a una dirección de esta PC o de tu red: no se consulta sola.";
+        }
+        else if (info.noPermitido)
+        {
+            e.estado = Comprobacion::NoPermitido;
+            e.detalle = "El enlace lleva a YouTube, y Atarraya no baja sus videos.";
+        }
+        else if (!info.error.empty())
         {
             e.estado = Comprobacion::Desconocido;
             e.detalle = "No se pudo consultar: " + info.error;

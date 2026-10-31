@@ -21,6 +21,7 @@
 #include <thread>
 #include <tuple>
 
+#include "hilos.hpp"
 #include "version.h"
 
 namespace
@@ -110,10 +111,12 @@ void ayuda::ReportarProblema()
 
 void ayuda::BuscarActualizacion(wxWindow* padre)
 {
-    wxWeakRef<wxWindow> ventana(padre);
+    // La referencia débil se crea y se destruye en el hilo de la ventana: el hilo de trabajo solo copia el puntero
+    // compartido (eso sí es seguro entre hilos) y lo suelta después de mandar el resultado.
+    auto ventana = std::make_shared<wxWeakRef<wxWindow>>(padre);
     std::wstring ruta = L"/repos/" + std::wstring(Repo().wc_str()) + L"/releases/latest";
 
-    std::thread([ventana, ruta]() {
+    std::thread([ventana, ruta]() mutable {
         std::string cuerpo = Descargar(L"api.github.com", ruta);
         std::string etiqueta, pagina;
         try
@@ -124,8 +127,8 @@ void ayuda::BuscarActualizacion(wxWindow* padre)
         }
         catch (...) {}
 
-        wxTheApp->CallAfter([ventana, etiqueta, pagina]() {
-            wxWindow* padre = ventana.get();
+        hnd::hilos::Enviar([ventana, etiqueta, pagina]() {
+            wxWindow* padre = ventana->get();
             if (etiqueta.empty())
             {
                 ayuda::Aviso(L"No pude consultar GitHub. Revisa tu conexión a internet e inténtalo de nuevo.",
@@ -152,6 +155,7 @@ void ayuda::BuscarActualizacion(wxWindow* padre)
                              L"Buscar actualización", wxOK | wxICON_INFORMATION, padre);
             }
         });
+        ventana.reset();
     }).detach();
 }
 

@@ -192,7 +192,9 @@ namespace
             if (it == f.end()) continue;
             std::string v = Recortar(it->second);
             std::string b = Bajo(v.substr(0, 8));
-            if ((b.rfind("http://", 0) == 0 || b.rfind("https://", 0) == 0) && v.size() <= 2048
+            // Solo una dirección web en UTF-8 válido, sin espacios ni caracteres de control
+            bool limpio = std::none_of(v.begin(), v.end(), [](char ch) { return (unsigned char)ch < 0x20 || ch == 0x7F; });
+            if ((b.rfind("http://", 0) == 0 || b.rfind("https://", 0) == 0) && v.size() <= 2048 && limpio && EsUtf8(v)
                 && v.find_first_of(" \t\r\n\"<>") == std::string::npos)
                 return v;
         }

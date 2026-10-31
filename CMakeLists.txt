@@ -74,11 +74,11 @@ target_link_options(atarraya-puente PRIVATE /guard:cf)
 target_link_libraries(atarraya-puente PRIVATE nlohmann_json::nlohmann_json)
 
 # --- Pruebas sin ventana (no se publican) ---
-add_executable(prueba-motor pruebas/prueba-motor.cpp src/motor.cpp src/nombres.cpp src/util.cpp)
+add_executable(prueba-motor pruebas/prueba-motor.cpp src/motor.cpp src/nombres.cpp src/util.cpp src/enlaces.cpp)
 target_include_directories(prueba-motor PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
 target_compile_definitions(prueba-motor PRIVATE ${DEFINICIONES} SIN_WX)
 target_compile_options(prueba-motor PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
-target_link_libraries(prueba-motor PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt shlwapi winhttp)
+target_link_libraries(prueba-motor PRIVATE CURL::libcurl nlohmann_json::nlohmann_json bcrypt shlwapi winhttp ws2_32)
 
 add_executable(prueba-enlaces pruebas/prueba-enlaces.cpp src/enlaces.cpp src/motor.cpp src/nombres.cpp src/util.cpp
     src/clicknload.cpp src/recolector.cpp)
