@@ -28,6 +28,7 @@ namespace hnd
         Torrent,      // enlace magnet
         Local,        // dirección de esta PC o de la red de la casa: no se consulta sola
         NoPermitido,  // lleva a YouTube: no se baja
+        SinRevisar,   // Windows no dijo cuáles son las redes de la PC: no se consultó; se sabrá al bajar
     };
 
     struct EnlaceRecolectado

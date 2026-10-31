@@ -5,12 +5,8 @@
 #include <iphlpapi.h>
 
 #include <algorithm>
-#include <chrono>
+#include <atomic>
 #include <cstring>
-#include <memory>
-#include <mutex>
-
-using namespace std::chrono;
 
 namespace
 {
@@ -70,30 +66,25 @@ namespace
         return (a[enteros] & mascara) == (b[enteros] & mascara);
     }
 
-    // La última lista de redes de la PC. Cada lista, una vez hecha, no cambia: los hilos se quedan con su copia.
-    struct Memoria
-    {
-        std::mutex m;
-        std::shared_ptr<const std::vector<hnd::red::Subred>> redes;
-        steady_clock::time_point leida;
-    };
+#ifdef ATARRAYA_PRUEBAS
+    std::atomic<bool> g_simularFalla{ false };
+#endif
 
-    std::shared_ptr<const std::vector<hnd::red::Subred>> RedesDeLaPc()
+    ULONG LeerTarjetas(ULONG opciones, IP_ADAPTER_ADDRESSES* lista, ULONG* largo)
     {
-        // No se destruye nunca: los hilos de las consultas la pueden usar hasta el último momento
-        static auto* mem = new Memoria;
-        std::lock_guard g(mem->m);
-        auto ahora = steady_clock::now();
-        if (!mem->redes || ahora - mem->leida >= 2s)
-        {
-            bool ok = false;
-            auto nuevas = hnd::red::LeerSubredesDeLaPc(&ok);
-            if (ok || !mem->redes) mem->redes = std::make_shared<const std::vector<hnd::red::Subred>>(std::move(nuevas));
-            mem->leida = ahora;
-        }
-        return mem->redes;
+#ifdef ATARRAYA_PRUEBAS
+        if (g_simularFalla) return ERROR_NOT_ENOUGH_MEMORY;   // como si Windows fallara
+#endif
+        return GetAdaptersAddresses(AF_UNSPEC, opciones, nullptr, lista, largo);
     }
 }
+
+#ifdef ATARRAYA_PRUEBAS
+void hnd::red::SimularFallaAlLeerRedes(bool fallar)
+{
+    g_simularFalla = fallar;
+}
+#endif
 
 bool hnd::red::EsRangoLocal(const sockaddr* s)
 {
@@ -155,13 +146,10 @@ std::vector<hnd::red::Subred> hnd::red::LeerSubredesDeLaPc(bool* ok)
     {
         memoria.assign(largo / sizeof(uint64_t) + 1, 0);
         largo = (ULONG)(memoria.size() * sizeof(uint64_t));
-        res = GetAdaptersAddresses(AF_UNSPEC, opciones, nullptr, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(memoria.data()), &largo);
+        res = LeerTarjetas(opciones, reinterpret_cast<IP_ADAPTER_ADDRESSES*>(memoria.data()), &largo);
     }
-    if (res == ERROR_NO_DATA)   // ninguna tarjeta de red con direcciones
-    {
-        if (ok) *ok = true;
-        return r;
-    }
+    // Cualquier otra respuesta cuenta como falla, también «ninguna dirección»: la PC siempre tiene por lo menos las
+    // suyas propias (127.0.0.1 y ::1)
     if (res != NO_ERROR) return r;
     for (auto* t = reinterpret_cast<const IP_ADAPTER_ADDRESSES*>(memoria.data()); t; t = t->Next)
     {
@@ -179,9 +167,12 @@ std::vector<hnd::red::Subred> hnd::red::LeerSubredesDeLaPc(bool* ok)
     return r;
 }
 
-bool hnd::red::EsDestinoLocal(const sockaddr* destino)
+hnd::red::Destino hnd::red::RevisarDestino(const sockaddr* destino)
 {
-    if (EsRangoLocal(destino)) return true;
-    auto redes = RedesDeLaPc();
-    return std::any_of(redes->begin(), redes->end(), [&](const Subred& r) { return EnSubred(destino, r); });
+    if (EsRangoLocal(destino)) return Destino::Local;
+    bool ok = false;
+    auto redes = LeerSubredesDeLaPc(&ok);
+    if (!ok) return Destino::SinRevisar;   // no se sabe cuáles son las redes de la PC: no se consulta
+    bool local = std::any_of(redes.begin(), redes.end(), [&](const Subred& r) { return EnSubred(destino, r); });
+    return local ? Destino::Local : Destino::Afuera;
 }

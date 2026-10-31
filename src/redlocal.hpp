@@ -37,8 +37,19 @@ namespace hnd::red
     // si Windows no pudo dar la lista.
     std::vector<Subred> LeerSubredesDeLaPc(bool* ok = nullptr);
 
-    // Lo que revisan las consultas antes de conectar: rangos locales, direcciones de esta PC y sus redes. Las redes
-    // se leen de nuevo cada 2 segundos (la red cambia: wifi, VPN). Si Windows no da la lista, sigue la última que
-    // dio o, si nunca dio una, solo el filtro de rangos. Se puede llamar desde varios hilos a la vez.
-    bool EsDestinoLocal(const sockaddr* destino);
+    enum class Destino
+    {
+        Afuera,       // se puede consultar
+        Local,        // esta PC, su red o un rango local: no se consulta
+        SinRevisar,   // Windows no dijo cuáles son las redes de la PC: como no se sabe, tampoco se consulta
+    };
+
+    // Lo que revisan las consultas justo antes de conectar: rangos locales, direcciones de esta PC y sus redes. Las
+    // redes se leen en cada llamada (la red cambia: wifi, VPN), sin nada guardado que compartir entre hilos.
+    Destino RevisarDestino(const sockaddr* destino);
+
+#ifdef ATARRAYA_PRUEBAS
+    // Solo en las pruebas: hace como si Windows no pudiera dar las redes de la PC
+    void SimularFallaAlLeerRedes(bool fallar);
+#endif
 }

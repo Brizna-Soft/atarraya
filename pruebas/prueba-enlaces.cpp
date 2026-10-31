@@ -9,9 +9,13 @@
 
 #include <curl/curl.h>
 
+#include <atomic>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <bcrypt.h>
 
@@ -115,6 +119,27 @@ namespace
                   && !Rango("64:ff9b::1.1.1.1") && !Rango("2002:101:101::1"), "rangos IPv6 de afuera");
     }
 
+    // La dirección de una red de la PC, como la recibe curl
+    sockaddr_storage DeSubred(const red::Subred& r)
+    {
+        sockaddr_storage s{};
+        if (r.v6)
+        {
+            auto* a = reinterpret_cast<sockaddr_in6*>(&s);
+            a->sin6_family = AF_INET6;
+            memcpy(&a->sin6_addr, r.direccion, 16);
+        }
+        else
+        {
+            auto* a = reinterpret_cast<sockaddr_in*>(&s);
+            a->sin_family = AF_INET;
+            memcpy(&a->sin_addr, r.direccion, 4);
+        }
+        return s;
+    }
+
+    red::Destino Revisar(const sockaddr_storage& s) { return red::RevisarDestino(P(s)); }
+
     // Con las direcciones de verdad de esta PC (sin mostrarlas): cada una y otra de su misma red cuentan como locales,
     // y la consulta del recolector hacia ellas no sale
     void RedDeEstaPc()
@@ -122,24 +147,16 @@ namespace
         bool ok = false;
         auto redes = red::LeerSubredesDeLaPc(&ok);
         Comprobar(ok && !redes.empty(), "PC: Windows da sus direcciones");
+        auto inicio = std::chrono::steady_clock::now();
+        for (int i = 0; i < 50; i++) red::LeerSubredesDeLaPc();
+        printf("   leer las redes de la PC tarda %.2f ms (se lee antes de cada conexión)\n",
+               std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - inicio).count() / 50);
         int publicas = 0;
         bool propias = true, vecinas = true, consultas = true;
         for (auto& r : redes)
         {
-            sockaddr_storage s{};
-            if (r.v6)
-            {
-                auto* a = reinterpret_cast<sockaddr_in6*>(&s);
-                a->sin6_family = AF_INET6;
-                memcpy(&a->sin6_addr, r.direccion, 16);
-            }
-            else
-            {
-                auto* a = reinterpret_cast<sockaddr_in*>(&s);
-                a->sin_family = AF_INET;
-                memcpy(&a->sin_addr, r.direccion, 4);
-            }
-            if (!red::EsDestinoLocal(P(s))) propias = false;
+            sockaddr_storage s = DeSubred(r);
+            if (Revisar(s) != red::Destino::Local) propias = false;
             if (red::EsRangoLocal(P(s))) continue;   // a esta ya la frenaba el filtro de rangos
             publicas++;
             // Otra dirección de la misma red: el último byte cambiado, si el prefijo deja lugar
@@ -149,7 +166,7 @@ namespace
             {
                 uint8_t* b = r.v6 ? reinterpret_cast<sockaddr_in6*>(&v)->sin6_addr.u.Byte : reinterpret_cast<uint8_t*>(&reinterpret_cast<sockaddr_in*>(&v)->sin_addr);
                 b[bits / 8 - 1] ^= 0x5A;
-                if (!red::EsDestinoLocal(P(v))) vecinas = false;
+                if (Revisar(v) != red::Destino::Local) vecinas = false;
             }
             // La consulta entera, como la hace el recolector (al puerto 9, que descarta todo)
             for (const sockaddr_storage* x : { &s, &v })
@@ -172,7 +189,94 @@ namespace
         }
         else printf("   (sin direcciones públicas: lo nuevo se probó con los prefijos de ejemplo)\n");
         auto g4 = Dir("8.8.8.8"), g6 = Dir("2001:4860:4860::8888");
-        Comprobar(!red::EsDestinoLocal(P(g4)) && !red::EsDestinoLocal(P(g6)), "PC: una dirección de afuera no cuenta como local");
+        Comprobar(Revisar(g4) == red::Destino::Afuera && Revisar(g6) == red::Destino::Afuera,
+                  "PC: una dirección de afuera sí se puede consultar");
+    }
+
+    // Si Windows no da las redes de la PC, no se consulta nada solo (ni hacia afuera) y el recolector lo dice
+    void SinRedes()
+    {
+        red::SimularFallaAlLeerRedes(true);
+        bool ok = true;
+        auto redes = red::LeerSubredesDeLaPc(&ok);
+        Comprobar(!ok && redes.empty(), "sin redes: la lectura falla");
+        auto afuera = Dir("1.1.1.1"), casa = Dir("192.168.1.1");
+        Comprobar(Revisar(afuera) == red::Destino::SinRevisar && Revisar(casa) == red::Destino::Local,
+                  "sin redes: una dirección de afuera queda sin revisar; un rango local sigue siendo local");
+        InfoEnlace info;
+        ComprobarEnlace("http://1.1.1.1:9/prueba.zip", "", info);
+        Comprobar(info.sinRevisarRed && !info.local && info.codigo == 0, "sin redes: la consulta no sale");
+
+        // El recolector entero: el enlace queda con un estado claro, sin consultar
+        wchar_t carpeta[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, carpeta);
+        std::wstring archivo = std::wstring(carpeta) + L"atarraya-prueba-recolector-" + std::to_wstring(GetCurrentProcessId()) + L".json";
+        {
+            Recolector rec(archivo);
+            rec.Agregar({ "http://1.1.1.1:9/prueba-sin-redes.zip" }, L"", "", "prueba");
+            Comprobacion estado = Comprobacion::Pendiente;
+            for (int i = 0; i < 100; i++)
+            {
+                rec.Tick();
+                auto lista = rec.Lista();
+                estado = lista.empty() ? Comprobacion::Pendiente : lista[0].estado;
+                if (estado != Comprobacion::Pendiente && estado != Comprobacion::Comprobando) break;
+                Sleep(50);
+            }
+            Comprobar(estado == Comprobacion::SinRevisar
+                      && std::wstring(TextoComprobacion(estado)) == L"No se pudo revisar la red: se consulta al bajar",
+                      "sin redes: el recolector dice «No se pudo revisar la red: se consulta al bajar»");
+            rec.Detener();
+        }
+        DeleteFileW(archivo.c_str());
+        red::SimularFallaAlLeerRedes(false);
+        Comprobar(Revisar(afuera) == red::Destino::Afuera, "sin redes: cuando Windows vuelve a dar la lista, se consulta otra vez");
+    }
+
+    // Varias consultas a la vez: cada una lee las redes por su cuenta, sin nada compartido que pueda chocar
+    void AlMismoTiempo()
+    {
+        std::vector<sockaddr_storage> propias;
+        for (auto& r : red::LeerSubredesDeLaPc()) propias.push_back(DeSubred(r));
+        auto afuera4 = Dir("8.8.8.8"), afuera6 = Dir("2001:4860:4860::8888"), casa = Dir("10.0.0.1");
+        std::atomic<int> errores{ 0 }, revisiones{ 0 };
+        std::vector<std::thread> hilos;
+        for (int h = 0; h < 8; h++)
+        {
+            hilos.emplace_back([&] {
+                for (int i = 0; i < 20; i++)
+                {
+                    if (Revisar(afuera4) != red::Destino::Afuera) errores++;
+                    if (Revisar(afuera6) != red::Destino::Afuera) errores++;
+                    if (Revisar(casa) != red::Destino::Local) errores++;
+                    for (auto& s : propias)
+                    {
+                        if (Revisar(s) != red::Destino::Local) errores++;
+                    }
+                    revisiones += 3 + (int)propias.size();
+                }
+            });
+        }
+        for (auto& t : hilos) t.join();
+        printf("   %d revisiones en 8 hilos a la vez\n", revisiones.load());
+        Comprobar(errores == 0, "a la vez: 8 hilos revisan sin chocar ni equivocarse");
+
+        // Y consultas enteras del recolector a la vez, hacia esta PC y la red de la casa: ninguna sale
+        std::atomic<int> salieron{ 0 };
+        std::vector<std::thread> consultas;
+        for (int h = 0; h < 4; h++)
+        {
+            consultas.emplace_back([&] {
+                for (const char* url : { "http://127.0.0.1:9/a.zip", "http://[::1]:9/b.zip", "http://10.0.0.1:9/c.zip" })
+                {
+                    InfoEnlace info;
+                    ComprobarEnlace(url, "", info);
+                    if (!info.local) salieron++;
+                }
+            });
+        }
+        for (auto& t : consultas) t.join();
+        Comprobar(salieron == 0, "a la vez: 4 consultas del recolector juntas, ninguna sale hacia la red de la casa");
     }
 
     bool Tiene(const std::vector<Enlace>& v, const std::string& url, Tipo t)
@@ -361,6 +465,8 @@ int wmain(int argc, wchar_t** argv)
     Fijas();
     Redes();
     RedDeEstaPc();
+    SinRedes();
+    AlMismoTiempo();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

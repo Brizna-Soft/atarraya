@@ -12,6 +12,10 @@ foreach ($d in Get-ChildItem $share -Directory | Sort-Object Name) {
     $copyright = Join-Path $d.FullName 'copyright'
     if (-not (Test-Path $copyright)) { continue }
     $texto = (Get-Content $copyright -Raw -Encoding UTF8).TrimEnd()
+    # Lo que vcpkg no copia entero (el aviso de PCRE2 solo dice «mira el archivo LICENCE» y el de libjpeg-turbo remite a
+    # README.ijg): avisos-extra\<biblioteca>.txt trae el texto que falta, sacado del repositorio oficial, con su fuente
+    $extra = Join-Path $PSScriptRoot "avisos-extra\$($d.Name).txt"
+    if (Test-Path $extra) { $texto += "`n`n" + (Get-Content $extra -Raw -Encoding UTF8).TrimEnd() }
     if (-not $grupos.Contains($texto)) { $grupos[$texto] = New-Object System.Collections.Generic.List[string] }
     $grupos[$texto].Add($d.Name)
 }

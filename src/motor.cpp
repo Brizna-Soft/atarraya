@@ -190,23 +190,33 @@ namespace
         return t * n;
     }
 
+    // Lo que AbrirSoloAfuera no dejó conectar durante una consulta
+    struct Bloqueo
+    {
+        bool local = false;      // esta PC, su red o un rango local
+        bool sinRedes = false;   // no se supo cuáles son las redes de la PC
+    };
+
     // Para las consultas automáticas: no conectar nunca con esta PC ni con su red (rangos locales, direcciones de la
-    // PC y las redes de sus tarjetas), aunque un nombre de afuera apunte ahí o una redirección lleve ahí
+    // PC y las redes de sus tarjetas), aunque un nombre de afuera apunte ahí o una redirección lleve ahí. Si no se
+    // puede saber, tampoco se conecta.
     curl_socket_t AbrirSoloAfuera(void* u, curlsocktype tipo, curl_sockaddr* a)
     {
         if (tipo == CURLSOCKTYPE_IPCXN)
         {
-            bool local = true;   // si la revisión falla, mejor no conectar
+            auto destino = hnd::red::Destino::SinRevisar;
             try
             {
-                local = hnd::red::EsDestinoLocal(&a->addr);
+                destino = hnd::red::RevisarDestino(&a->addr);
             }
             catch (...)
             {
             }
-            if (local)
+            if (destino != hnd::red::Destino::Afuera)
             {
-                *static_cast<bool*>(u) = true;
+                auto* b = static_cast<Bloqueo*>(u);
+                if (destino == hnd::red::Destino::Local) b->local = true;
+                else b->sinRedes = true;
                 return CURL_SOCKET_BAD;
             }
         }
@@ -517,9 +527,9 @@ namespace hnd
         curl_easy_setopt(c, CURLOPT_PROXY, "");
         curl_easy_setopt(c, CURLOPT_NOBODY, 1L);   // HEAD: solo las cabeceras, nunca el archivo
         curl_easy_setopt(c, CURLOPT_MAXREDIRS, 5L);
-        bool local = false;
+        Bloqueo bloqueo;
         curl_easy_setopt(c, CURLOPT_OPENSOCKETFUNCTION, AbrirSoloAfuera);
-        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &local);
+        curl_easy_setopt(c, CURLOPT_OPENSOCKETDATA, &bloqueo);
         curl_easy_setopt(c, CURLOPT_TIMEOUT, 30L);
         Cabeceras cab;
         curl_easy_setopt(c, CURLOPT_HEADERFUNCTION, AlRecibirCabecera);
@@ -539,9 +549,10 @@ namespace hnd
         curl_easy_getinfo(c, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &largo);
         curl_easy_cleanup(c);
         bool ftp = EsFtp(url);
-        r.local = local;
+        r.local = bloqueo.local;
+        r.sinRevisarRed = bloqueo.sinRedes && !bloqueo.local;
         r.noPermitido = cab.sitioNoPermitido;
-        if (local || cab.sitioNoPermitido) return;
+        if (r.local || r.sinRevisarRed || r.noPermitido) return;
         if (res != CURLE_OK)
         {
             r.error = res == CURLE_ABORTED_BY_CALLBACK ? std::string("Se canceló.") : TextoErrorCurl(res, detalle[0] ? detalle : curl_easy_strerror(res));

@@ -90,6 +90,7 @@ namespace hnd
         std::string tipo, urlFinal;
         std::string error;        // en español, si no se pudo consultar
         bool local = false;       // el nombre llevaba a una dirección de esta PC o de la red de la casa: no se consultó
+        bool sinRevisarRed = false; // Windows no dijo cuáles son las redes de la PC: no se consultó (se sabrá al bajar)
         bool noPermitido = false; // una redirección llevaba a YouTube
     };
     void ComprobarEnlace(const std::string& url, const std::string& referer, InfoEnlace& r, const std::atomic<bool>* parar = nullptr);

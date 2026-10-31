@@ -35,6 +35,7 @@ namespace
         case C::Torrent: return "torrent";
         case C::Local: return "local";
         case C::NoPermitido: return "nopermitido";
+        case C::SinRevisar: return "pendiente";   // al abrir el programa otra vez, se intenta de nuevo
         }
         return "pendiente";
     }
@@ -91,6 +92,7 @@ const wchar_t* hnd::TextoComprobacion(Comprobacion c)
     case Comprobacion::Torrent: return L"Torrent (magnet)";
     case Comprobacion::Local: return L"Dirección de tu red: no se consulta sola";
     case Comprobacion::NoPermitido: return L"Lleva a YouTube: no se baja";
+    case Comprobacion::SinRevisar: return L"No se pudo revisar la red: se consulta al bajar";
     }
     return L"";
 }
@@ -380,6 +382,12 @@ void hnd::Recolector::Consultar(std::shared_ptr<std::atomic<bool>> fin)
         {
             e.estado = Comprobacion::Local;
             e.detalle = "El nombre del sitio lleva a una dirección de esta PC o de tu red: no se consulta sola.";
+        }
+        else if (info.sinRevisarRed)
+        {
+            e.estado = Comprobacion::SinRevisar;
+            e.detalle = "Windows no dijo cuáles son las redes de esta PC, así que el enlace no se consultó solo. El nombre y el "
+                        "tamaño se sabrán al bajarlo.";
         }
         else if (info.noPermitido)
         {
