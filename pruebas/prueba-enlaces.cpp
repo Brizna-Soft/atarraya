@@ -1960,6 +1960,64 @@ namespace
         return ok != FALSE;
     }
 
+    // 0.4.0 (revisión): el aviso final de lo que bajó el navegador no se pierde aunque Atarraya esté cerrado
+    void AvisoFinalPruebas()
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring archivo = std::wstring(temporal) + L"atarraya-prueba-final-" + std::to_wstring(GetCurrentProcessId()) + L".json";
+        auto parte = [](const char* url) {
+            Parte p;
+            p.url = url;
+            p.nombre = NombreDeUrl(url);
+            p.carpeta = L"C:\\Descargas\\Peli";
+            return p;
+        };
+        DeUnaEnUna q(archivo);
+        q.Agregar({ parte("https://ddownload.com/e5e5e5e5/peli.part1.rar"), parte("https://ddownload.com/f6f6f6f6/peli.part2.rar"),
+                    parte("https://ddownload.com/g7g7g7g7/peli.part3.rar") });
+        int i = q.AbrirSiguiente();
+        q.EnNavegador(i, "n5-final");
+        auto e = q.EstadoDeToma("n5-final");
+        Comprobar(e.estado == "navegador" && e.espera, "aviso final: mientras baja el navegador, Atarraya espera su aviso final");
+        q.Guardar();
+        // El navegador terminó con Atarraya cerrado (la extensión guarda el aviso): al abrirlo, la parte sigue esperándolo
+        DeUnaEnUna alVolver(archivo);
+        alVolver.Cargar();
+        e = alVolver.EstadoDeToma("n5-final");
+        Comprobar(alVolver.BuscarToma("n5-final") == i && e.estado == "navegador" && e.espera && alVolver.PorMover().empty(),
+                  "aviso final: con Atarraya cerrado, al volver a abrirlo la parte sigue esperando el aviso (la extensión lo repite)");
+        IdentidadArchivo id;
+        id.volumen = 7;
+        id.indice = 42;
+        id.tamano = 1000;
+        id.modificado = 133000000000000000;
+        alVolver.AnotarArchivoDelNavegador(i, L"C:\\Users\\x\\Downloads\\peli.part1.rar", id);
+        e = alVolver.EstadoDeToma("n5-final");
+        Comprobar(e.estado == "terminada" && !e.espera && alVolver.PorMover() == std::vector<int>{ i },
+                  "aviso final: en cuanto llega queda anotado; la extensión deja de repetirlo y la parte se termina de mover");
+        // Uno que no terminó en el navegador: ya no se espera nada
+        int j = alVolver.AbrirSiguiente();
+        alVolver.EnNavegador(j, "n6-fallo");
+        alVolver.TerminarEnNavegador(j, false, 0);
+        e = alVolver.EstadoDeToma("n6-fallo");
+        Comprobar(alVolver.Partes()[j].estado == EstadoParte::Fallo && e.estado == "navegador" && !e.espera,
+                  "aviso final: si no terminó en el navegador, Atarraya ya no espera nada de esa descarga");
+        // Una que baja Atarraya: lo que diga el navegador importa hasta que termina
+        int k = alVolver.AbrirSiguiente();
+        alVolver.Probar(k, 88, "n7-toma", 1000);
+        auto probando = alVolver.EstadoDeToma("n7-toma");
+        alVolver.Decidir(k, true);
+        auto tomada = alVolver.EstadoDeToma("n7-toma");
+        alVolver.Terminar(88, true);
+        auto lista = alVolver.EstadoDeToma("n7-toma");
+        auto ninguna = alVolver.EstadoDeToma("n9-otra");
+        Comprobar(probando.estado == "probando" && probando.espera && tomada.estado == "tomada" && tomada.espera && lista.estado == "tomada"
+                      && !lista.espera && ninguna.estado == "desconocida" && !ninguna.espera,
+                  "aviso final: una que baja Atarraya espera avisos hasta que termina; una toma que no es de la cola, ninguno");
+        DeleteFileW(archivo.c_str());
+    }
+
     // 0.4.0 (revisión): una sola descarga activa por parte, también si Atarraya se cierra a la mitad de una toma
     void TomasPruebas()
     {
@@ -2626,6 +2684,7 @@ int wmain(int argc, wchar_t** argv)
     EsperasYNavegadorPruebas();
     MoverDelNavegadorPruebas();
     TomasPruebas();
+    AvisoFinalPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

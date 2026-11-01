@@ -1532,6 +1532,7 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         if (m_sitios.ParteDeToma(toma) >= 0) return;   // la misma otra vez
         if (parte.parte < 0 || !parte.segura)
         {
+            if (m_tomasSinParte.size() >= 1000) m_tomasSinParte.clear();
             m_tomasSinParte.insert(toma);
             return;
         }
@@ -2595,6 +2596,19 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
 {
     if (toma.empty()) return;
     int i = m_sitios.BuscarToma(toma);
+    if (i >= 0 && m_sitios.Partes()[i].estado == EstadoParte::Fallo)
+    {
+        // Ya se sabía que no terminó: la extensión repite el aviso final hasta que Atarraya lo confirma
+        if (estado != "bajando" && estado != "completa") return;
+        // Se había cortado y la persona la reanudó en el navegador: sigue siendo de la parte (si ya se había anotado lo
+        // que bajó, es el mismo aviso otra vez)
+        if (!m_sitios.Partes()[i].finalNavegador)
+        {
+            m_sitios.EnNavegador(i, toma);
+            GuardarCola();
+            Registrar("de una en una: parte " + std::to_string(i + 1) + ": se reanudó en el navegador");
+        }
+    }
     if (i < 0 && (i = m_sitios.ParteDeToma(toma)) >= 0)
     {
         // El navegador sigue con una que Atarraya había tomado o estaba probando (no se pudo cancelar, o la extensión no
@@ -2632,6 +2646,7 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
     }
     if (estado == "fallo" || estado == "cancelada")
     {
+        if (m_sitios.Partes()[i].estado != EstadoParte::Navegador) return;   // el mismo aviso otra vez
         m_sitios.TerminarEnNavegador(i, false, 0);
         GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": el navegador no la terminó (" + estado + ")");
@@ -2831,22 +2846,14 @@ std::string VentanaPrincipal::Consulta(const std::string& texto)
     }
     else if (tipo == "toma")
     {
-        // Quién baja la descarga del navegador que Atarraya probaba seguir, o si ya llegó su aviso final («terminada»:
-        // la extensión ya no tiene que repetirlo)
+        // Quién baja la descarga del navegador que Atarraya probaba seguir, y si Atarraya todavía espera un aviso sobre
+        // ella («espera»: la extensión guarda su aviso final y lo repite hasta que ya no). «ajena»: no es de una parte,
+        // la baja el navegador.
         std::string toma = campo("toma");
-        int i = m_sitios.ParteDeToma(toma);
-        if (i < 0) r["estado"] = m_tomasSinParte.count(toma) ? "navegador" : "desconocida";
-        else if (partes[i].finalNavegador) r["estado"] = "terminada";
-        else
-        {
-            switch (partes[i].estadoToma)
-            {
-            case EstadoToma::Probando: r["estado"] = "probando"; break;
-            case EstadoToma::Tomada: r["estado"] = "tomada"; break;
-            case EstadoToma::Navegador: r["estado"] = "navegador"; break;
-            default: r["estado"] = "desconocida"; break;
-            }
-        }
+        auto e = m_sitios.EstadoDeToma(toma);
+        if (m_sitios.ParteDeToma(toma) < 0 && m_tomasSinParte.count(toma)) e.estado = "ajena";
+        r["estado"] = e.estado;
+        r["espera"] = e.espera;
     }
     else r["error"] = "consulta desconocida";
     return r.dump();

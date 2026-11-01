@@ -43,10 +43,13 @@ function guardarPronto() {
 // La cola de «de una en una» de Atarraya (ver cola-navegador.js): las pestañas que abrió para sus partes y las
 // descargas que baja el navegador y la extensión sigue hasta el final (cuando el sitio no deja que otro programa las
 // baje). Las pestañas se guardan en storage.session (se borra al cerrar el navegador); las descargas que se siguen, en
-// storage.local hasta que terminan (el navegador recuerda sus descargas aunque se cierre). Este «service worker» se
-// apaga cuando no hace nada.
+// storage.local hasta que Atarraya confirma su aviso final (el navegador recuerda sus descargas aunque se cierre). Este
+// «service worker» se apaga cuando no hace nada.
 const cola = new PestanasDeLaCola();
-const seguidas = new Map();   // id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde }
+// id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde, final }
+// («final»: el aviso final, guardado hasta que Atarraya lo confirma)
+const seguidas = new Map();
+const entregando = new Set();   // avisos finales que se están mandando ahora
 const listoCola = (async () => {
   try {
     if (api.storage.session) cola.cargar((await api.storage.session.get("cola")).cola);
@@ -55,13 +58,14 @@ const listoCola = (async () => {
   }
   try {
     const g = await api.storage.local.get("seguidas");
-    const viejo = Date.now() - 3 * 24 * 3600000;
-    for (const [id, s] of Array.isArray(g && g.seguidas) ? g.seguidas : []) {
-      if (typeof id === "number" && s && typeof s.toma === "string" && (s.desde || 0) > viejo) seguidas.set(id, s);
-    }
+    for (const [id, s] of seguidasGuardadas(g && g.seguidas, Date.now())) seguidas.set(id, s);
   } catch (e) {}
   if (seguidas.size) vigilarSeguidas();
 })();
+// Los avisos finales que Atarraya no confirmó (por ejemplo, estaba cerrado): otra vez, cada vez que despierta la extensión
+listoCola.then(() => {
+  for (const id of [...seguidas.keys()]) entregarFinal(id);
+});
 function guardarCola() {
   if (api.storage.session) api.storage.session.set({ cola: cola.exportar() }).catch(() => {});
   api.storage.local.set({ seguidas: [...seguidas] }).catch(() => {});
@@ -237,6 +241,7 @@ async function programaListo() {
     const r = await hablar({ tipo: "ping" });
     if (r && r.ok) {
       listoHasta = Date.now() + 60000;
+      if (r.abierto) alVolverAtarraya();
       return true;
     }
   } catch (e) {
@@ -400,13 +405,18 @@ async function revisarSeguida(id) {
   await listoCola;
   const s = seguidas.get(id);
   if (!s) return;
+  if (s.final) {
+    entregarFinal(id);
+    return;
+  }
   let item = null;
   try {
     [item] = await api.downloads.search({ id });
   } catch (e) {}
   if (!item) {
-    seguidas.delete(id);   // la persona la borró de la lista del navegador
-    guardarCola();
+    // La persona la borró de la lista del navegador antes de que terminara: para Atarraya, no terminó
+    anotarFinal(id, s, { tipo: "navegador", toma: s.toma, estado: "cancelada", url: s.url, referer: s.referer, paginaCola: s.pagina,
+                         nombre: "", bajado: Math.max(0, Number(s.ultimoBytes) || 0), total: -1, ruta: "" });
     return;
   }
   const aviso = avisoDeSeguimiento(item, s, Date.now());
@@ -414,25 +424,75 @@ async function revisarSeguida(id) {
   s.ultimoAviso = Date.now();
   s.ultimoBytes = aviso.bajado;
   s.ultimoEstado = aviso.estado;
-  if (aviso.terminar) seguidas.delete(id);
-  guardarCola();
   const url = item.finalUrl || item.url || s.url;
-  try {
-    await hablar({
-      tipo: "navegador",
-      toma: s.toma,
-      estado: aviso.estado,
-      url: /^(https?|ftp):/i.test(url) ? url : s.url,
-      referer: s.referer,
-      paginaCola: s.pagina,
-      nombre: nombreDe(item.filename),
-      bajado: aviso.bajado,
-      total: aviso.total,
-      ruta: aviso.ruta || "",
-    });
-  } catch (e) {
-    // Atarraya está cerrado: al volver a abrirlo, la parte sigue esperando
+  const datos = {
+    tipo: "navegador",
+    toma: s.toma,
+    estado: aviso.estado,
+    url: /^(https?|ftp):/i.test(url) ? url : s.url,
+    referer: s.referer,
+    paginaCola: s.pagina,
+    nombre: nombreDe(item.filename),
+    bajado: aviso.bajado,
+    total: aviso.total,
+    ruta: aviso.ruta || "",
+  };
+  if (aviso.terminar) {
+    anotarFinal(id, s, datos);
+    return;
   }
+  guardarCola();
+  try {
+    await hablar(datos);
+  } catch (e) {
+    // Atarraya está cerrado: lo que importa es el aviso final, que se guarda
+  }
+}
+
+// El aviso final (terminó, falló o se canceló) se guarda con la descarga en storage.local, y la descarga se sigue
+// recordando, hasta que Atarraya confirma que ya no espera nada de ella (ver tocaFinal y finalEntregado)
+function anotarFinal(id, s, datos) {
+  s.final = Object.assign({}, datos, { desde: Date.now(), intento: 0 });
+  guardarCola();
+  vigilarSeguidas();
+  entregarFinal(id, true);
+}
+
+async function entregarFinal(id, ya = false) {
+  const s = seguidas.get(id);
+  if (!s || !s.final || entregando.has(id) || !tocaFinal(s.final, Date.now(), ya)) return;
+  entregando.add(id);
+  try {
+    s.final.intento = Date.now();
+    guardarCola();
+    const aviso = Object.assign({}, s.final);
+    delete aviso.desde;
+    delete aviso.intento;
+    let r = null;
+    try {
+      const e = await hablar(aviso);
+      // Atarraya lo recibió; lo atiende enseguida. Después se le pregunta si ya no espera nada de esta descarga.
+      if (e && e.ok) {
+        await esperar(1500);
+        r = await hablar({ tipo: "toma", toma: s.toma });
+      }
+    } catch (x) {
+      // Atarraya está cerrado (o no está el puente): queda guardado
+    }
+    if (finalEntregado(r) === "listo" && seguidas.get(id) === s) {
+      seguidas.delete(id);
+      guardarCola();
+    }
+  } finally {
+    entregando.delete(id);
+  }
+}
+
+// Atarraya volvió a contestar: los avisos finales guardados van enseguida
+function alVolverAtarraya() {
+  listoCola.then(() => {
+    for (const id of [...seguidas.keys()]) entregarFinal(id, true);
+  });
 }
 
 // Mientras se sigue alguna, se mira cada 3 segundos (el aviso de cómo va sale cada 5)

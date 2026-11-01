@@ -419,6 +419,22 @@ int hnd::DeUnaEnUna::ParteDeToma(const std::string& toma) const
     return -1;
 }
 
+hnd::DeUnaEnUna::RespuestaToma hnd::DeUnaEnUna::EstadoDeToma(const std::string& toma) const
+{
+    RespuestaToma r;
+    int i = ParteDeToma(toma);
+    if (i < 0) return r;
+    const auto& p = m_partes[i];
+    if (p.finalNavegador) r.estado = "terminada";
+    else if (p.estadoToma == EstadoToma::Probando) r.estado = "probando";
+    else if (p.estadoToma == EstadoToma::Tomada) r.estado = "tomada";
+    else if (p.estadoToma == EstadoToma::Navegador) r.estado = "navegador";
+    // Todavía importa lo que diga el navegador: la baja él (y no llegó su aviso final), o la baja Atarraya (si el
+    // navegador siguió con la suya, queda la del navegador). Si ya terminó, falló o se saltó, ya no.
+    r.espera = (p.estado == EstadoParte::Navegador && !p.finalNavegador) || p.estado == EstadoParte::Tomada;
+    return r;
+}
+
 int64_t hnd::MargenDeEspera(int64_t segundos)
 {
     return std::min<int64_t>(5 * 60, std::max<int64_t>(30, segundos / 20));

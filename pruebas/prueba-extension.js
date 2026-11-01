@@ -12,7 +12,9 @@ const M = enNode
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
       MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
-const C = enNode ? require("../extension/comun/cola-navegador.js") : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar };
+const C = enNode
+  ? require("../extension/comun/cola-navegador.js")
+  : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado, seguidasGuardadas };
 
 let fallas = 0;
 function decir(texto) {
@@ -309,6 +311,14 @@ if (enNode) {
   comprobar(/resultadoCancelar\(/.test(enLaCola) && /tipo: "soltar"/.test(enLaCola)
     && enLaCola.indexOf("resultadoCancelar(") < enLaCola.indexOf("downloads.erase({ id: item.id })"),
     "extensión: al vencer el plazo le pide a Atarraya que suelte la suya, y después de cancelar mira si de verdad se canceló");
+  // El aviso final no se borra al mandarlo: solo cuando Atarraya confirma que ya no espera nada de esa descarga
+  const revisar = fondo.slice(fondo.indexOf("async function revisarSeguida"), fondo.indexOf("function alVolverAtarraya"));
+  comprobar((fondo.match(/seguidas\.delete\(/g) || []).length === 1 && revisar.indexOf("finalEntregado(r)") > 0
+    && revisar.indexOf("finalEntregado(r)") < revisar.indexOf("seguidas.delete(id)") && /if \(aviso\.terminar\) \{\s*anotarFinal\(/.test(revisar),
+    "extensión: el aviso final se guarda y la descarga se olvida solo cuando Atarraya lo confirma");
+  comprobar(/seguidasGuardadas\(/.test(fondo) && /if \(r\.abierto\) alVolverAtarraya\(\)/.test(fondo)
+    && /listoCola\.then\(\(\) => \{\s*for \(const id of \[\.\.\.seguidas\.keys\(\)\]\) entregarFinal\(id\);/.test(fondo),
+    "extensión: los avisos finales guardados se mandan otra vez al despertar y cuando Atarraya vuelve a contestar");
 }
 
 // --- Avisos de espera de los sitios de descargas (esperas.js) ----------------------------------------------------------
@@ -429,6 +439,24 @@ comprobar(t4.paso("", 46000) === "soltar" && t4.paso("", 60999) === "esperar" &&
 comprobar(C.resultadoCancelar(null) === "cancelada" && C.resultadoCancelar({ state: "interrupted", error: "USER_CANCELED" }) === "cancelada"
   && C.resultadoCancelar({ state: "complete" }) === "terminada" && C.resultadoCancelar({ state: "in_progress" }) === "sigue",
   "toma: después de cancelar se mira cómo quedó; si no se canceló, sigue la del navegador y Atarraya quita la suya");
+comprobar(new C.TomaDelNavegador(1000).paso("ajena", 2000) === "seguir", "toma: una descarga que no es de una parte sigue en el navegador");
+
+// --- Un aviso final con Atarraya cerrado ---------------------------------------------------------------------------------
+const DIA = 24 * 3600000;
+const sf = { toma: "n7-final", desde: 1000, ultimoEstado: "bajando", final: { tipo: "navegador", toma: "n7-final", estado: "completa", ruta: "C:\\Users\\x\\Downloads\\peli.part1.rar", desde: 1000, intento: 0 } };
+comprobar(C.tocaFinal(sf.final, 1000, true) && C.finalEntregado(null) === "repetir" && C.finalEntregado({ ok: false, abierto: false }) === "repetir",
+  "aviso final: con Atarraya cerrado no se confirma y queda guardado");
+sf.final.intento = 1000;
+comprobar(!C.tocaFinal(sf.final, 30999, false) && C.tocaFinal(sf.final, 31000, false) && C.tocaFinal(sf.final, 2000, true) && !C.tocaFinal(undefined, 50000, true),
+  "aviso final: se manda otra vez cada 30 segundos, y enseguida al volver a conectar con Atarraya");
+const vuelven = C.seguidasGuardadas(JSON.parse(JSON.stringify([[7, sf], [8, { toma: "n8-vieja", desde: 1000 }], ["x", {}], [9, null]])), 1000 + 5 * DIA);
+comprobar(vuelven.length === 1 && vuelven[0][0] === 7 && vuelven[0][1].final.estado === "completa" && vuelven[0][1].final.ruta === sf.final.ruta,
+  "aviso final: sigue guardado aunque pasen días (storage.local); una descarga sin aviso final se olvida a los 3 días");
+comprobar(C.seguidasGuardadas([[7, sf]], 1000 + 31 * DIA).length === 0 && C.seguidasGuardadas([[8, { toma: "n8", desde: 1000 }]], 1000 + DIA).length === 1,
+  "aviso final: uno que nunca se confirmó se olvida al mes");
+comprobar(C.finalEntregado({ ok: true, estado: "navegador", espera: true }) === "repetir" && C.finalEntregado({ ok: true, estado: "terminada", espera: false }) === "listo"
+  && C.finalEntregado({ ok: true, estado: "desconocida", espera: false }) === "listo" && C.finalEntregado({ ok: true, estado: "navegador" }) === "repetir",
+  "aviso final: se borra solo cuando Atarraya contesta que ya no espera nada de esa descarga");
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
 if (enNode) process.exitCode = fallas ? 1 : 0;

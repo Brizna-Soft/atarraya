@@ -157,6 +157,16 @@ namespace hnd
         // El navegador siguió bajando una que Atarraya ya había tomado (por ejemplo, no se pudo cancelar, o la extensión no
         // supo de Atarraya a tiempo): queda la del navegador. Devuelve la descarga de Atarraya que hay que quitar (0: ninguna).
         uint64_t NavegadorSiguio(int i);
+        // Lo que se le contesta a la extensión sobre una «toma»: quién la baja («probando», «tomada», «navegador»;
+        // «terminada»: ya llegó y quedó anotado lo que bajó el navegador; «desconocida»: no es de ninguna parte) y si
+        // Atarraya todavía espera un aviso del navegador sobre ella (la extensión guarda su aviso final y lo repite
+        // hasta que ya no)
+        struct RespuestaToma
+        {
+            std::string estado = "desconocida";
+            bool espera = false;
+        };
+        RespuestaToma EstadoDeToma(const std::string& toma) const;
         void Progreso(int i, int64_t bajado, int64_t total);
         // Lo que bajó el navegador terminó: lista (con la descarga que la anota en la lista de Atarraya) o con error
         void TerminarEnNavegador(int i, bool ok, uint64_t descarga);

@@ -5,7 +5,8 @@
 //    que no abrió otra pestaña. Esas son candidatas: cuando su página carga, se le pregunta a Atarraya si es de su
 //    cola. Solo en esas se leen los avisos de espera, y sus descargas van con la página que abrió Atarraya.
 // 2. Cómo va una descarga que baja el navegador y la extensión sigue (cuando el sitio no deja que otro programa la
-//    baje): el aviso para Atarraya.
+//    baje): el aviso para Atarraya. El aviso final se guarda hasta que Atarraya lo confirma.
+// 3. Quién baja una parte mientras Atarraya prueba seguir la descarga del navegador: nunca quedan las dos.
 
 class PestanasDeLaCola {
   constructor(vidaCandidata = 2 * 60000, vidaCola = 6 * 3600000, consultas = 3) {
@@ -122,11 +123,12 @@ class TomaDelNavegador {
     this.soltada = 0;
   }
 
-  // «estado»: lo que contestó Atarraya («probando», «tomada», «navegador», «terminada», «desconocida»; "" si no contestó).
+  // «estado»: lo que contestó Atarraya («probando», «tomada», «navegador», «terminada», «ajena»: no es de una parte,
+  // «desconocida»; "" si no contestó).
   // Devuelve «esperar», «soltar» (pedirle a Atarraya que suelte la suya), «cancelar» (la del navegador) o «seguir».
   paso(estado, ahora) {
     if (estado === "tomada") return "cancelar";
-    if (estado === "navegador" || estado === "terminada") return "seguir";
+    if (estado === "navegador" || estado === "terminada" || estado === "ajena") return "seguir";
     if (!this.soltada) {
       if (ahora - this.inicio < this.plazo) return "esperar";
       this.soltada = ahora;
@@ -146,4 +148,39 @@ function resultadoCancelar(item) {
   return "sigue";
 }
 
-if (typeof module !== "undefined") module.exports = { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar };
+// El aviso final de una descarga que sigue la extensión (terminó, falló o se canceló) se guarda con ella en
+// storage.local hasta que Atarraya confirma que ya no espera nada de esa descarga. Si Atarraya está cerrado, se manda
+// otra vez cada 30 segundos mientras el navegador está abierto, al despertar la extensión y al volver a conectar.
+const REPETIR_FINAL = 30000;
+const VIDA_SEGUIDA = 3 * 24 * 3600000;   // una descarga que se sigue se olvida a los 3 días
+const VIDA_FINAL = 30 * 24 * 3600000;    // un aviso final que nunca se confirmó, al mes
+
+// ¿Toca mandar (otra vez) el aviso final? «ya»: enseguida (al anotarlo, o porque se volvió a conectar con Atarraya)
+function tocaFinal(final, ahora, ya) {
+  if (!final || typeof final !== "object") return false;
+  return !!ya || !final.intento || ahora - final.intento >= REPETIR_FINAL;
+}
+
+// Lo que contestó Atarraya a la consulta «toma» después del aviso final (null si no contestó): «listo» si ya no espera
+// nada de esa descarga (lo anotó, o no es de su cola); si no, «repetir»
+function finalEntregado(respuesta) {
+  return respuesta && respuesta.ok === true && respuesta.espera === false ? "listo" : "repetir";
+}
+
+// Las descargas seguidas que se guardaron: las de los últimos días, y por un mes las que tienen un aviso final sin
+// confirmar (Atarraya puede estar cerrado varios días)
+function seguidasGuardadas(lista, ahora) {
+  const r = [];
+  for (const par of Array.isArray(lista) ? lista : []) {
+    const [id, s] = Array.isArray(par) ? par : [];
+    if (typeof id !== "number" || !s || typeof s !== "object" || typeof s.toma !== "string") continue;
+    const final = s.final && typeof s.final === "object";
+    if (ahora - (Number(final ? s.final.desde : s.desde) || 0) < (final ? VIDA_FINAL : VIDA_SEGUIDA)) r.push([id, s]);
+  }
+  return r;
+}
+
+if (typeof module !== "undefined") {
+  module.exports = { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado,
+                     seguidasGuardadas };
+}
