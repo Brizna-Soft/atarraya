@@ -34,7 +34,10 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
   También toma los enlaces de archivos que copies, si dejas encendido «Vigilar el portapapeles». **Nada empieza
   hasta que lo confirmas.**
 - **Click'n'Load.** Sitios como filecrypt.cc pueden pasarle a Atarraya los enlaces de una carpeta, igual que a
-  JDownloader, después de que tú resuelves el captcha en tu navegador. Llegan al recolector y tú decides.
+  JDownloader, después de que tú resuelves el captcha en tu navegador. Llegan al recolector y tú decides. Desde la
+  0.3.1 entiende más formas de mandarlos: formularios de cualquier tipo (también «multipart»), los campos `urls`,
+  `url`, `links` o `link`, enlaces separados por saltos de línea, espacios o comas, y `GET /flash/add?urls=...`. Si
+  un sitio te muestra la respuesta en la pestaña, la ves en español; si algo no llega, el registro dice por qué.
 - **Descomprime con Jícaro.** Si tienes [Jícaro](https://brizna-soft.github.io/programas/jicaro/), el descompresor
   gratis de Brizna Soft, cuando terminan de bajar todas las partes de un paquete Atarraya lo descomprime solo, en una
   carpeta con su nombre. Ver [Descomprimir con Jícaro](#descomprimir-con-jícaro).
@@ -206,8 +209,9 @@ Lo que no baja:
   solo toma enlaces de archivos, magnet y páginas de sitios de descargas; no guarda lo que copias y no lee lo que
   un gestor de contraseñas marca como privado. Se apaga en el mismo recolector o en **Ajustes**.
 - **Click'n'Load** escucha solo en `127.0.0.1:9666`, así que nada de tu red ni de internet puede conectarse. No
-  ejecuta código de las páginas, tiene topes de tamaño y de cantidad, y lo que llega espera en el recolector. Se
-  apaga en **Ajustes**.
+  ejecuta código de las páginas, tiene topes de tamaño y de cantidad, y lo que llega espera en el recolector. Cuando
+  rechaza un envío, anota en el registro solo el motivo y el nombre del sitio, nunca los enlaces ni lo que trae el
+  formulario. Se apaga en **Ajustes**.
 - Para que funcionen las descargas que piden haber iniciado sesión, la extensión le pasa a Atarraya, solo dentro
   de tu PC, las cookies del sitio de esa descarga (para un video, las del marco donde está). Atarraya no las guarda
   cuando la descarga termina y nunca las manda a otro sitio.

@@ -1078,8 +1078,18 @@ void VentanaPrincipal::AlRecibirCnL(std::vector<std::string> lista, std::wstring
 {
     if (m_saliendo) return;
     size_t n = m_recolector.Agregar(lista, paquete, origen, "clicknload");
-    if (n == 0) return;
+    if (n < lista.size())
+        Registrar("Click'n'Load: " + std::to_string(n) + " nuevos en el recolector; " + std::to_string(lista.size() - n)
+                  + " ya estaban ahí o no cabían");
     AbrirRecolector(true);
+    if (n == 0)
+    {
+        // El sitio recibió «success»: que la persona vea dónde están, aunque no haya nada nuevo
+        Avisar(L"Click'n'Load", m_recolector.Cantidad() >= Recolector::Maximo
+                                    ? wxString(L"El recolector está lleno: quita algunos enlaces y vuelve a intentar.")
+                                    : wxString(L"No llegó nada nuevo: esos enlaces ya estaban en el recolector."));
+        return;
+    }
     std::string sitio = enlaces::Sitio(origen);
     Avisar(L"Click'n'Load", wxString::Format(L"Llegaron %zu enlaces%s. Están en el recolector: revisa y elige cuáles bajar.", n,
                                              sitio.empty() ? wxString() : L" de " + wxString::FromUTF8(sitio)));

@@ -274,9 +274,9 @@ if (enNode) {
     comprobar(cs.all_frames === true && cs.match_about_blank === true && JSON.stringify(cs.js) === JSON.stringify(["medios.js", "videos.js"])
       && ["*://*.youtube.com/*", "*://youtu.be/*", "*://*.youtube-nocookie.com/*", "*://*.googlevideo.com/*", "*://*.netflix.com/*"].every((x) => fuera.includes(x)),
       "extensión (" + nav + "): el botón va en todos los marcos, pero no en YouTube ni en sitios con DRM");
-    comprobar(man.version === "0.3.0" && JSON.stringify(man.permissions) === JSON.stringify(["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"])
+    comprobar(man.version === "0.3.1" && JSON.stringify(man.permissions) === JSON.stringify(["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"])
       && JSON.stringify(man.host_permissions) === JSON.stringify(["<all_urls>"]),
-      "extensión (" + nav + "): versión 0.3.0 y ningún permiso nuevo");
+      "extensión (" + nav + "): versión 0.3.1 y ningún permiso nuevo");
   }
   const ff = JSON.parse(leer("../extension/firefox/manifest.json"));
   comprobar(JSON.stringify(ff.background.scripts) === JSON.stringify(["origen.js", "medios.js", "background.js"]),

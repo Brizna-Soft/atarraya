@@ -761,8 +761,10 @@ namespace
         Comprobar(!cnl::ClaveDeJk("function f(){ return '3132'; }", clave), "CnL: rechaza clave corta");
         Comprobar(!cnl::ClaveDeJk("function f(){ return '31323334353637383930393837363534'; } alert(1)", clave), "CnL: rechaza lo que sigue");
         Comprobar(!cnl::ClaveDeJk("function f(){ return 'zz323334353637383930393837363534'; }", clave), "CnL: rechaza letras que no son hex");
-        auto form = cnl::LeerFormulario("jk=function+f()%7B+return+'61'%3B%7D&crypted=ab+cd%2B&source=https%3A%2F%2Fejemplo.org%2Fc");
-        Comprobar(form["jk"] == "function f(){ return '61';}" && form["crypted"] == "ab cd+" && form["source"] == "https://ejemplo.org/c",
+        cnl::Campos form;
+        Comprobar(cnl::LeerFormulario("", "jk=function+f()%7B+return+'61'%3B%7D&crypted=ab+cd%2B&source=https%3A%2F%2Fejemplo.org%2Fc", form).empty()
+                      && cnl::Valor(form, "jk") == "function f(){ return '61';}" && cnl::Valor(form, "crypted") == "ab cd+"
+                      && cnl::Valor(form, "source") == "https://ejemplo.org/c",
                   "CnL: formulario");
 
         // Cifrar como lo haría el sitio (AES-128-CBC, la clave también es el vector inicial, relleno con ceros) y descifrar
@@ -799,7 +801,16 @@ namespace
         std::string texto;
         Comprobar(cnl::Descifrar(sinMas, k, texto) && texto == claro, "CnL: descifrar (y «+» que llegan como espacios)");
         auto lista = cnl::Enlaces(texto, 1000);
-        Comprobar(lista.size() == 2, "CnL: enlaces sin repetir");
+        Comprobar(lista.enlaces.size() == 2 && lista.repetidos == 1 && lista.llegaron == 3, "CnL: enlaces sin repetir");
+        // Como pyLoad: el base64 codificado otra vez («%2B», «%2F», «%3D») también se descifra
+        std::string porcentajes;
+        for (char c : base64)
+        {
+            if (c == '+' || c == '/' || c == '=') porcentajes += c == '+' ? "%2B" : c == '/' ? "%2F" : "%3D";
+            else porcentajes += c;
+        }
+        Comprobar(porcentajes != base64 && cnl::Descifrar(porcentajes, k, texto) && texto == claro,
+                  "CnL: descifrar el base64 codificado dos veces");
         Comprobar(!cnl::Descifrar("AAAA", k, texto), "CnL: rechaza datos que no son bloques de 16");
         std::vector<uint8_t> otra(16, 'x');
         Comprobar(!cnl::Descifrar(base64, otra, texto) || texto != claro, "CnL: con otra clave no sale lo mismo");
@@ -1919,6 +1930,280 @@ namespace
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         fs::remove_all(carpeta, ec);
     }
+
+    // Click'n'Load: las tres formas en que un navegador manda un formulario, los nombres del campo de los enlaces, el GET,
+    // los topes y lo que queda en el registro (el motivo de cada rechazo; nunca los enlaces ni lo que trae el formulario)
+    void ClickNLoadPruebas()
+    {
+        const auto npos = std::string::npos;
+        using Lista = std::vector<std::string>;
+        cnl::Campos c;
+        Comprobar(cnl::LeerFormulario("application/x-www-form-urlencoded; charset=UTF-8", "urls=a&URLS=b&urls=c&solo&=x&&", c).empty()
+                      && c.size() == 4 && cnl::Valor(c, "urls") == "a" && cnl::Tiene(c, "solo") && cnl::Valor(c, "solo").empty(),
+                  "CnL: urlencoded con nombres repetidos (quedan todos; el primero manda) y un campo sin valor");
+        std::string muchos;
+        for (size_t i = 0; i <= cnl::MaxCampos; i++) muchos += "c" + std::to_string(i) + "=1&";
+        Comprobar(cnl::LeerFormulario("", muchos, c).rfind("demasiados campos", 0) == 0, "CnL: más de 64 campos se rechaza");
+        Comprobar(cnl::LeerFormulario("", "urls=" + std::string(cnl::MaxCampo + 1, 'a'), c).find("demasiado largo") != npos,
+                  "CnL: un campo de más de 512 KB se rechaza");
+
+        // multipart/form-data como lo manda Chrome (con algo antes de la primera marca y una parte que es un archivo)
+        const std::string b = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+        auto parte = [&](const std::string& nombre, const std::string& valor, const std::string& mas = "") {
+            return "--" + b + "\r\nContent-Disposition: form-data; name=\"" + nombre + "\"" + mas + "\r\n\r\n" + valor + "\r\n";
+        };
+        const std::string fin = "--" + b + "--\r\n";
+        const std::string mp = "esto se ignora\r\n" + parte("urls", "https://ejemplo.org/a.zip\r\nhttps://ejemplo.org/b.zip")
+                               + parte("source", "https://ejemplo.org/carpeta")
+                               + parte("lista", "https://ejemplo.org/c.zip", "; filename=\"lista.txt\"\r\nContent-Type: text/plain") + fin;
+        Comprobar(cnl::LeerFormulario("multipart/form-data; boundary=" + b, mp, c).empty() && c.size() == 3
+                      && cnl::Valor(c, "urls") == "https://ejemplo.org/a.zip\r\nhttps://ejemplo.org/b.zip"
+                      && cnl::Valor(c, "source") == "https://ejemplo.org/carpeta" && cnl::Valor(c, "lista") == "https://ejemplo.org/c.zip",
+                  "CnL: multipart (con preámbulo y una parte que es un archivo)");
+        Comprobar(cnl::LeerFormulario("Multipart/Form-Data; charset=utf-8; boundary=\"" + b + "\"", mp, c).empty() && c.size() == 3,
+                  "CnL: multipart con el boundary entre comillas");
+        Comprobar(cnl::LeerFormulario("multipart/form-data; boundary=" + b, parte("urls", "x") + parte("source", "y") + fin, c).empty()
+                      && cnl::Valor(c, "urls") == "x" && cnl::Valor(c, "source") == "y",
+                  "CnL: multipart que empieza con la primera marca");
+        Comprobar(cnl::LeerFormulario("multipart/form-data", mp, c).find("boundary") != npos, "CnL: multipart sin boundary se rechaza");
+        Comprobar(cnl::LeerFormulario("multipart/form-data; boundary=" + b, parte("urls", "https://ejemplo.org/a.zip"), c).find("incompleto") != npos,
+                  "CnL: multipart sin la marca final se rechaza");
+        std::string mpMuchos;
+        for (size_t i = 0; i <= cnl::MaxCampos; i++) mpMuchos += parte("c" + std::to_string(i), "1");
+        Comprobar(cnl::LeerFormulario("multipart/form-data; boundary=" + b, mpMuchos + fin, c).rfind("demasiados campos", 0) == 0,
+                  "CnL: multipart con más de 64 partes se rechaza");
+        Comprobar(cnl::LeerFormulario("multipart/form-data; boundary=" + b, parte("urls", std::string(cnl::MaxCampo + 1, 'a')) + fin, c)
+                          .find("demasiado largo") != npos,
+                  "CnL: multipart con una parte de más de 512 KB se rechaza");
+
+        // text/plain: una línea sin «nombre=» sigue el campo de antes
+        Comprobar(cnl::LeerFormulario("text/plain", "urls=https://ejemplo.org/a.zip\r\nhttps://ejemplo.org/b.zip?x=1\r\nsource=https://ejemplo.org/c\r\n", c)
+                          .empty()
+                      && cnl::Valor(c, "urls") == "https://ejemplo.org/a.zip\nhttps://ejemplo.org/b.zip?x=1"
+                      && cnl::Valor(c, "source") == "https://ejemplo.org/c",
+                  "CnL: text/plain");
+        Comprobar(!cnl::TipoAdmitido("application/json") && cnl::TipoAdmitido("Multipart/Form-Data; boundary=x") && cnl::TipoAdmitido("")
+                      && cnl::TipoAdmitido("application/x-www-form-urlencoded;charset=UTF-8")
+                      && !cnl::TipoAdmitido("application/x-www-form-urlencodedx"),
+                  "CnL: los tipos de formulario que se leen");
+
+        // Los nombres del campo de los enlaces
+        std::string t;
+        cnl::LeerFormulario("", "url=https%3A%2F%2Fa.org%2F1&links=https%3A%2F%2Fa.org%2F2&link=https%3A%2F%2Fa.org%2F3"
+                                "&URLS[]=https%3A%2F%2Fa.org%2F4&urls%5B0%5D=https%3A%2F%2Fa.org%2F5&enlaces=https%3A%2F%2Fa.org%2F6", c);
+        Comprobar(cnl::TextoDeEnlaces(c, t)
+                      && cnl::Enlaces(t, 1000).enlaces == Lista{ "https://a.org/1", "https://a.org/2", "https://a.org/3", "https://a.org/4", "https://a.org/5" },
+                  "CnL: campos urls, url, links, link, urls[] y urls[0] (otros nombres no)");
+        cnl::LeerFormulario("", "crypted=x&jk=y", c);
+        Comprobar(!cnl::TextoDeEnlaces(c, t), "CnL: un formulario sin campo de enlaces");
+
+        // Cómo se separan los enlaces y qué se cuenta
+        auto l = cnl::Enlaces("https://a.org/1\r\nhttps://a.org/2 https://a.org/3\thttps://a.org/4,https://a.org/5, https://a.org/6 ,https://a.org/7\n", 1000);
+        Comprobar(l.enlaces.size() == 7 && l.llegaron == 7 && l.otros == 0, "CnL: enlaces separados por saltos de línea, espacios, tabuladores y comas");
+        l = cnl::Enlaces("https://a.org/archivo,1.zip https://a.org/Don't.Look.Up.mkv https://a.org/x_(1).rar HTTPS://A.ORG/MAYUS.ZIP", 1000);
+        Comprobar(l.enlaces == Lista{ "https://a.org/archivo,1.zip", "https://a.org/Don't.Look.Up.mkv", "https://a.org/x_(1).rar", "HTTPS://A.ORG/MAYUS.ZIP" },
+                  "CnL: una coma, una comilla simple o paréntesis dentro de la dirección se quedan (y las mayúsculas)");
+        l = cnl::Enlaces("https://a.org/1 https://a.org/1 https://www.youtube.com/watch?v=x hola www.a.org/2 "
+                         "magnet:?xt=urn:btih:0123456789abcdef0123456789abcdef01234567",
+                         1000);
+        Comprobar(l.llegaron == 4 && l.enlaces.size() == 2 && l.repetidos == 1 && l.youtube == 1 && l.otros == 2,
+                  "CnL: cuenta los repetidos, los de YouTube y lo que no es un enlace");
+        Comprobar(cnl::Resumen(l) == "llegaron 4 enlaces y quedaron 2 (1 repetido, 1 de YouTube, que Atarraya no baja); además, 2 trozos de texto que no son enlaces",
+                  "CnL: el resumen para el registro");
+        l = cnl::Enlaces("<a href=\"https://a.org/1\">uno</a> \"https://a.org/2\"", 1000);
+        Comprobar(l.enlaces == Lista{ "https://a.org/1", "https://a.org/2" }, "CnL: enlaces dentro de HTML o entre comillas");
+        l = cnl::Enlaces("https%3A%2F%2Fa.org%2F1%0D%0Ahttps%3A%2F%2Fa.org%2F2", 1000);
+        Comprobar(l.enlaces == Lista{ "https://a.org/1", "https://a.org/2" }, "CnL: enlaces codificados dos veces");
+        l = cnl::Enlaces("https://a.org/espa\xF1ol.zip", 1000);
+        Comprobar(l.enlaces == Lista{ "https://a.org/espa%F1ol.zip" }, "CnL: una letra que no es UTF-8 queda como %XX");
+        std::string mil;
+        for (int i = 0; i < 1005; i++) mil += "https://a.org/" + std::to_string(i) + "\n";
+        l = cnl::Enlaces(mil, 1000);
+        Comprobar(l.enlaces.size() == 1000 && l.sobran == 5 && l.llegaron == 1005, "CnL: de 1005 enlaces quedan 1000 y se cuentan los que sobran");
+        Comprobar(cnl::Resumen(cnl::Enlaces("", 1000)) == "llegaron 0 enlaces y quedaron 0", "CnL: un campo vacío");
+
+        // El servidor de verdad: en un puerto libre y con un registro aparte
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring carpeta = std::wstring(temporal) + L"atarraya-prueba-cnl-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        std::filesystem::remove_all(carpeta, ec);
+        std::filesystem::create_directories(carpeta, ec);
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", carpeta.c_str());   // el registro de esta prueba va aquí
+        std::mutex m;
+        std::vector<Lista> recibidos;
+        std::vector<std::wstring> paquetes;
+        auto alRecibir = [&](Lista enlaces, std::wstring paquete, std::string) {
+            std::lock_guard g(m);
+            recibidos.push_back(std::move(enlaces));
+            paquetes.push_back(std::move(paquete));
+        };
+        auto cuantos = [&]() {
+            std::lock_guard g(m);
+            return recibidos.size();
+        };
+        auto ultimos = [&]() {
+            std::lock_guard g(m);
+            return recibidos.empty() ? Lista() : recibidos.back();
+        };
+        auto pedir = [](uint16_t puerto, const std::string& pedido) {
+            std::string r;
+            SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            sockaddr_in a{};
+            a.sin_family = AF_INET;
+            a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            a.sin_port = htons(puerto);
+            DWORD espera = 10000;
+            setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&espera), sizeof(espera));
+            if (connect(s, reinterpret_cast<sockaddr*>(&a), sizeof(a)) == 0)
+            {
+                for (size_t enviado = 0; enviado < pedido.size();)
+                {
+                    int n = send(s, pedido.data() + enviado, (int)(pedido.size() - enviado), 0);
+                    if (n <= 0) break;
+                    enviado += (size_t)n;
+                }
+                // Como un navegador: con la respuesta completa (su Content-Length), cierra su lado
+                char buf[4096];
+                for (int n; (n = recv(s, buf, sizeof(buf), 0)) > 0;)
+                {
+                    r.append(buf, (size_t)n);
+                    size_t fin = r.find("\r\n\r\n"), largo = r.find("Content-Length: ");
+                    if (fin != std::string::npos && largo < fin && r.size() >= fin + 4 + (size_t)atoll(r.c_str() + largo + 16)) break;
+                }
+            }
+            closesocket(s);
+            return r;
+        };
+        auto codigo = [](const std::string& r) { return r.rfind("HTTP/1.1 ", 0) == 0 ? atoi(r.c_str() + 9) : 0; };
+        auto cuerpoDe = [](const std::string& r) {
+            size_t p = r.find("\r\n\r\n");
+            return p == std::string::npos ? std::string() : r.substr(p + 4);
+        };
+
+        ServidorCnL servidor;
+        std::string error;
+        Comprobar(servidor.Iniciar(alRecibir, error, 0) && servidor.Puerto() != 0, "CnL servidor: escucha en un puerto libre");
+        const uint16_t puerto = servidor.Puerto();
+        const std::string host = "Host: 127.0.0.1:" + std::to_string(puerto) + "\r\n";
+        const std::string origen = "Origin: https://carpetas.ejemplo.org\r\n";
+        const std::string urlenc = "application/x-www-form-urlencoded";
+        auto post = [&](const std::string& ruta, const std::string& tipo, const std::string& cuerpo, const std::string& mas = "") {
+            return pedir(puerto, "POST " + ruta + " HTTP/1.1\r\n" + host + (tipo.empty() ? std::string() : "Content-Type: " + tipo + "\r\n")
+                                     + "Content-Length: " + std::to_string(cuerpo.size()) + "\r\n" + origen + mas + "\r\n" + cuerpo);
+        };
+
+        auto r = post("/flash/add", urlenc,
+                      "urls=https%3A%2F%2Fejemplo.org%2Fsecreto-1.zip%0D%0Ahttps%3A%2F%2Fejemplo.org%2Fsecreto-2.zip&package=Paquete+privado");
+        Comprobar(codigo(r) == 200 && cuerpoDe(r) == "success\r\n" && cuantos() == 1 && ultimos().size() == 2, "CnL servidor: urlencoded con «urls»");
+        r = post("/flash/add", "multipart/form-data; boundary=" + b,
+                 parte("urls", "https://ejemplo.org/secreto-3.zip\r\nhttps://ejemplo.org/secreto-4.zip")
+                     + parte("source", "https://carpetas.ejemplo.org/f/privado") + fin);
+        Comprobar(codigo(r) == 200 && cuantos() == 2 && ultimos().size() == 2, "CnL servidor: multipart/form-data (antes daba 415)");
+        r = post("/flash/add", urlenc, "links=https%3A%2F%2Fejemplo.org%2Fsecreto-5.zip");
+        Comprobar(codigo(r) == 200 && cuantos() == 3 && ultimos().size() == 1, "CnL servidor: el campo «links» (antes daba 400)");
+        r = pedir(puerto, "GET /flash/add?urls=https%3A%2F%2Fejemplo.org%2Fsecreto-6.zip+https%3A%2F%2Fejemplo.org%2Fsecreto-7.zip HTTP/1.1\r\n" + host + "\r\n");
+        Comprobar(codigo(r) == 200 && cuantos() == 4 && ultimos().size() == 2, "CnL servidor: GET /flash/add?urls= (antes daba 404)");
+        r = post("/flash/add", "text/plain", "urls=https://ejemplo.org/secreto-8.zip\r\nhttps://ejemplo.org/secreto-9.zip\r\n");
+        Comprobar(codigo(r) == 200 && cuantos() == 5 && ultimos().size() == 2, "CnL servidor: text/plain");
+        r = post("/flash/add/", urlenc, "urls=https%3A%2F%2Fejemplo.org%2Fsecreto-10.zip", "Sec-Fetch-Dest: document\r\n");
+        Comprobar(codigo(r) == 200 && r.find("Content-Type: text/html") != npos && cuerpoDe(r).find("Atarraya recibió 1 enlace") != npos
+                      && cuerpoDe(r).find("recolector") != npos && cuantos() == 6,
+                  "CnL servidor: en una pestaña responde con una página en español (y «/flash/add/» también vale)");
+        bool paquetesBien;
+        {
+            std::lock_guard g(m);
+            paquetesBien = paquetes.size() >= 2 && paquetes[0] == L"Paquete privado" && paquetes[1] == L"Click'n'Load de carpetas.ejemplo.org";
+        }
+        Comprobar(paquetesBien, "CnL servidor: el nombre del paquete (del campo «package» o del sitio)");
+
+        // Rechazos: ninguno llega al recolector y cada uno queda en el registro con su motivo
+        size_t antes = cuantos();
+        r = post("/flash/add", "application/json", "{\"urls\":[\"https://ejemplo.org/secreto-11.zip\"]}");
+        Comprobar(codigo(r) == 415 && cuerpoDe(r) == "failed\r\n", "CnL servidor: JSON da 415");
+        r = post("/flash/add", urlenc, "enlaces=https%3A%2F%2Fejemplo.org%2Fsecreto-12.zip&source=https%3A%2F%2Fcarpetas.ejemplo.org%2Fprivado");
+        Comprobar(codigo(r) == 400, "CnL servidor: sin campo de enlaces da 400");
+        r = post("/flash/add", urlenc, "urls=hola+mundo+privado");
+        Comprobar(codigo(r) == 400, "CnL servidor: sin enlaces válidos da 400");
+        r = pedir(puerto, "POST /flash/add HTTP/1.1\r\nHost: otro.ejemplo:" + std::to_string(puerto) + "\r\nContent-Length: 0\r\n" + origen + "\r\n");
+        Comprobar(codigo(r) == 403, "CnL servidor: otro host da 403");
+        r = pedir(puerto, "POST /flash/add HTTP/1.1\r\n" + host + "Content-Length: 2000000\r\n" + origen + "\r\n");
+        Comprobar(codigo(r) == 413, "CnL servidor: más de 1 MB da 413");
+        r = post("/flash/addcrypted", urlenc, "crypted=abc");
+        Comprobar(codigo(r) == 400, "CnL servidor: un DLC se rechaza");
+        r = post("/flash/addcrypted2", urlenc, "crypted=abc");
+        Comprobar(codigo(r) == 400, "CnL servidor: addcrypted2 sin «jk» se rechaza");
+        r = post("/flash/add", "multipart/form-data; boundary=" + b, mpMuchos + fin);
+        Comprobar(codigo(r) == 400, "CnL servidor: multipart con demasiadas partes se rechaza");
+        r = pedir(puerto, "GET /otra HTTP/1.1\r\n" + host + "\r\n");
+        Comprobar(codigo(r) == 404, "CnL servidor: una dirección que no existe da 404");
+        r = pedir(puerto, "GET /carpeta/secreto-13/archivo.zip HTTP/1.1\r\n" + host + "\r\n");
+        Comprobar(codigo(r) == 404, "CnL servidor: otra dirección más larga también da 404");
+        r = pedir(puerto, "PUT /flash/add HTTP/1.1\r\n" + host + "\r\n");
+        Comprobar(codigo(r) == 405, "CnL servidor: PUT da 405");
+        r = post("/flash/add", "application/json", "{}", "Sec-Fetch-Dest: document\r\n");
+        Comprobar(codigo(r) == 415 && cuerpoDe(r).find("Atarraya no pudo recibir estos enlaces") != npos
+                      && cuerpoDe(r).find("tipo de envío no admitido") != npos,
+                  "CnL servidor: en una pestaña, el rechazo se explica en español");
+        Comprobar(cuantos() == antes, "CnL servidor: ningún rechazo llega al recolector");
+        r = pedir(puerto, "GET /jdcheck.js HTTP/1.1\r\nHost: localhost:" + std::to_string(puerto) + "\r\n\r\n");
+        Comprobar(codigo(r) == 200 && cuerpoDe(r).rfind("jdownloader=true;", 0) == 0, "CnL servidor: /jdcheck.js sigue igual");
+        servidor.Detener();
+
+        // Topes por minuto (otro servidor, con sus propias cuentas): 30 pedidos con enlaces y 20 rechazos en el registro
+        {
+            ServidorCnL otro;
+            Comprobar(otro.Iniciar(alRecibir, error, 0), "CnL servidor: otro en un puerto libre");
+            const uint16_t p2 = otro.Puerto();
+            const std::string h2 = "Host: localhost:" + std::to_string(p2) + "\r\n";
+            int bien = 0;
+            for (int i = 0; i < 30; i++)
+                bien += codigo(pedir(p2, "GET /flash/add?urls=https%3A%2F%2Fejemplo.org%2Ftope-" + std::to_string(i) + ".zip HTTP/1.1\r\n" + h2 + "\r\n")) == 200;
+            r = pedir(p2, "GET /flash/add?urls=https%3A%2F%2Fejemplo.org%2Ftope-30.zip HTTP/1.1\r\n" + h2 + "\r\n");
+            Comprobar(bien == 30 && codigo(r) == 429, "CnL servidor: 30 pedidos por minuto; el siguiente da 429");
+            for (int i = 0; i < 25; i++) pedir(p2, "GET /tope-del-registro HTTP/1.1\r\n" + h2 + "\r\n");
+            otro.Detener();
+        }
+
+        std::string registro;
+        LeerArchivo(carpeta + L"\\registro.txt", registro);
+        auto hay = [&](const std::string& s) { return registro.find(s) != npos; };
+        auto veces = [&](const std::string& s) {
+            size_t n = 0;
+            for (size_t p = registro.find(s); p != npos; p = registro.find(s, p + 1)) n++;
+            return n;
+        };
+        Comprobar(hay("Click'n'Load: llegaron 2 enlaces y quedaron 2. Pedido: POST /flash/add, urlencoded, desde carpetas.ejemplo.org"),
+                  "CnL registro: cuántos enlaces llegaron, cuántos quedaron y de qué sitio");
+        Comprobar(hay("POST /flash/add, multipart, desde carpetas.ejemplo.org") && hay("GET /flash/add, en la dirección, desde un sitio desconocido")
+                      && hay("POST /flash/add, text/plain, desde carpetas.ejemplo.org"),
+                  "CnL registro: cómo llegó cada formulario");
+        Comprobar(hay("rechazado: tipo de envío no admitido. Pedido: POST /flash/add, application/json, desde carpetas.ejemplo.org"),
+                  "CnL registro: tipo de envío no admitido");
+        Comprobar(hay("rechazado: falta el campo de los enlaces (urls, url, links o link); llegaron 2 campos: enlaces, source"),
+                  "CnL registro: el campo que falta (con los nombres que sí llegaron)");
+        Comprobar(hay("rechazado: no trae enlaces válidos: llegaron 0 enlaces y quedaron 0; además, 3 trozos de texto que no son enlaces"),
+                  "CnL registro: sin enlaces válidos, con la cuenta");
+        Comprobar(hay("rechazado: host no permitido (otro.ejemplo:" + std::to_string(puerto) + ")"), "CnL registro: host no permitido");
+        Comprobar(hay("rechazado: demasiado grande (más de 1 MB)"), "CnL registro: demasiado grande");
+        Comprobar(hay("rechazado: un contenedor DLC"), "CnL registro: DLC");
+        Comprobar(hay("rechazado: falta el campo jk; llegó 1 campo: crypted"), "CnL registro: falta «jk»");
+        Comprobar(hay("rechazado: demasiados campos (más de 64)"), "CnL registro: demasiados campos");
+        Comprobar(hay("rechazado: dirección que no existe. Pedido: GET /otra") && hay("Pedido: GET (otra dirección), desde"),
+                  "CnL registro: dirección que no existe (de una dirección larga, solo que era otra)");
+        Comprobar(hay("rechazado: método no admitido. Pedido: PUT /flash/add"), "CnL registro: método no admitido");
+        Comprobar(hay("rechazado: demasiados pedidos (más de 30 por minuto)"), "CnL registro: demasiados pedidos");
+        Comprobar(veces("GET /tope-del-registro") == 19 && veces("llegan demasiados rechazos") == 1,
+                  "CnL registro: como mucho 20 rechazos por minuto (una página no puede llenarlo)");
+        Comprobar(!hay("secreto") && !hay("privado") && !hay("hola") && !hay("https://") && !hay("tope-1") && !hay("Paquete"),
+                  "CnL registro: nunca los enlaces ni lo que trae el formulario");
+
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
+        std::filesystem::remove_all(carpeta, ec);
+        WSACleanup();
+    }
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -1950,6 +2235,7 @@ int wmain(int argc, wchar_t** argv)
     PaginaEnUnaParte();
     JicaroPruebas();
     FlujosPruebas();
+    ClickNLoadPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

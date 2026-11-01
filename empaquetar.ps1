@@ -46,6 +46,10 @@ Atarraya $version - descargas, videos, torrents y enlaces magnet, gratis, de Bri
    - DASH (.mpd): el video y el audio quedan en dos archivos, "(video)" y "(audio)", sin unir. Para
      juntarlos hace falta un programa aparte, como FFmpeg (Atarraya no lo trae).
    No baja videos de YouTube ni videos protegidos o cifrados (DRM): ahí te dice "Este video está protegido".
+8. Nuevo en la 0.3.1: Click'n'Load recibe los enlaces de más sitios (formularios de cualquier tipo, los campos
+   "urls", "url", "links" o "link", y enlaces separados por saltos de línea, espacios o comas). Si un sitio no
+   puede pasarlos, Atarraya te dice por qué y lo anota en su registro: solo el motivo y el nombre del sitio,
+   nunca los enlaces.
 
 Si ya tenías la extensión de una versión anterior, recárgala (la 0.3.0 la necesita para el botón de los
 videos): en chrome://extensions (o edge://extensions)
