@@ -172,13 +172,15 @@ La extensión pide solo lo que usa, y nada de lo que ve sale de tu PC:
 - **Menú del clic derecho** (`contextMenus`): para **Descargar con Atarraya**.
 - **Cookies** (`cookies`): para que Atarraya pueda bajar lo que pide haber iniciado sesión. Solo lee las del sitio
   de esa descarga (para un video, las del marco donde está), y solo cuando empieza una descarga o pulsas un botón.
-- **Almacenamiento** (`storage`): para tus ajustes de la extensión y, mientras el navegador está abierto, la lista
-  de videos de cada pestaña y las pestañas y descargas de la cola de «de una en una» (se borran al cerrarlo).
+- **Almacenamiento** (`storage`): para tus ajustes de la extensión; mientras el navegador está abierto, la lista de
+  videos de cada pestaña y qué pestañas son de la cola de «de una en una» (se borran al cerrarlo); y las descargas
+  de la cola que está siguiendo, solo hasta que terminan.
 - **Ver los pedidos de las páginas** (`webRequest`): solo mira las respuestas, sin bloquearlas ni cambiarlas, para
   saber en qué pestaña nació una descarga y qué videos, listas HLS o manifiestos DASH pidió el reproductor.
 - **Todos los sitios** (`<all_urls>` y el botón en las páginas): porque las descargas y los videos pueden venir de
-  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM. En cada
-  página, la extensión solo pregunta si es de la cola de Atarraya; los avisos de espera solo se leen en esas.
+  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM. Cuando
+  otro programa (como Atarraya) abre una pestaña, la extensión le pregunta a Atarraya si esa página es de su cola;
+  los avisos de espera solo se leen en esas.
 
 ## Videos de las páginas
 
@@ -248,7 +250,7 @@ Lo que no baja:
   cuando la descarga termina y nunca las manda a otro sitio.
 - En las páginas que abre la cola de «de una en una», la extensión lee el texto que se ve solo para reconocer los
   avisos de espera, y a Atarraya le pasa solo cuánto hay que esperar: nunca el texto de la página. En las demás
-  páginas no lee nada.
+  páginas no lee nada. Atarraya no anota en su registro las direcciones que le pregunta la extensión.
 - La lista de videos de cada pestaña se queda dentro del navegador y se borra al cerrarlo. La extensión no guarda
   qué videos ves ni los manda a ningún lado. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
   una»; esa dirección no se guarda.

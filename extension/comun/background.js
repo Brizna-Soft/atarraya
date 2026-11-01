@@ -42,27 +42,29 @@ function guardarPronto() {
 
 // La cola de «de una en una» de Atarraya (ver cola-navegador.js): las pestañas que abrió para sus partes y las
 // descargas que baja el navegador y la extensión sigue hasta el final (cuando el sitio no deja que otro programa las
-// baje). Se guardan en storage.session (dentro del navegador, se borra al cerrarlo): este «service worker» se apaga
-// cuando no hace nada.
+// baje). Las pestañas se guardan en storage.session (se borra al cerrar el navegador); las descargas que se siguen, en
+// storage.local hasta que terminan (el navegador recuerda sus descargas aunque se cierre). Este «service worker» se
+// apaga cuando no hace nada.
 const cola = new PestanasDeLaCola();
-const seguidas = new Map();   // id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado }
+const seguidas = new Map();   // id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde }
 const listoCola = (async () => {
   try {
-    if (api.storage.session) {
-      const g = await api.storage.session.get(["cola", "seguidas"]);
-      cola.cargar(g && g.cola);
-      for (const [id, s] of Array.isArray(g && g.seguidas) ? g.seguidas : []) {
-        if (typeof id === "number" && s && typeof s.toma === "string") seguidas.set(id, s);
-      }
-    }
+    if (api.storage.session) cola.cargar((await api.storage.session.get("cola")).cola);
   } catch (e) {
     // Sin storage.session se recuerda solo mientras el «service worker» está despierto
   }
+  try {
+    const g = await api.storage.local.get("seguidas");
+    const viejo = Date.now() - 3 * 24 * 3600000;
+    for (const [id, s] of Array.isArray(g && g.seguidas) ? g.seguidas : []) {
+      if (typeof id === "number" && s && typeof s.toma === "string" && (s.desde || 0) > viejo) seguidas.set(id, s);
+    }
+  } catch (e) {}
   if (seguidas.size) vigilarSeguidas();
 })();
 function guardarCola() {
-  if (!api.storage.session) return;
-  api.storage.session.set({ cola: cola.exportar(), seguidas: [...seguidas] }).catch(() => {});
+  if (api.storage.session) api.storage.session.set({ cola: cola.exportar() }).catch(() => {});
+  api.storage.local.set({ seguidas: [...seguidas] }).catch(() => {});
 }
 
 // Una pestaña que no abrió otra pestaña la abrió otro programa (por ejemplo, Atarraya): puede ser de su cola
@@ -387,6 +389,7 @@ function seguirEnNavegador(item, datos, toma) {
     ultimoAviso: 0,
     ultimoBytes: -1,
     ultimoEstado: "",
+    desde: Date.now(),
   });
   guardarCola();
   revisarSeguida(item.id);

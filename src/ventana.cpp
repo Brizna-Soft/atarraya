@@ -49,6 +49,25 @@ namespace
 {
     bool TemaOscuro() { return wxSystemSettings::GetAppearance().IsDark(); }
 
+    // El reloj de las esperas de la cola de «de una en una»
+    int64_t RelojEsperas()
+    {
+#ifdef ATARRAYA_PRUEBAS
+        // Solo en la copia de prueba: se puede acelerar (ATARRAYA_PRUEBA_RELOJ=60: un minuto pasa en un segundo) para
+        // probar una espera de 10 minutos en un escritorio aparte sin esperar 10 minutos
+        static const int64_t inicio = AhoraUnix();
+        static const int64_t factor = [] {
+            wchar_t b[16] = {};
+            DWORD n = GetEnvironmentVariableW(L"ATARRAYA_PRUEBA_RELOJ", b, 16);
+            int64_t f = n > 0 && n < 16 ? _wtoi64(b) : 1;
+            return f >= 1 && f <= 3600 ? f : 1;
+        }();
+        return inicio + (AhoraUnix() - inicio) * factor;
+#else
+        return AhoraUnix();
+#endif
+    }
+
     wxColour ColorEstado(Estado e)
     {
         bool oscuro = TemaOscuro();
@@ -2158,7 +2177,8 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
     });
     m_bSaltar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         int i = m_sitios.Actual();
-        if (i < 0 || (m_sitios.Partes()[i].estado != EstadoParte::Abierta && m_sitios.Partes()[i].estado != EstadoParte::Espera)) return;
+        auto e = i < 0 ? EstadoParte::Lista : m_sitios.Partes()[i].estado;
+        if (e != EstadoParte::Abierta && e != EstadoParte::Espera && e != EstadoParte::Navegador) return;
         m_sitios.Saltar(i);
         GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + " saltada");
@@ -2197,7 +2217,7 @@ void VentanaPrincipal::ActualizarBarraSitios()
     {
         int i = m_sitios.Actual();
         size_t total = partes.size();
-        int64_t ahora = AhoraUnix();
+        int64_t ahora = RelojEsperas();
         // «9:41» o «1:02:03»
         auto reloj = [](int64_t s) {
             s = std::max<int64_t>(0, s);
@@ -2227,6 +2247,7 @@ void VentanaPrincipal::ActualizarBarraSitios()
                                           wxString(TextoTamano(p.total)));
             else if (p.bajado > 0) texto += L" (" + wxString(TextoTamano(p.bajado)) + L")";
             texto += L": el sitio no deja que la baje otro programa. Atarraya la anota cuando termine.";
+            saltar = true;   // por ejemplo, si se cerró el navegador y esa descarga ya no sigue
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Espera)
         {
@@ -2680,7 +2701,7 @@ void VentanaPrincipal::PedidoEspera(const std::string& paginaCola, const std::st
     bool yaEsperaba = p.estado == EstadoParte::Espera;
     size_t cuantas = m_sitios.Partes().size();
     std::string cuanto = segundos < 0 ? std::string("sin decir cuánto") : std::to_string(segundos) + " s";
-    if (!m_sitios.Esperar(i, limite, segundos, AhoraUnix()))
+    if (!m_sitios.Esperar(i, limite, segundos, RelojEsperas()))
     {
         GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": el sitio sigue pidiendo esperar después de "
@@ -2707,7 +2728,7 @@ void VentanaPrincipal::PedidoEspera(const std::string& paginaCola, const std::st
 
 void VentanaPrincipal::RevisarEsperas()
 {
-    int64_t ahora = AhoraUnix();
+    int64_t ahora = RelojEsperas();
     size_t cuantas = m_sitios.Partes().size();
     auto vencidas = m_sitios.Vencidas(ahora);
     auto cuentas = m_sitios.CuentasTerminadas(ahora);
