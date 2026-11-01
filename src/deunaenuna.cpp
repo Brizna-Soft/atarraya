@@ -207,6 +207,15 @@ void hnd::DeUnaEnUna::Cargar()
             p.avisada = j.value("avisada", false);
             p.toma = j.value("toma", "");
             if (p.toma.size() > 128) p.toma.clear();
+            p.rutaNavegador = Ancho(j.value("rutaNavegador", ""));
+            if (auto id = j.find("identidadNavegador"); id != j.end() && id->is_object())
+            {
+                p.identidadNavegador.volumen = id->value("volumen", (uint32_t)0);
+                p.identidadNavegador.indice = id->value("indice", (uint64_t)0);
+                p.identidadNavegador.tamano = id->value("tamano", (int64_t)-1);
+                p.identidadNavegador.modificado = id->value("modificado", (int64_t)0);
+            }
+            p.finalNavegador = j.value("finalNavegador", false);
             m_partes.push_back(std::move(p));
             if (m_partes.size() >= 5000) break;
         }
@@ -229,7 +238,11 @@ bool hnd::DeUnaEnUna::Guardar() const
         l.push_back({ { "url", p.url }, { "referer", p.referer }, { "nombre", Utf8(p.nombre) }, { "paquete", Utf8(p.paquete) },
                       { "grupo", p.grupo }, { "carpeta", Utf8(p.carpeta) }, { "estado", NombreEstado(p.estado) },
                       { "descarga", p.descarga }, { "hasta", p.hasta }, { "limite", p.limite }, { "intentos", p.intentos },
-                      { "avisada", p.avisada }, { "toma", p.toma } });
+                      { "avisada", p.avisada }, { "toma", p.toma }, { "rutaNavegador", Utf8(p.rutaNavegador) },
+                      { "identidadNavegador", json{ { "volumen", p.identidadNavegador.volumen }, { "indice", p.identidadNavegador.indice },
+                                                    { "tamano", p.identidadNavegador.tamano },
+                                                    { "modificado", p.identidadNavegador.modificado } } },
+                      { "finalNavegador", p.finalNavegador } });
     }
     json todo = { { "version", 1 }, { "partes", l } };
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
@@ -428,6 +441,9 @@ void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
     p.limite = false;
     p.bajado = 0;
     p.total = -1;
+    p.rutaNavegador.clear();
+    p.identidadNavegador = {};
+    p.finalNavegador = false;
 }
 
 int hnd::DeUnaEnUna::BuscarToma(const std::string& toma) const
@@ -456,6 +472,223 @@ void hnd::DeUnaEnUna::TerminarEnNavegador(int i, bool ok, uint64_t descarga)
     if (p.estado != EstadoParte::Navegador && !(p.estado == EstadoParte::Fallo && ok && !p.toma.empty())) return;
     p.estado = ok ? EstadoParte::Lista : EstadoParte::Fallo;
     p.descarga = descarga;
+}
+
+void hnd::DeUnaEnUna::AnotarArchivoDelNavegador(int i, const std::wstring& ruta, const IdentidadArchivo& identidad)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    auto& p = m_partes[i];
+    p.rutaNavegador = ruta;
+    p.identidadNavegador = identidad;
+    p.finalNavegador = true;
+}
+
+std::vector<int> hnd::DeUnaEnUna::PorMover() const
+{
+    std::vector<int> r;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        const auto& p = m_partes[i];
+        if (p.estado == EstadoParte::Navegador && p.finalNavegador && !p.rutaNavegador.empty() && p.identidadNavegador.Valida())
+            r.push_back((int)i);
+    }
+    return r;
+}
+
+namespace
+{
+    // Una ruta completa con letra de unidad, con sus nombres largos (como la devuelve Windows al abrir el archivo)
+    bool RutaCompleta(const std::wstring& ruta, std::wstring& completa)
+    {
+        if (ruta.size() < 4 || ruta.size() > 30000 || !std::iswalpha(ruta[0]) || ruta[1] != L':' || (ruta[2] != L'\\' && ruta[2] != L'/'))
+            return false;
+        if (ruta.find_first_of(L"*?\"<>|", 0) != std::wstring::npos || ruta.find(L':', 2) != std::wstring::npos) return false;
+        std::wstring buf(32768, L'\0');
+        DWORD n = GetFullPathNameW(ruta.c_str(), (DWORD)buf.size(), buf.data(), nullptr);
+        if (n == 0 || n >= buf.size()) return false;
+        buf.resize(n);
+        std::wstring largo(32768, L'\0');
+        DWORD m = GetLongPathNameW(buf.c_str(), largo.data(), (DWORD)largo.size());
+        if (m > 0 && m < largo.size())
+        {
+            largo.resize(m);
+            buf = largo;
+        }
+        while (buf.size() > 3 && buf.back() == L'\\') buf.pop_back();
+        completa = buf;
+        return true;
+    }
+
+    // Ninguna carpeta de la ruta (ni lo último) es un enlace simbólico ni un punto de unión
+    bool SinEnlaces(const std::wstring& ruta)
+    {
+        for (size_t i = 3; i <= ruta.size(); i++)
+        {
+            if (i < ruta.size() && ruta[i] != L'\\') continue;
+            DWORD a = GetFileAttributesW(ruta.substr(0, i).c_str());
+            if (a == INVALID_FILE_ATTRIBUTES || (a & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+        }
+        return true;
+    }
+
+    // La ruta real de lo que está abierto, sin «\\?\»
+    std::wstring RutaReal(HANDLE h)
+    {
+        std::wstring buf(32768, L'\0');
+        DWORD n = GetFinalPathNameByHandleW(h, buf.data(), (DWORD)buf.size(), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (n == 0 || n >= buf.size()) return {};
+        buf.resize(n);
+        if (buf.rfind(L"\\\\?\\", 0) == 0 && buf.rfind(L"\\\\?\\UNC\\", 0) != 0) return buf.substr(4);
+        return buf;
+    }
+
+    bool MismaRuta(const std::wstring& a, const std::wstring& b)
+    {
+        return !a.empty() && CompareStringOrdinal(a.c_str(), (int)a.size(), b.c_str(), (int)b.size(), TRUE) == CSTR_EQUAL;
+    }
+
+    bool IdentidadDe(HANDLE h, hnd::IdentidadArchivo& id, DWORD& atributos)
+    {
+        BY_HANDLE_FILE_INFORMATION i = {};
+        if (!GetFileInformationByHandle(h, &i)) return false;
+        atributos = i.dwFileAttributes;
+        id.volumen = i.dwVolumeSerialNumber;
+        id.indice = ((uint64_t)i.nFileIndexHigh << 32) | i.nFileIndexLow;
+        id.tamano = ((int64_t)i.nFileSizeHigh << 32) | i.nFileSizeLow;
+        id.modificado = ((int64_t)i.ftLastWriteTime.dwHighDateTime << 32) | i.ftLastWriteTime.dwLowDateTime;
+        return true;
+    }
+
+    struct Cerrar
+    {
+        HANDLE h;
+        ~Cerrar()
+        {
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        }
+    };
+}
+
+bool hnd::LeerArchivoDelNavegador(const std::wstring& ruta, IdentidadArchivo& identidad, std::string& motivo)
+{
+    identidad = {};
+    std::wstring completa;
+    if (!RutaCompleta(ruta, completa))
+    {
+        motivo = "no es una ruta completa de esta PC";
+        return false;
+    }
+    if (!SinEnlaces(completa))
+    {
+        motivo = "la ruta pasa por un enlace simbólico o un punto de unión";
+        return false;
+    }
+    Cerrar h{ CreateFileW(completa.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                          OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr) };
+    DWORD atributos = 0;
+    if (h.h == INVALID_HANDLE_VALUE || !IdentidadDe(h.h, identidad, atributos))
+    {
+        motivo = "no se encuentra el archivo";
+        return false;
+    }
+    if ((atributos & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) || !MismaRuta(RutaReal(h.h), completa))
+    {
+        identidad = {};
+        motivo = "no es un archivo común en esa ruta";
+        return false;
+    }
+    return true;
+}
+
+hnd::Movida hnd::MoverArchivoDelNavegador(const std::wstring& ruta, const IdentidadArchivo& identidad, const std::wstring& carpeta,
+                                          std::wstring& destino, std::string& motivo)
+{
+    destino.clear();
+    std::wstring completa, dir;
+    if (!RutaCompleta(ruta, completa) || !RutaCompleta(carpeta, dir))
+    {
+        motivo = "una de las rutas no es una ruta completa de esta PC";
+        return Movida::NoSePudo;
+    }
+    if (!SinEnlaces(completa) || !SinEnlaces(dir))
+    {
+        motivo = "la ruta del archivo o de la carpeta del paquete pasa por un enlace simbólico o un punto de unión";
+        return Movida::ConEnlaces;
+    }
+    // Abierto así, nadie más lo puede cambiar ni borrar mientras se revisa y se mueve (si el antivirus todavía lo
+    // revisa, se espera un poco)
+    Cerrar h{ INVALID_HANDLE_VALUE };
+    for (int intento = 0; intento < 10; intento++)
+    {
+        h.h = CreateFileW(completa.c_str(), DELETE | FILE_READ_ATTRIBUTES | SYNCHRONIZE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                          FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (h.h != INVALID_HANDLE_VALUE || GetLastError() != ERROR_SHARING_VIOLATION) break;
+        Sleep(200);
+    }
+    IdentidadArchivo ahora;
+    DWORD atributos = 0;
+    if (h.h == INVALID_HANDLE_VALUE || !IdentidadDe(h.h, ahora, atributos))
+    {
+        motivo = "no se pudo abrir el archivo";
+        return Movida::NoSePudo;
+    }
+    if ((atributos & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) || !MismaRuta(RutaReal(h.h), completa))
+    {
+        motivo = "el archivo ya no es un archivo común en esa ruta";
+        return Movida::ConEnlaces;
+    }
+    if (!(ahora == identidad))
+    {
+        motivo = "el archivo cambió desde que el navegador avisó que terminó";
+        return Movida::NoCoincide;
+    }
+    // La carpeta del paquete: la de verdad (no un enlace a otra) y en el mismo disco
+    Cerrar c{ CreateFileW(dir.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr) };
+    BY_HANDLE_FILE_INFORMATION ic = {};
+    if (c.h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(c.h, &ic) || !(ic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+    {
+        motivo = "no se pudo abrir la carpeta del paquete";
+        return Movida::NoSePudo;
+    }
+    if ((ic.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) || !MismaRuta(RutaReal(c.h), dir))
+    {
+        motivo = "la carpeta del paquete es un enlace a otra carpeta";
+        return Movida::ConEnlaces;
+    }
+    std::wstring nombre = completa.substr(completa.find_last_of(L'\\') + 1);
+    if (nombre.empty() || nombre == L"." || nombre == L"..")
+    {
+        motivo = "el archivo no tiene un nombre que sirva";
+        return Movida::NoSePudo;
+    }
+    destino = dir + L"\\" + nombre;
+    if (MismaRuta(destino, completa)) return Movida::Movida;   // ya está en la carpeta del paquete
+    if (ic.dwVolumeSerialNumber != ahora.volumen)
+    {
+        destino = completa;
+        motivo = "la carpeta del paquete está en otro disco";
+        return Movida::OtroDisco;
+    }
+    // Por el mismo archivo abierto (el que se revisó), sin reemplazar nada
+    std::vector<BYTE> buf(sizeof(FILE_RENAME_INFO) + (destino.size() + 1) * sizeof(wchar_t), 0);
+    auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buf.data());
+    info->ReplaceIfExists = FALSE;
+    info->RootDirectory = nullptr;
+    info->FileNameLength = (DWORD)(destino.size() * sizeof(wchar_t));
+    memcpy(info->FileName, destino.c_str(), info->FileNameLength);
+    if (!SetFileInformationByHandle(h.h, FileRenameInfo, info, (DWORD)buf.size()))
+    {
+        DWORD e = GetLastError();
+        if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)
+        {
+            motivo = "ya hay un archivo con ese nombre en la carpeta del paquete";
+            return Movida::YaExiste;
+        }
+        motivo = "Windows no lo dejó mover (código " + std::to_string(e) + ")";
+        return Movida::NoSePudo;
+    }
+    return Movida::Movida;
 }
 
 hnd::Toma hnd::DecidirToma(Estado estado, int64_t hecho, int64_t segundos, int64_t plazo)

@@ -112,8 +112,11 @@ private:
                          const std::string& pagina, const std::wstring& nombre, int64_t bajado, int64_t total,
                          const std::string& ruta);
     void PedidoEspera(const std::string& paginaCola, const std::string& clase, int64_t segundos);
-    // Lo que bajó el navegador entra al paquete: a la carpeta de las otras partes y a la lista, como terminado
-    void TerminarParteDelNavegador(int i, const std::string& ruta, const std::string& url);
+    // Lo que bajó el navegador entra al paquete: se revisa y se anota su archivo (ruta e identidad) y después se pasa a
+    // la carpeta de las otras partes y a la lista, como terminado. Si algo no coincide, no se mueve y se avisa.
+    void TerminarParteDelNavegador(int i, const std::string& ruta, int64_t tamano);
+    void MoverParteDelNavegador(int i);
+    void NoSeMovio(int i, const std::string& motivo);
     bool PreguntarSiEsParte(int i, const std::string& url, const std::wstring& nombre);
     // Las que no bajaron vuelven al recolector sin perder ninguna (primero se guarda el recolector, después la cola).
     // false si el recolector no se pudo guardar: entonces la cola queda como estaba.

@@ -21,6 +21,9 @@
 #include <vector>
 
 #include <bcrypt.h>
+#include <winioctl.h>
+
+#include <fstream>
 
 #include <shellapi.h>
 
@@ -1931,6 +1934,140 @@ namespace
         fs::remove_all(carpeta, ec);
     }
 
+    // Un punto de unión (como «mklink /J»): una carpeta que lleva a otra. No hace falta ser administrador.
+    bool CrearUnion(const std::wstring& enlace, const std::wstring& destino)
+    {
+        if (!CreateDirectoryW(enlace.c_str(), nullptr)) return false;
+        HANDLE h = CreateFileW(enlace.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS,
+                               nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        std::wstring sustituto = L"\\??\\" + destino;
+        WORD largoS = (WORD)(sustituto.size() * sizeof(wchar_t)), largoI = (WORD)(destino.size() * sizeof(wchar_t));
+        std::vector<BYTE> b(16 + largoS + 2 + largoI + 2, 0);
+        auto poner = [&](size_t o, WORD v) { memcpy(b.data() + o, &v, sizeof(v)); };
+        DWORD marca = IO_REPARSE_TAG_MOUNT_POINT;
+        memcpy(b.data(), &marca, sizeof(marca));
+        poner(4, (WORD)(8 + largoS + 2 + largoI + 2));   // largo de los datos
+        poner(8, 0);                                      // dónde empieza el nombre de destino
+        poner(10, largoS);
+        poner(12, (WORD)(largoS + 2));                    // dónde empieza el nombre para mostrar
+        poner(14, largoI);
+        memcpy(b.data() + 16, sustituto.c_str(), largoS);
+        memcpy(b.data() + 16 + largoS + 2, destino.c_str(), largoI);
+        DWORD n = 0;
+        BOOL ok = DeviceIoControl(h, FSCTL_SET_REPARSE_POINT, b.data(), (DWORD)b.size(), nullptr, 0, &n, nullptr);
+        CloseHandle(h);
+        return ok != FALSE;
+    }
+
+    // 0.4.0 (revisión): lo que bajó el navegador se pasa a la carpeta del paquete solo si es el mismo archivo, sin enlaces
+    // simbólicos ni puntos de unión en ninguna carpeta y sin pisar nada
+    void MoverDelNavegadorPruebas()
+    {
+        namespace fs = std::filesystem;
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring base = std::wstring(temporal) + L"atarraya-prueba-mover-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        const std::wstring nav = base + L"\\navegador", paquete = base + L"\\paquete", real = base + L"\\real", otra = base + L"\\otra";
+        for (const auto& d : { nav, paquete, real, otra }) fs::create_directories(d, ec);
+        auto escribir = [](const std::wstring& ruta, const std::string& texto, bool agregar = false) {
+            std::ofstream f(ruta, std::ios::binary | (agregar ? std::ios::app : std::ios::trunc));
+            f << texto;
+        };
+        auto leer = [](const std::wstring& ruta) {
+            std::string t;
+            LeerArchivo(ruta, t);
+            return t;
+        };
+        IdentidadArchivo id;
+        std::string motivo;
+        std::wstring destino;
+
+        // Lo normal: el archivo pasa a la carpeta del paquete, entero
+        escribir(nav + L"\\peli.part1.rar", std::string(5000, 'a'));
+        bool leido = LeerArchivoDelNavegador(nav + L"\\peli.part1.rar", id, motivo) && id.tamano == 5000 && id.Valida();
+        Comprobar(leido && MoverArchivoDelNavegador(nav + L"\\peli.part1.rar", id, paquete, destino, motivo) == Movida::Movida
+                      && ExisteArchivo(paquete + L"\\peli.part1.rar") && !ExisteArchivo(nav + L"\\peli.part1.rar")
+                      && leer(paquete + L"\\peli.part1.rar") == std::string(5000, 'a'),
+                  "mover: lo que bajó el navegador pasa entero a la carpeta del paquete");
+
+        // Una carpeta de la ruta que es un punto de unión (lleva a otra carpeta): ni se lee ni se mueve
+        bool union1 = CrearUnion(base + L"\\union", real);
+        escribir(real + L"\\peli.part2.rar", "parte dos");
+        IdentidadArchivo idReal;
+        LeerArchivoDelNavegador(real + L"\\peli.part2.rar", idReal, motivo);
+        Comprobar(union1 && !LeerArchivoDelNavegador(base + L"\\union\\peli.part2.rar", id, motivo)
+                      && MoverArchivoDelNavegador(base + L"\\union\\peli.part2.rar", idReal, paquete, destino, motivo) == Movida::ConEnlaces
+                      && ExisteArchivo(real + L"\\peli.part2.rar") && !ExisteArchivo(paquete + L"\\peli.part2.rar"),
+                  "mover: si una carpeta de la ruta es un enlace (punto de unión), no se lee ni se mueve");
+
+        // La carpeta del paquete es un punto de unión a otra carpeta: no se mueve
+        bool union2 = CrearUnion(base + L"\\paquete-falso", otra);
+        escribir(nav + L"\\peli.part3.rar", "parte tres");
+        Comprobar(union2 && LeerArchivoDelNavegador(nav + L"\\peli.part3.rar", id, motivo)
+                      && MoverArchivoDelNavegador(nav + L"\\peli.part3.rar", id, base + L"\\paquete-falso", destino, motivo) == Movida::ConEnlaces
+                      && ExisteArchivo(nav + L"\\peli.part3.rar") && !ExisteArchivo(otra + L"\\peli.part3.rar"),
+                  "mover: si la carpeta del paquete lleva a otra carpeta, no se mueve");
+
+        // El archivo se cambió por otro (con el mismo nombre y tamaño) después de que el navegador avisó: no se mueve
+        escribir(nav + L"\\peli.part4.rar", std::string(100, 'x'));
+        LeerArchivoDelNavegador(nav + L"\\peli.part4.rar", id, motivo);
+        DeleteFileW((nav + L"\\peli.part4.rar").c_str());
+        escribir(nav + L"\\peli.part4.rar", std::string(100, 'y'));
+        Comprobar(MoverArchivoDelNavegador(nav + L"\\peli.part4.rar", id, paquete, destino, motivo) == Movida::NoCoincide
+                      && ExisteArchivo(nav + L"\\peli.part4.rar") && !ExisteArchivo(paquete + L"\\peli.part4.rar"),
+                  "mover: un archivo que se cambió por otro antes de moverlo no se mueve");
+
+        // El mismo archivo, pero cambiado (más largo) después del aviso: tampoco
+        escribir(nav + L"\\peli.part5.rar", std::string(100, 'z'));
+        LeerArchivoDelNavegador(nav + L"\\peli.part5.rar", id, motivo);
+        escribir(nav + L"\\peli.part5.rar", "algo mas", true);
+        Comprobar(MoverArchivoDelNavegador(nav + L"\\peli.part5.rar", id, paquete, destino, motivo) == Movida::NoCoincide
+                      && !ExisteArchivo(paquete + L"\\peli.part5.rar"),
+                  "mover: un archivo cambiado después del aviso no se mueve");
+
+        // Nunca pisa: si en la carpeta del paquete ya hay uno con ese nombre, los dos se quedan como estaban
+        escribir(paquete + L"\\peli.part6.rar", "el que ya estaba");
+        escribir(nav + L"\\peli.part6.rar", "el del navegador");
+        LeerArchivoDelNavegador(nav + L"\\peli.part6.rar", id, motivo);
+        Comprobar(MoverArchivoDelNavegador(nav + L"\\peli.part6.rar", id, paquete, destino, motivo) == Movida::YaExiste
+                      && leer(paquete + L"\\peli.part6.rar") == "el que ya estaba" && leer(nav + L"\\peli.part6.rar") == "el del navegador",
+                  "mover: nunca reemplaza un archivo que ya está en la carpeta del paquete");
+
+        // Rutas que no sirven: relativa, con comodines, con «:» de más, o una carpeta
+        Comprobar(!LeerArchivoDelNavegador(L"peli.part1.rar", id, motivo) && !LeerArchivoDelNavegador(nav + L"\\*.rar", id, motivo)
+                      && !LeerArchivoDelNavegador(nav + L"\\peli.part6.rar:oculto", id, motivo) && !LeerArchivoDelNavegador(nav, id, motivo),
+                  "mover: solo una ruta completa a un archivo común");
+
+        // Si Atarraya se cierra después del aviso, al volver a abrirlo sabe qué archivo era y lo termina de mover
+        {
+            DeUnaEnUna q(base + L"\\cola.json");
+            Parte p;
+            p.url = "https://ddownload.com/x7x7x7x7/peli.part7.rar";
+            p.nombre = L"peli.part7.rar";
+            p.carpeta = paquete;
+            q.Agregar({ p });
+            int i = q.AbrirSiguiente();
+            q.EnNavegador(i, "n1-abc");
+            escribir(nav + L"\\peli.part7.rar", "parte siete");
+            LeerArchivoDelNavegador(nav + L"\\peli.part7.rar", id, motivo);
+            q.AnotarArchivoDelNavegador(i, nav + L"\\peli.part7.rar", id);
+            q.Guardar();
+            DeUnaEnUna alVolver(base + L"\\cola.json");
+            alVolver.Cargar();
+            auto por = alVolver.PorMover();
+            const auto& pv = alVolver.Partes()[i];
+            Comprobar(por == std::vector<int>{ i } && pv.identidadNavegador == id && pv.rutaNavegador == nav + L"\\peli.part7.rar" && pv.finalNavegador
+                          && MoverArchivoDelNavegador(pv.rutaNavegador, pv.identidadNavegador, paquete, destino, motivo) == Movida::Movida,
+                      "mover: si Atarraya se cerró después del aviso, al abrirlo sabe qué archivo era y lo termina de mover");
+        }
+        RemoveDirectoryW((base + L"\\union").c_str());
+        RemoveDirectoryW((base + L"\\paquete-falso").c_str());
+        fs::remove_all(base, ec);
+    }
+
     // 0.4.0: las esperas que piden los sitios, las partes que baja el navegador (y la extensión sigue), los sitios donde
     // solo funciona el navegador y cuándo Atarraya pudo seguir la descarga del navegador
     void EsperasYNavegadorPruebas()
@@ -2422,6 +2559,7 @@ int wmain(int argc, wchar_t** argv)
     FlujosPruebas();
     ClickNLoadPruebas();
     EsperasYNavegadorPruebas();
+    MoverDelNavegadorPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

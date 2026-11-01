@@ -623,6 +623,8 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // las que no bajaron no llegaron al recolector, se intenta otra vez.
     m_sitios.Cargar();
     m_sitiosNavegador.Cargar();
+    // Lo que el navegador terminó y no se alcanzó a pasar a la carpeta del paquete (Atarraya se cerró en el medio)
+    for (int i : m_sitios.PorMover()) CallAfter([this, i]() { MoverParteDelNavegador(i); });
     if (m_sitios.Terminada()) Avanzar();
     ActualizarBarraSitios();
 
@@ -2602,7 +2604,7 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
     }
     if (estado == "completa")
     {
-        TerminarParteDelNavegador(i, ruta, url);
+        TerminarParteDelNavegador(i, ruta, bajado > 0 ? bajado : total);
         return;
     }
     if (estado == "fallo" || estado == "cancelada")
@@ -2617,72 +2619,84 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
     }
 }
 
-void VentanaPrincipal::TerminarParteDelNavegador(int i, const std::string& ruta, const std::string& url)
+void VentanaPrincipal::TerminarParteDelNavegador(int i, const std::string& ruta, int64_t tamano)
 {
     const Parte p = m_sitios.Partes()[i];
-    size_t cuantas = m_sitios.Partes().size();
-    std::wstring origen = Ancho(ruta);
-    auto fallar = [&](const std::string& por) {
-        m_sitios.TerminarEnNavegador(i, false, 0);
-        GuardarCola();
-        Registrar("de una en una: parte " + std::to_string(i + 1) + ": " + por);
-        Avisar(wxString::Format(L"Parte %d de %zu", i + 1, cuantas),
-               L"El navegador dijo que terminó, pero no encuentro el archivo. Al final vuelve al recolector.", true);
-        Avanzar();
-        Refrescar();
-    };
-    // Una ruta completa a un archivo que existe (no una carpeta ni un enlace a otra cosa)
-    DWORD atributos = GetFileAttributesW(origen.c_str());
-    if (!jicaro::RutaSegura(origen) || atributos == INVALID_FILE_ATTRIBUTES || (atributos & FILE_ATTRIBUTE_DIRECTORY)
-        || (atributos & FILE_ATTRIBUTE_REPARSE_POINT))
+    if (p.finalNavegador && !p.rutaNavegador.empty())
     {
-        fallar("el navegador terminó, pero su archivo no está");
+        // El mismo aviso otra vez (la extensión lo repite hasta que Atarraya lo confirma): ya está anotado
+        if (p.estado == EstadoParte::Navegador) MoverParteDelNavegador(i);
         return;
     }
-    // A la carpeta de las otras partes del paquete, para que Jícaro las encuentre juntas. Nunca pisa otro archivo: si
-    // ya hay uno con ese nombre, o es otro disco (moverlo sería copiar gigas), se queda donde lo dejó el navegador.
+    // 1. Al llegar el aviso: el archivo que dice el navegador, revisado (sin enlaces en la ruta, un archivo común, del
+    //    tamaño que bajó) y con su identidad anotada y guardada
+    IdentidadArchivo identidad;
+    std::string motivo;
+    std::wstring origen = Ancho(ruta);
+    if (!LeerArchivoDelNavegador(origen, identidad, motivo) || (tamano > 0 && identidad.tamano != tamano) || identidad.tamano <= 0)
+    {
+        if (motivo.empty()) motivo = identidad.tamano <= 0 ? "el archivo está vacío" : "el archivo no tiene el tamaño que bajó el navegador";
+        NoSeMovio(i, motivo);
+        return;
+    }
+    m_sitios.AnotarArchivoDelNavegador(i, origen, identidad);
+    GuardarCola();
+    Registrar("de una en una: parte " + std::to_string(i + 1) + ": el navegador terminó; su archivo queda anotado");
+    // 2. Pasarlo a la carpeta del paquete (si Atarraya se cierra antes, se termina al volver a abrirlo)
+    MoverParteDelNavegador(i);
+}
+
+void VentanaPrincipal::NoSeMovio(int i, const std::string& motivo)
+{
+    size_t cuantas = m_sitios.Partes().size();
+    m_sitios.TerminarEnNavegador(i, false, 0);
+    GuardarCola();
+    Registrar("de una en una: parte " + std::to_string(i + 1) + ": lo que bajó el navegador no se movió: " + motivo);
+    Avisar(wxString::Format(L"Parte %d de %zu: no se movió", i + 1, cuantas),
+           L"El archivo que bajó el navegador no se pasó a la carpeta del paquete: " + wxString::FromUTF8(motivo)
+               + L". Se queda donde estaba; al final la parte vuelve al recolector.",
+           true);
+    Avanzar();
+    Refrescar();
+}
+
+void VentanaPrincipal::MoverParteDelNavegador(int i)
+{
+    const Parte p = m_sitios.Partes()[i];
+    if (p.estado != EstadoParte::Navegador || p.rutaNavegador.empty()) return;
+    // A la carpeta de las otras partes del paquete, para que Jícaro las encuentre juntas: solo si sigue siendo el mismo
+    // archivo, sin enlaces en ninguna ruta y sin pisar nada
     std::wstring carpeta = p.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : p.carpeta;
     SHCreateDirectoryExW(nullptr, carpeta.c_str(), nullptr);
-    auto barra = origen.find_last_of(L"\\/");
-    std::wstring archivo = origen.substr(barra + 1);
-    std::wstring final = origen;
-    std::wstring destino = carpeta + L"\\" + archivo;
-    if (Minusculas(destino) != Minusculas(origen) && !ExisteArchivo(destino) && !ExisteCarpeta(destino))
+    std::wstring final;
+    std::string motivo;
+    Movida r = MoverArchivoDelNavegador(p.rutaNavegador, p.identidadNavegador, carpeta, final, motivo);
+    if (r != Movida::Movida && r != Movida::OtroDisco)
     {
-        for (int intento = 0; intento < 5; intento++)
-        {
-            // Sin MOVEFILE_COPY_ALLOWED: solo dentro del mismo disco. Si el antivirus todavía lo revisa, se espera un poco.
-            if (MoveFileExW(origen.c_str(), destino.c_str(), MOVEFILE_WRITE_THROUGH))
-            {
-                final = destino;
-                break;
-            }
-            if (GetLastError() != ERROR_SHARING_VIOLATION && GetLastError() != ERROR_ACCESS_DENIED) break;
-            Sleep(200);
-        }
-    }
-    if (final != destino) Registrar("de una en una: parte " + std::to_string(i + 1) + ": el archivo se queda donde lo dejó el navegador");
-    int64_t tamano = TamanoArchivo(final);
-    if (tamano <= 0)
-    {
-        fallar("el navegador terminó, pero su archivo está vacío");
+        NoSeMovio(i, motivo);
         return;
     }
+    size_t cuantas = m_sitios.Partes().size();
+    if (r == Movida::OtroDisco)
+        Avisar(wxString::Format(L"Parte %d de %zu: en otro disco", i + 1, cuantas),
+               L"El navegador la dejó en otro disco, así que Atarraya no la movió (sería copiarla entera). Para descomprimir el paquete, "
+               L"junta sus partes en una carpeta.");
     DatosDescarga d;
-    d.url = sistema::EsDireccion(Ancho(url)) ? url : p.url;
+    d.url = p.url;
     d.referer = p.url;
-    auto b = final.find_last_of(L"\\/");
+    auto b = final.find_last_of(L'\\');
     d.carpeta = final.substr(0, b);
     d.nombre = final.substr(b + 1);
     d.nombreFijo = true;
-    d.tamano = tamano;
+    d.tamano = p.identidadNavegador.tamano;
     d.paquete = p.paquete;
     d.grupo = p.grupo;
     uint64_t id = m_motor.AgregarTerminada(d);
+    m_motor.FijarIdentidad(id, p.identidadNavegador);   // el mismo archivo (al moverlo no cambia)
     m_sitios.TerminarEnNavegador(i, true, id);
     GuardarCola();
-    GuardarIdentidad(id, final);
-    Registrar("de una en una: parte " + std::to_string(i + 1) + " lista: la bajó el navegador (" + SoloSitio(d.url) + ")");
+    Registrar("de una en una: parte " + std::to_string(i + 1) + " lista: la bajó el navegador"
+              + (r == Movida::OtroDisco ? std::string(" (quedó en otro disco)") : std::string(" y está en la carpeta del paquete")));
     if (m_ajustes.avisarAlTerminar) Avisar(L"Descarga terminada", wxString(d.nombre) + L"\nLa bajó el navegador; ya está en su paquete.");
     hnd::Foto f;
     if (m_motor.Buscar(id, f)) EncolarJicaro(PrepararJicaro(f.datos));

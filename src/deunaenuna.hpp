@@ -20,6 +20,8 @@
 #include <string>
 #include <vector>
 
+#include "util.hpp"
+
 namespace hnd
 {
     class Recolector;
@@ -62,7 +64,25 @@ namespace hnd
         // Bajando en el navegador: la descarga que sigue la extensión y cómo va (lo que va no se guarda)
         std::string toma;
         int64_t bajado = 0, total = -1;
+        // Lo que bajó el navegador, anotado cuando avisó que terminó (ruta e identidad del archivo: volumen, número de
+        // archivo de NTFS, tamaño y fecha). Se guarda: si Atarraya se cierra antes de pasarlo a la carpeta del paquete,
+        // lo termina al volver a abrirse. «finalNavegador»: ya llegó el aviso final del navegador (terminó o falló).
+        std::wstring rutaNavegador;
+        IdentidadArchivo identidadNavegador;
+        bool finalNavegador = false;
     };
+
+    // Pasar a la carpeta del paquete lo que bajó el navegador, sin mover nunca un archivo ajeno:
+    //   - LeerArchivoDelNavegador: cuando el navegador avisa que terminó. Una ruta completa de esta PC, sin enlaces
+    //     simbólicos ni puntos de unión en ninguna carpeta ni en el archivo, y un archivo común. Lee su identidad.
+    //   - MoverArchivoDelNavegador: lo abre (mientras está abierto nadie más lo puede cambiar ni borrar), comprueba
+    //     otra vez que no hay enlaces, que su ruta real es esa y que sigue siendo el mismo archivo (identidad), y lo
+    //     pasa a «carpeta» con su nombre, por ese mismo archivo abierto, sin reemplazar nada. «carpeta» también tiene
+    //     que ser la de verdad, sin enlaces. Si es otro disco, no lo mueve (sería copiar gigas): devuelve OtroDisco.
+    enum class Movida { Movida, OtroDisco, NoCoincide, ConEnlaces, YaExiste, NoSePudo };
+    bool LeerArchivoDelNavegador(const std::wstring& ruta, IdentidadArchivo& identidad, std::string& motivo);
+    Movida MoverArchivoDelNavegador(const std::wstring& ruta, const IdentidadArchivo& identidad, const std::wstring& carpeta,
+                                    std::wstring& destino, std::string& motivo);
 
     // Qué es una descarga que pasó el navegador
     struct Emparejamiento
@@ -119,6 +139,11 @@ namespace hnd
         void Progreso(int i, int64_t bajado, int64_t total);
         // Lo que bajó el navegador terminó: lista (con la descarga que la anota en la lista de Atarraya) o con error
         void TerminarEnNavegador(int i, bool ok, uint64_t descarga);
+        // El navegador avisó que terminó: se anota su archivo (ruta e identidad) antes de pasarlo a la carpeta del paquete
+        void AnotarArchivoDelNavegador(int i, const std::wstring& ruta, const IdentidadArchivo& identidad);
+        // Las que el navegador terminó y todavía no se pasaron a la carpeta del paquete (por ejemplo, si Atarraya se
+        // cerró en el medio): se terminan al volver a abrirlo
+        std::vector<int> PorMover() const;
         // Las partes de un grupo pasan a otro (dos paquetes que resultaron ser uno). true si cambió alguna.
         bool CambiarGrupo(const std::string& viejo, const std::string& nuevo);
 
