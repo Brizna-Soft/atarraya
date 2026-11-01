@@ -28,6 +28,7 @@
 #include <shellapi.h>
 
 #include "clicknload.hpp"
+#include "contrasenas.hpp"
 #include "deunaenuna.hpp"
 #include "flujos.hpp"
 #include "jicaro.hpp"
@@ -838,6 +839,240 @@ namespace
                   "recolector: qué se toma del portapapeles");
     }
 
+    // 0.4.1: cada juego de un paquete se descomprime apenas está completo, sin esperar al resto, y una sola vez
+    void JuegosPruebas()
+    {
+        using namespace hnd::jicaro;
+        const std::wstring c = L"C:\\Descargas\\Lote";
+        uint64_t siguiente = 1;
+        auto descarga = [&](const wchar_t* nombre, bool bajada, const std::string& grupo = "g1") {
+            Foto f;
+            f.datos.id = siguiente++;
+            f.datos.carpeta = c;
+            f.datos.nombre = nombre;
+            f.datos.grupo = grupo;
+            f.datos.estado = bajada ? Estado::Completada : Estado::Descargando;
+            return f;
+        };
+        auto parte = [&](const char* url, const std::string& grupo = "g1") {
+            Parte p;
+            p.url = url;
+            p.nombre = NombreDeUrl(url);
+            p.carpeta = c;
+            p.grupo = grupo;
+            p.estado = EstadoParte::Esperando;
+            return p;
+        };
+        auto juego = [](const JuegosDelPaquete& j, const wchar_t* nombre) -> const Juego* {
+            for (const auto& x : j.juegos)
+            {
+                if (x.nombre == nombre) return &x;
+            }
+            return nullptr;
+        };
+
+        // Juegos de cada tipo en un mismo paquete
+        std::vector<Foto> l = { descarga(L"A.part1.rar", true), descarga(L"A.part2.rar", true), descarga(L"B.rar", true),
+                                descarga(L"B.r00", true), descarga(L"B.r01", false), descarga(L"C.7z.001", true), descarga(L"C.7z.002", true),
+                                descarga(L"D.z01", true), descarga(L"D.zip", false), descarga(L"E.zip", true), descarga(L"F.7z", true),
+                                descarga(L"leeme.nfo", false), descarga(L"G.part1.rar", true, "otro") };
+        auto j = Juegos("g1", l, {});
+        const Juego *a = juego(j, L"A"), *b = juego(j, L"B"), *cc = juego(j, L"C"), *dd = juego(j, L"D"), *e = juego(j, L"E"),
+                    *f = juego(j, L"F");
+        Comprobar(j.juegos.size() == 6 && a && b && cc && dd && e && f && !juego(j, L"G") && j.dudosas == 0,
+                  "juegos: .part1.rar, .rar + .r00, .7z.001, .zip + .z01, un .zip y un .7z enteros; nada de otro paquete");
+        Comprobar(a && j.Completo(*a) && a->partes.size() == 2 && a->partes[0].ruta == c + L"\\A.part1.rar" && cc && j.Completo(*cc)
+                      && cc->partes[0].ruta == c + L"\\C.7z.001" && e && j.Completo(*e) && f && j.Completo(*f),
+                  "juegos: uno completo se descomprime ya, aunque al paquete le falten otros (la primera parte abre el juego)");
+        Comprobar(b && !j.Completo(*b) && b->faltan == 1 && b->partes.size() == 2 && b->partes[0].ruta == c + L"\\B.rar",
+                  "juegos: al de .rar + .r00 + .r01 le falta la .r01: espera");
+        Comprobar(dd && !j.Completo(*dd) && dd->faltan == 1,
+                  "juegos: un ZIP partido espera a su .zip (es el que se abre)");
+        l[8].datos.estado = Estado::Completada;   // llegó D.zip
+        auto j2 = Juegos("g1", l, {});
+        const Juego* d2 = juego(j2, L"D");
+        Comprobar(d2 && j2.Completo(*d2) && d2->partes.size() == 2 && d2->partes[0].ruta == c + L"\\D.zip",
+                  "juegos: con su .zip, el ZIP partido está completo y se abre por el .zip");
+
+        // De «de una en una»: lo que todavía no bajó también cuenta
+        {
+            std::vector<Foto> bajadas = { descarga(L"peli.part1.rar", true), descarga(L"otra.part1.rar", true), descarga(L"otra.part2.rar", true) };
+            std::vector<Parte> cola = { parte("https://ddownload.com/x1x1x1x1/peli.part2.rar"), parte("https://rapidgator.net/file/abc/peli.part3.rar.html") };
+            auto jc = Juegos("g1", bajadas, cola);
+            const Juego *peli = juego(jc, L"peli"), *otra = juego(jc, L"otra");
+            Comprobar(peli && !jc.Completo(*peli) && peli->faltan == 2 && otra && jc.Completo(*otra),
+                      "juegos: las partes que faltan en la cola (también «.rar.html») hacen esperar a su juego, no a los demás");
+            cola.push_back(parte("https://1fichier.com/?k3k3k3k3"));
+            auto jd = Juegos("g1", bajadas, cola);
+            const Juego* otra2 = juego(jd, L"otra");
+            Comprobar(jd.dudosas == 1 && otra2 && !jd.Completo(*otra2),
+                      "juegos: mientras falte una de la que no se sabe el nombre, ningún juego está completo (podría ser suya)");
+            cola.back() = parte("https://ddownload.com/n4n4n4n4/leeme.nfo");
+            auto je = Juegos("g1", bajadas, cola);
+            Comprobar(je.dudosas == 0 && juego(je, L"otra") && je.Completo(*juego(je, L"otra")),
+                      "juegos: una que falta y no es un comprimido («.nfo») no hace esperar a nadie");
+        }
+        // Una sola vez: queda anotado con cada descarga del juego
+        {
+            std::vector<Foto> bajadas = { descarga(L"uno.part1.rar", true), descarga(L"uno.part2.rar", true) };
+            bajadas[1].datos.descomprimido = true;
+            auto jf = Juegos("g1", bajadas, {});
+            Comprobar(jf.juegos.size() == 1 && jf.juegos[0].descomprimido && Juegos("", bajadas, {}).juegos.empty(),
+                      "juegos: un juego que ya se le pasó a Jícaro no se descomprime otra vez solo");
+        }
+        // El .zip de uno partido no es un comprimido suelto
+        {
+            std::string entero = std::string(100, 'x') + std::string("PK\x05\x06\x00\x00\x00\x00", 8) + std::string(14, '\0');
+            std::string partido = std::string(100, 'x') + std::string("PK\x05\x06\x02\x00\x00\x00", 8) + std::string(14, '\0');
+            Comprobar(!EsZipPartido(entero) && EsZipPartido(partido) && !EsZipPartido(std::string("PK", 2)) && EsComprimidoSuelto(L"datos.zip")
+                          && !EsComprimidoSuelto(L"datos.z01"),
+                      "juegos: el .zip de un ZIP partido (su índice dice el número de trozo) no se toma como un .zip suelto");
+        }
+    }
+
+    // 0.4.1: las contraseñas de los paquetes (Click'n'Load, cifradas con DPAPI) y Jícaro con «--contrasena-stdin»
+    void ContrasenasPruebas()
+    {
+        using hnd::contrasenas::DeTexto;
+        using Lista = std::vector<std::string>;
+        Comprobar(DeTexto("clave1\r\nclave2\nclave3\rclave4") == Lista{ "clave1", "clave2", "clave3", "clave4" },
+                  "contraseñas: varias, separadas por saltos de línea (\\r\\n, \\n o \\r), como manda Click'n'Load");
+        Comprobar(DeTexto("  con espacios  \r\n\r\n\t\r\nrepetida\nrepetida\nuna\x01mala\n" + std::string(600, 'x') + "\n\xC3\x28" + "\nbuena")
+                      == Lista{ "con espacios", "repetida", "buena" },
+                  "contraseñas: sin espacios a los costados, sin vacías ni repetidas, sin caracteres de control, sin texto que no es UTF-8, "
+                  "de 512 bytes como mucho");
+        Comprobar(DeTexto("1\n2\n3\n4\n5\n6\n7").size() == 5 && DeTexto("").empty() && DeTexto("contraseña ñ €") == Lista{ "contraseña ñ €" },
+                  "contraseñas: como mucho 5, en el orden en que llegaron (y con acentos)");
+        Comprobar(hnd::contrasenas::Juntar({ "a", "b" }, { "b", "c", "d", "e", "f" }) == Lista{ "a", "b", "c", "d", "e" },
+                  "contraseñas: juntar dos listas sin repetir y como mucho 5");
+
+        // Cifradas con DPAPI: nunca en claro
+        std::string cifrado = hnd::contrasenas::Cifrar({ "secreto-de-prueba-1", "secreto-de-prueba-2" });
+        auto vuelta = hnd::contrasenas::Descifrar(cifrado);
+        std::string cambiado = cifrado;
+        if (cambiado.size() > 20) cambiado[cambiado.size() / 2] = cambiado[cambiado.size() / 2] == 'A' ? 'B' : 'A';
+        Comprobar(!cifrado.empty() && cifrado.find("secreto") == std::string::npos && vuelta == Lista{ "secreto-de-prueba-1", "secreto-de-prueba-2" }
+                      && hnd::contrasenas::Descifrar(cambiado).empty() && hnd::contrasenas::Descifrar("no es base64 !!").empty()
+                      && hnd::contrasenas::Cifrar({}).empty(),
+                  "contraseñas: cifradas con DPAPI (vuelven igual; cambiadas o falsas no se descifran)");
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring base = std::wstring(temporal) + L"atarraya-prueba-claves-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        std::filesystem::create_directories(base, ec);
+        {
+            hnd::contrasenas::Guardadas g(base + L"\\contrasenas.json");
+            g.Fijar("grupo1", { "secreto-de-prueba-3" });
+            g.Fijar("grupo2", { "secreto-de-prueba-4" });
+            g.Fijar("grupo3", {});
+            for (int i = 0; i < 25; i++) g.Recordar({ "recordada-" + std::to_string(i) });
+            g.Recordar({ "recordada-3" });
+            Comprobar(g.Guardar(), "contraseñas: se guardan");
+            std::string archivo;
+            LeerArchivo(base + L"\\contrasenas.json", archivo);
+            hnd::contrasenas::Guardadas otra(base + L"\\contrasenas.json");
+            otra.Cargar();
+            auto recordadas = otra.Recordadas();
+            Comprobar(archivo.find("secreto") == std::string::npos && archivo.find("recordada-") == std::string::npos
+                          && otra.Leer("grupo1") == Lista{ "secreto-de-prueba-3" } && otra.Leer("grupo2") == Lista{ "secreto-de-prueba-4" }
+                          && !otra.Tiene("grupo3") && recordadas.size() == 20 && recordadas[0] == "recordada-3" && recordadas[1] == "recordada-24",
+                      "contraseñas: en contrasenas.json van cifradas; vuelven después de cerrar Atarraya; las recordadas, la más nueva primero y "
+                      "como mucho 20");
+            otra.QuedarseCon({ "grupo2" });
+            otra.OlvidarRecordadas();
+            Comprobar(!otra.Tiene("grupo1") && otra.Tiene("grupo2") && otra.Recordadas().empty() && !otra.HayRecordadas(),
+                      "contraseñas: se olvidan las de paquetes que ya no están y, si se apaga en Ajustes, las recordadas");
+        }
+
+        // Click'n'Load: el campo «passwords»
+        hnd::cnl::Campos campos = { { "urls", "https://a.org/1.rar" }, { "Passwords", "clave-cnl-1\r\nclave-cnl-2" }, { "passwords", "clave-cnl-3" } };
+        Comprobar(hnd::cnl::Contrasenas(campos) == Lista{ "clave-cnl-1", "clave-cnl-2", "clave-cnl-3" } && hnd::cnl::Contrasenas({}).empty(),
+                  "contraseñas: del campo «passwords» de Click'n'Load (una o varias, separadas por saltos de línea)");
+
+        // El recolector las guarda cifradas con cada enlace
+        {
+            hnd::Recolector r(base + L"\\recolector.json");
+            r.Agregar({ "https://ejemplo.org/lote/juego.part1.rar", "https://ejemplo.org/lote/juego.part2.rar" }, L"Juego", "", "lista");
+            r.FijarContrasenasDe({ "https://ejemplo.org/lote/juego.part1.rar", "https://ejemplo.org/lote/juego.part2.rar" },
+                                 hnd::contrasenas::Cifrar({ "secreto-de-prueba-5" }));
+            r.Guardar();
+            std::string archivo;
+            LeerArchivo(base + L"\\recolector.json", archivo);
+            hnd::Recolector otro(base + L"\\recolector.json");
+            otro.Cargar();
+            auto lista = otro.Lista();
+            Comprobar(archivo.find("secreto") == std::string::npos && lista.size() == 2
+                          && hnd::contrasenas::Descifrar(lista[0].contrasenas) == Lista{ "secreto-de-prueba-5" }
+                          && lista[0].contrasenas == lista[1].contrasenas,
+                      "contraseñas: en el recolector, una sola para todo el lote, cifrada con cada enlace");
+        }
+
+        // Jícaro: con «--contrasena-stdin» la contraseña llega por la entrada estándar, nunca en la línea de comandos
+        {
+            using namespace hnd::jicaro;
+            wchar_t propio[MAX_PATH] = {};
+            GetModuleFileNameW(nullptr, propio, MAX_PATH);
+            std::wstring falso = propio;
+            falso = falso.substr(0, falso.find_last_of(L'\\') + 1) + L"jicaro-falso.exe";
+            std::wstring carpetaJicaro = base + L"\\Jicaro";
+            std::filesystem::create_directories(carpetaJicaro, ec);
+            std::wstring exe = carpetaJicaro + L"\\Jicaro.exe";
+            bool copiado = CopyFileW(falso.c_str(), exe.c_str(), FALSE) != FALSE;
+            Version v;
+            Comprobar(copiado && LeerVersion(exe, v) && v.mayor == 0 && v.menor == 2 && AceptaContrasena(v) && !AceptaContrasena({ 0, 1, 9 })
+                          && AceptaContrasena({ 1, 0, 0 }),
+                      "jícaro: la contraseña se le pasa solo a Jícaro 0.2.0 o más nuevo (lo dice la versión de su archivo)");
+            std::wstring archivo = base + L"\\juego.part1.rar", destino = base + L"\\juego";
+            std::wstring orden = ArmarOrden(exe, archivo, destino, true);
+            Comprobar(orden == ArmarOrden(exe, archivo, destino) + L" --contrasena-stdin", "jícaro: con contraseña, la orden lleva «--contrasena-stdin»");
+            auto correr = [&](const std::string& clave, const std::wstring& o, std::string& informe) {
+                DeleteFileW((carpetaJicaro + L"\\informe.txt").c_str());
+                void* p = Abrir(exe, o, clave);
+                DWORD codigo = 99;
+                if (p)
+                {
+                    WaitForSingleObject((HANDLE)p, 20000);
+                    GetExitCodeProcess((HANDLE)p, &codigo);
+                    CloseHandle((HANDLE)p);
+                }
+                informe.clear();
+                LeerArchivo(carpetaJicaro + L"\\informe.txt", informe);
+                return codigo;
+            };
+            auto hex = [](const std::string& s) {
+                std::string r;
+                const char* cifras = "0123456789abcdef";
+                for (unsigned char ch : s)
+                {
+                    r += cifras[ch >> 4];
+                    r += cifras[ch & 15];
+                }
+                return r;
+            };
+            std::string informe;
+            DWORD bien = correr("buena", orden, informe);
+            bool lineaLimpia = informe.find("linea=") != std::string::npos && informe.find("--contrasena-stdin") != std::string::npos
+                               && informe.substr(0, informe.find('\n')).find("buena") == std::string::npos;
+            Comprobar(bien == 0 && lineaLimpia && informe.find("entrada=" + hex("buena") + "\n") != std::string::npos,
+                      "jícaro: la contraseña llega entera por la entrada estándar (sin salto de línea) y nunca en la línea de comandos");
+            DWORD mala = correr("contraseña-mala-ñ", orden, informe);
+            Comprobar(mala == 7 && LeerCodigo(mala) == Resultado::ContrasenaIncorrecta && informe.find("entrada=" + hex("contraseña-mala-ñ")) != std::string::npos
+                          && informe.find("contraseña-mala") == std::string::npos,
+                      "jícaro: una contraseña que no sirve (en UTF-8) da «la contraseña no sirve» (código 7)");
+            DWORD sinClave = correr("", ArmarOrden(exe, base + L"\\cifrado.rar", destino), informe);
+            Comprobar(sinClave == 4 && LeerCodigo(sinClave) == Resultado::Contrasena && informe.find("--contrasena-stdin") == std::string::npos,
+                      "jícaro: sin contraseña, la orden no lleva «--contrasena-stdin» y un comprimido cifrado da «tiene contraseña»");
+        }
+
+        // Nada de esto va al registro (este proceso escribe su registro en la carpeta de la prueba)
+        std::string registro;
+        LeerArchivo(hnd::CarpetaDatos() + L"\\registro.txt", registro);
+        Comprobar(registro.find("secreto-de-prueba") == std::string::npos && registro.find("clave-cnl") == std::string::npos
+                      && registro.find("buena") == std::string::npos,
+                  "contraseñas: ninguna va al registro");
+        std::filesystem::remove_all(base, ec);
+    }
+
     // Jícaro: elegir la primera parte, saber cuándo terminó un paquete, armar la orden y leer los códigos
     void JicaroPruebas()
     {
@@ -1031,9 +1266,12 @@ namespace
         // 5. Los códigos de salida y el texto para la persona
         Comprobar(LeerCodigo(0) == Resultado::Listo && LeerCodigo(1) == Resultado::Error && LeerCodigo(2) == Resultado::Cancelado
                       && LeerCodigo(3) == Resultado::FaltanPartes && LeerCodigo(4) == Resultado::Contrasena && LeerCodigo(5) == Resultado::YaExtrayendo
-                      && LeerCodigo(6) == Resultado::Parcial && LeerCodigo(7) == Resultado::Error && LeerCodigo(0xC0000005) == Resultado::Error
-                      && LeerCodigo(259) == Resultado::Error,
-                  "jícaro: códigos 0 a 6; uno desconocido o un cierre de golpe es un error");
+                      && LeerCodigo(6) == Resultado::Parcial && LeerCodigo(7) == Resultado::ContrasenaIncorrecta && LeerCodigo(8) == Resultado::Error
+                      && LeerCodigo(0xC0000005) == Resultado::Error && LeerCodigo(259) == Resultado::Error,
+                  "jícaro: códigos 0 a 7 (7: la contraseña no sirve); uno desconocido o un cierre de golpe es un error");
+        Comprobar(PideContrasena(Resultado::Contrasena) && PideContrasena(Resultado::ContrasenaIncorrecta) && !PideContrasena(Resultado::Listo)
+                      && !PideContrasena(Resultado::JicaroViejo) && !PideContrasena(Resultado::FaltanPartes),
+                  "jícaro: se pide la contraseña (otra vez) cuando hace falta o la que se usó no sirve");
         {
             auto tiene = [](const std::wstring& t, const wchar_t* s) { return t.find(s) != std::wstring::npos; };
             Comprobar(tiene(Texto(Resultado::Listo, L"Peli", L"C:\\Descargas\\Peli (2)"), L"«Peli» quedó descomprimido en la carpeta «Peli (2)»")
@@ -2553,10 +2791,12 @@ namespace
         std::mutex m;
         std::vector<Lista> recibidos;
         std::vector<std::wstring> paquetes;
-        auto alRecibir = [&](Lista enlaces, std::wstring paquete, std::string) {
+        std::vector<Lista> claves;
+        auto alRecibir = [&](Lista enlaces, std::wstring paquete, std::string, Lista contrasenas) {
             std::lock_guard g(m);
             recibidos.push_back(std::move(enlaces));
             paquetes.push_back(std::move(paquete));
+            claves.push_back(std::move(contrasenas));
         };
         auto cuantos = [&]() {
             std::lock_guard g(m);
@@ -2636,6 +2876,15 @@ namespace
             paquetesBien = paquetes.size() >= 2 && paquetes[0] == L"Paquete privado" && paquetes[1] == L"Click'n'Load de carpetas.ejemplo.org";
         }
         Comprobar(paquetesBien, "CnL servidor: el nombre del paquete (del campo «package» o del sitio)");
+        // La contraseña del paquete (campo «passwords», varias separadas por saltos de línea), en los dos formularios
+        r = post("/flash/add", urlenc, "urls=https%3A%2F%2Fejemplo.org%2Fsecreto-20.rar&passwords=clave-cnl-secreta-1%0D%0Aclave-cnl-secreta-2");
+        bool clavesBien;
+        {
+            std::lock_guard g(m);
+            clavesBien = codigo(r) == 200 && !claves.empty() && claves.back() == Lista{ "clave-cnl-secreta-1", "clave-cnl-secreta-2" }
+                         && claves.front().empty();
+        }
+        Comprobar(clavesBien, "CnL servidor: las contraseñas del campo «passwords» llegan con los enlaces (y sin ellas, ninguna)");
 
         // Rechazos: ninguno llega al recolector y cada uno queda en el registro con su motivo
         size_t antes = cuantos();
@@ -2718,6 +2967,8 @@ namespace
                   "CnL registro: como mucho 20 rechazos por minuto (una página no puede llenarlo)");
         Comprobar(!hay("secreto") && !hay("privado") && !hay("hola") && !hay("https://") && !hay("tope-1") && !hay("Paquete"),
                   "CnL registro: nunca los enlaces ni lo que trae el formulario");
+        Comprobar(!hay("clave-cnl") && hay("Trae 2 contraseñas del paquete (no se anotan)"),
+                  "CnL registro: nunca la contraseña del paquete (solo que vino)");
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         std::filesystem::remove_all(carpeta, ec);
@@ -2760,6 +3011,8 @@ int wmain(int argc, wchar_t** argv)
     TomasPruebas();
     AvisoFinalPruebas();
     PuertosPruebas();
+    JuegosPruebas();
+    ContrasenasPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

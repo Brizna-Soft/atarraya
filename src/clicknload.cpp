@@ -11,6 +11,7 @@
 #include <map>
 #include <set>
 
+#include "contrasenas.hpp"
 #include "enlaces.hpp"
 #include "util.hpp"
 
@@ -725,6 +726,21 @@ bool hnd::cnl::TextoDeEnlaces(const Campos& campos, std::string& texto)
     return hay;
 }
 
+std::vector<std::string> hnd::cnl::Contrasenas(const Campos& campos)
+{
+    // Todas las veces que venga el campo, en orden; una por línea
+    std::string texto;
+    for (const auto& c : campos)
+    {
+        if (Bajo(c.first) != "passwords") continue;
+        texto += c.second;
+        texto += '\n';
+    }
+    auto r = contrasenas::DeTexto(texto);
+    contrasenas::Borrar(texto);
+    return r;
+}
+
 hnd::cnl::Lista hnd::cnl::Enlaces(const std::string& recibido, size_t maximo)
 {
     // Si no hay ningún enlace a la vista pero sí enlaces codificados, se decodifican una vez más
@@ -1255,8 +1271,17 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
         rechazar(400, "no trae enlaces válidos: " + cnl::Resumen(lista));
         return;
     }
-    Registrar("Click'n'Load: " + cnl::Resumen(lista) + ". Pedido: " + TextoPedido(p));
+    // La contraseña del paquete, si vino: solo se cuenta en el registro, nunca se anota
+    auto claves = cnl::Contrasenas(campos);
+    for (auto& c : campos)
+    {
+        if (Bajo(c.first) == "passwords") contrasenas::Borrar(c.second);
+    }
+    Registrar("Click'n'Load: " + cnl::Resumen(lista) + ". Pedido: " + TextoPedido(p)
+              + (claves.empty() ? std::string() : claves.size() == 1 ? std::string(". Trae la contraseña del paquete (no se anota)")
+                                                                     : ". Trae " + std::to_string(claves.size()) + " contraseñas del paquete (no se anotan)"));
     size_t n = lista.enlaces.size();
-    if (m_alRecibir) m_alRecibir(std::move(lista.enlaces), Paquete(campos), origen);
+    if (m_alRecibir) m_alRecibir(std::move(lista.enlaces), Paquete(campos), origen, std::move(claves));
+    else contrasenas::Borrar(claves);
     Enviar(s, Contestar(p.pagina, 200, "", n));
 }

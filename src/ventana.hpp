@@ -14,6 +14,7 @@
 
 #include "ajustes.hpp"
 #include "clicknload.hpp"
+#include "contrasenas.hpp"
 #include "deunaenuna.hpp"
 #include "hilos.hpp"
 #include "jicaro.hpp"
@@ -63,7 +64,7 @@ protected:
 private:
     void AplicarAjustes();                                  // portapapeles y Click'n'Load, según los ajustes
     void PortapapelesCambio();
-    void AlRecibirCnL(std::vector<std::string> enlaces, std::wstring paquete, std::string origen);
+    void AlRecibirCnL(std::vector<std::string> enlaces, std::wstring paquete, std::string origen, std::vector<std::string> contrasenas);
     std::vector<uint64_t> ConfirmarRecolector(const std::vector<hnd::EnlaceRecolectado>& lista, const std::wstring& carpeta,
                                               bool porPaquete, bool empezar);
     void CrearMenu();
@@ -140,7 +141,11 @@ private:
     {
         std::wstring nombre;                             // el del paquete o el del comprimido, para mostrar
         std::wstring exe, primera, destino;
-        std::vector<hnd::jicaro::ParteBajada> partes;    // solo las de este paquete (por id), con el archivo que eran
+        std::vector<hnd::jicaro::ParteBajada> partes;    // solo las de este juego (por id), con el archivo que eran
+        // De qué paquete es (sus contraseñas están guardadas con esa clave, cifradas): nunca se guarda aquí la contraseña
+        std::string clave;
+        size_t intento = 0;                              // qué contraseña del paquete se prueba (en orden, como mucho 5)
+        bool conContrasena = false;                      // a esta vez se le pasó una
     };
     struct ResultadoJicaro
     {
@@ -162,6 +167,13 @@ private:
     void CrearBarraJicaro(wxWindow* padre);
     void ActualizarBarraJicaro();
     void BorrarPartes();   // solo cuando la persona lo pulsa: a la Papelera
+    // Contraseñas de los paquetes (cifradas). «clave»: el grupo del paquete, o «d<id>» para una descarga suelta.
+    std::string ClaveDeContrasena(const hnd::DatosDescarga& d) const;
+    // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue
+    bool EscribirContrasena(const std::string& clave, const std::wstring& nombre, bool incorrecta);
+    void ContrasenaDelPaquete();           // desde el menú de la lista
+    void RecordarContrasenas(const std::vector<std::string>& lista);   // solo si la persona lo encendió en Ajustes
+    void GuardarContrasenas();
 
     hnd::Motor& m_motor;
     hnd::MotorTorrent& m_torrents;
@@ -217,13 +229,16 @@ private:
     bool m_jicaroOcupado = false;
     TrabajoJicaro m_jicaroActual;
     std::deque<ResultadoJicaro> m_resultadosJicaro;   // la barra muestra el primero
-    std::set<std::string> m_jicaroVistos;             // paquetes (o descargas sueltas) que ya pasaron a Jícaro
+    std::set<std::string> m_jicaroVistos;             // juegos (o descargas sueltas) que ya pasaron a Jícaro
     std::set<std::wstring> m_destinosJicaro;          // carpetas ya elegidas (en minúsculas), aunque aún no existan
     std::set<std::wstring> m_marcando;                // archivos que Windows todavía marca como bajados de internet
+    hnd::contrasenas::Guardadas m_contrasenas;        // las de cada paquete, cifradas (contrasenas.json)
     wxPanel* m_barraJicaro = nullptr;
     wxStaticText* m_textoJicaro = nullptr;
     wxButton* m_bCarpetaJicaro = nullptr;
     wxButton* m_bBorrarPartes = nullptr;
+    wxButton* m_bContrasenaJicaro = nullptr;
+    wxButton* m_bPaginaJicaro = nullptr;
     wxButton* m_bCerrarJicaro = nullptr;
 };
 
@@ -251,4 +266,5 @@ enum
     ID_ELEGIR,
     ID_COMPARTIR,
     ID_ABRIR_EN_NAVEGADOR,
+    ID_CONTRASENA,
 };

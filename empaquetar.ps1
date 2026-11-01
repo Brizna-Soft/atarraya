@@ -61,9 +61,18 @@ Atarraya $version - descargas, videos, torrents y enlaces magnet, gratis, de Bri
    - Los captchas siempre los resuelves tú. Atarraya no hace clics en la página, no se salta ni acorta esperas,
      no cambia tu IP ni usa cuentas premium.
    Recarga la extensión para tener esto (ver abajo).
+10. Nuevo en la 0.4.1: contraseñas y descomprimir cada juego apenas está completo.
+   - Si tienes la contraseña de todo un lote de enlaces, escríbela una sola vez: al pegarlos en el recolector, o
+     con clic derecho en el paquete ("Contraseña del paquete..."). Si el sitio la manda por Click'n'Load, se toma sola.
+   - Jícaro descomprime cada juego (un comprimido, o todas sus partes) en cuanto llega su última parte, sin esperar
+     al resto del paquete. Cada juego, una sola vez.
+   - Si la contraseña no sirve, Atarraya te avisa y te la pide otra vez. Nunca prueba claves a ciegas.
+   - Se guarda cifrada (solo tu cuenta de Windows la puede leer) y nunca va al registro ni a la línea de comandos.
+     Recordarlas para otros paquetes se enciende en Ajustes (viene apagado).
+   - Hace falta Jícaro 0.2.0 o más nuevo para las contraseñas: https://brizna-soft.github.io/programas/jicaro/
 
-Si ya tenías la extensión de una versión anterior, recárgala (la 0.4.0 la necesita para seguir las descargas y
-leer las esperas de los sitios): en chrome://extensions (o edge://extensions)
+Si ya tenías la extensión de una versión anterior, recárgala (desde la 0.4.0 la necesita para seguir las descargas,
+abrir las páginas de la cola y leer las esperas de los sitios): en chrome://extensions (o edge://extensions)
 busca Atarraya y pulsa el botón de recargar. Si pusiste esta versión en otra carpeta, carga otra vez la
 carpeta extension\chrome nueva y, en Atarraya, pulsa de nuevo "Navegadores" y "Conectar".
 

@@ -367,6 +367,14 @@ DialogoVarios::DialogoVarios(wxWindow* padre, const Ajustes&)
                          L"Nada empieza hasta que lo confirmes.", FromDIP(600)),
               0, wxLEFT | wxRIGHT | wxTOP, borde);
 
+    // La contraseña de los comprimidos, una sola vez para todo el lote: Jícaro descomprime cada juego al terminar
+    auto* filaClave = new wxBoxSizer(wxHORIZONTAL);
+    filaClave->Add(Etiqueta(this, L"Contraseña de los comprimidos (si la tienen):"), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(8));
+    m_contrasena = new wxTextCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, FromDIP(wxSize(220, -1)), wxTE_PASSWORD);
+    m_contrasena->SetToolTip(L"Se guarda cifrada, solo para tu cuenta de Windows. Nunca va al registro.");
+    filaClave->Add(m_contrasena, 1, wxALIGN_CENTER_VERTICAL);
+    caja->Add(filaClave, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
+
     wxButton *agregar = nullptr, *luego = nullptr;
     caja->Add(Botones(this, L"Agregar al recolector", &agregar, &luego, false), 0, wxEXPAND | wxALL, borde);
     agregar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { AlAceptar(); });
@@ -418,6 +426,74 @@ void DialogoVarios::AlAceptar()
         return;
     }
     EndModal(wxID_OK);
+}
+
+std::string DialogoVarios::Contrasena() const
+{
+    return m_contrasena ? std::string(m_contrasena->GetValue().ToUTF8().data()) : std::string();
+}
+
+bool PedirContrasena(wxWindow* padre, const wxString& titulo, const wxString& texto, const std::vector<std::string>& recordadas,
+                     std::string& contrasena)
+{
+    contrasena.clear();
+    wxDialog d(padre, wxID_ANY, titulo);
+    const int borde = d.FromDIP(12);
+    auto* caja = new wxBoxSizer(wxVERTICAL);
+    caja->Add(Etiqueta(&d, texto), 0, wxLEFT | wxRIGHT | wxTOP, borde);
+    // Oculta, o a la vista con «Mostrar» (dos campos: Windows no deja cambiar uno de oculto a visible)
+    auto* oculta = new wxTextCtrl(&d, wxID_ANY, wxEmptyString, wxDefaultPosition, d.FromDIP(wxSize(360, -1)), wxTE_PASSWORD);
+    auto* visible = new wxTextCtrl(&d, wxID_ANY, wxEmptyString, wxDefaultPosition, d.FromDIP(wxSize(360, -1)));
+    visible->Hide();
+    caja->Add(oculta, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
+    caja->Add(visible, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
+    auto* mostrar = new wxCheckBox(&d, wxID_ANY, L"Mostrar la contraseña");
+    caja->Add(mostrar, 0, wxLEFT | wxRIGHT | wxTOP, borde);
+    wxChoice* elegir = nullptr;
+    if (!recordadas.empty())
+    {
+        wxArrayString opciones;
+        opciones.Add(L"Escribirla");
+        for (size_t i = 0; i < recordadas.size(); i++) opciones.Add(wxString::Format(L"Una que ya usaste (n.º %zu)", i + 1));
+        caja->Add(Etiqueta(&d, L"O elige una de las que Atarraya recuerda:"), 0, wxLEFT | wxRIGHT | wxTOP, borde);
+        elegir = new wxChoice(&d, wxID_ANY, wxDefaultPosition, wxDefaultSize, opciones);
+        elegir->SetSelection(0);
+        caja->Add(elegir, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, borde);
+    }
+    caja->Add(Nota(&d, L"Se guarda cifrada, solo para tu cuenta de Windows. A Jícaro le llega sin pasar por la línea de comandos, y "
+                       L"nunca va al registro de Atarraya.", d.FromDIP(380)),
+              0, wxLEFT | wxRIGHT | wxTOP, borde);
+    caja->Add(d.CreateSeparatedButtonSizer(wxOK | wxCANCEL), 0, wxEXPAND | wxALL, borde);
+    if (auto* ok = d.FindWindow(wxID_OK)) ok->SetLabel(L"Guardar");
+    if (auto* cancelar = d.FindWindow(wxID_CANCEL)) cancelar->SetLabel(L"Cancelar");
+    mostrar->Bind(wxEVT_CHECKBOX, [oculta, visible, mostrar, &d](wxCommandEvent&) {
+        bool si = mostrar->GetValue();
+        if (si) visible->ChangeValue(oculta->GetValue());
+        else oculta->ChangeValue(visible->GetValue());
+        oculta->Show(!si);
+        visible->Show(si);
+        d.Layout();
+        (si ? visible : oculta)->SetFocus();
+    });
+    if (elegir)
+    {
+        elegir->Bind(wxEVT_CHOICE, [elegir, oculta, visible, &recordadas](wxCommandEvent&) {
+            int k = elegir->GetSelection();
+            wxString v = k > 0 && (size_t)k <= recordadas.size() ? wxString::FromUTF8(recordadas[(size_t)k - 1]) : wxString();
+            oculta->ChangeValue(v);
+            visible->ChangeValue(v);
+        });
+    }
+    d.SetSizerAndFit(caja);
+    d.CentreOnParent();
+    oculta->SetFocus();
+    bool ok = d.ShowModal() == wxID_OK;
+    if (ok) contrasena = (mostrar->GetValue() ? visible : oculta)->GetValue().ToUTF8().data();
+    // No queda en los campos
+    oculta->ChangeValue(wxEmptyString);
+    visible->ChangeValue(wxEmptyString);
+    while (!contrasena.empty() && (contrasena.back() == '\r' || contrasena.back() == '\n')) contrasena.pop_back();
+    return ok && !contrasena.empty();
 }
 // ---------------------------------------------------------------- Enlaces de una página
 
@@ -1216,9 +1292,15 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
     filaJicaro->Add(elegirJicaro, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(6));
     filaJicaro->Add(paginaJicaro, 0, wxALIGN_CENTER_VERTICAL);
     caja->Add(filaJicaro, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, borde);
-    caja->Add(Nota(this, L"Cuando termina un paquete (o un .rar, .zip o .7z suelto), Jícaro lo descomprime en una carpeta con su "
-                         L"nombre, al lado de las partes. Las partes no se borran: después puedes mandarlas a la Papelera.", FromDIP(520)),
+    caja->Add(Nota(this, L"Cuando termina cada juego de un paquete (un comprimido, o todas sus partes) o un .rar, .zip o .7z suelto, "
+                         L"Jícaro lo descomprime en una carpeta al lado de las partes, sin esperar al resto del paquete. Las partes no se "
+                         L"borran: después puedes mandarlas a la Papelera.", FromDIP(520)),
               0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
+    auto* recordar = new wxCheckBox(this, wxID_ANY, L"Recordar las contraseñas para otros paquetes");
+    recordar->SetValue(ajustes.recordarContrasenas);
+    recordar->SetToolTip(L"Al escribir la contraseña de un paquete, puedes elegir una que ya usaste. Se guardan cifradas, solo para tu "
+                         L"cuenta de Windows. Al apagarlo, se olvidan.");
+    caja->Add(recordar, 0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
     auto mostrarJicaro = [=, this]() {
         std::wstring ruta = jicaro::Buscar(*elegido);
         bool hay = !ruta.empty();
@@ -1255,6 +1337,7 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
     Bind(wxEVT_BUTTON, [=, this](wxCommandEvent& e) {
         if (casillaJicaro->IsEnabled()) m_ajustes.jicaroAlTerminar = casillaJicaro->GetValue();
         m_ajustes.rutaJicaro = *elegido;
+        m_ajustes.recordarContrasenas = recordar->GetValue();
         m_ajustes.carpeta = carpeta->GetPath().ToStdWstring();
         m_ajustes.conexiones = conexiones->GetValue();
         m_ajustes.simultaneas = simultaneas->GetValue();

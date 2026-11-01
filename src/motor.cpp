@@ -1353,6 +1353,16 @@ namespace hnd
         m_sucio = true;
     }
 
+    void Motor::MarcarDescomprimido(uint64_t id)
+    {
+        std::lock_guard g(m_lista);
+        auto x = Encontrar(id);
+        if (!x) return;
+        std::lock_guard g2(x->m);
+        x->d.descomprimido = true;
+        m_sucio = true;
+    }
+
     void Motor::Recoger()
     {
         std::lock_guard g(m_lista);
@@ -1514,6 +1524,7 @@ namespace hnd
                     { "identidad", d.identidad.Valida() ? json{ { "volumen", d.identidad.volumen }, { "indice", d.identidad.indice },
                                                                 { "tamano", d.identidad.tamano }, { "modificado", d.identidad.modificado } }
                                                         : json() },
+                    { "descomprimido", d.descomprimido },
                     { "formato", d.formato }, { "pista", d.pista }, { "flujoTotal", d.flujoTotal }, { "flujoHechos", d.flujoHechos },
                     { "flujoBytes", d.flujoBytes }, { "flujoLocal", d.flujoLocal }, { "flujoListas", d.flujoListas },
                     { "soloAfuera", d.soloAfuera }, { "sinProxy", d.sinProxy },
@@ -1568,6 +1579,7 @@ namespace hnd
                     d.identidad.tamano = i->value("tamano", (int64_t)-1);
                     d.identidad.modificado = i->value("modificado", (int64_t)0);
                 }
+                d.descomprimido = j.value("descomprimido", false);
                 d.formato = j.value("formato", "");
                 if (d.formato != "hls" && d.formato != "dash") d.formato.clear();
                 d.pista = j.value("pista", "");

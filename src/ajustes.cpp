@@ -34,6 +34,7 @@ void hnd::Ajustes::Cargar()
         avisoBandejaMostrado = j.value("avisoBandejaMostrado", false);
         jicaroAlTerminar = j.value("jicaroAlTerminar", true);
         rutaJicaro = Ancho(j.value("rutaJicaro", ""));
+        recordarContrasenas = j.value("recordarContrasenas", false);
         x = j.value("x", -1);
         y = j.value("y", -1);
         ancho = j.value("ancho", 0);
@@ -53,7 +54,7 @@ void hnd::Ajustes::Guardar() const
         { "clickNLoad", clickNLoad }, { "carpetaPorPaquete", carpetaPorPaquete },
         { "preguntarNavegador", preguntarNavegador }, { "bandejaAlCerrar", bandejaAlCerrar },
         { "avisarAlTerminar", avisarAlTerminar }, { "avisoBandejaMostrado", avisoBandejaMostrado },
-        { "jicaroAlTerminar", jicaroAlTerminar }, { "rutaJicaro", Utf8(rutaJicaro) },
+        { "jicaroAlTerminar", jicaroAlTerminar }, { "rutaJicaro", Utf8(rutaJicaro) }, { "recordarContrasenas", recordarContrasenas },
         { "x", x }, { "y", y }, { "ancho", ancho }, { "alto", alto }, { "maximizada", maximizada },
         { "altoDetalles", altoDetalles },
     };

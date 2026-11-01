@@ -59,6 +59,8 @@ namespace hnd
         // El archivo que quedó al terminar (se lee cuando Windows ya lo marcó como bajado de internet): «Borrar las
         // partes» solo manda a la Papelera un archivo que sigue siendo este
         IdentidadArchivo identidad;
+        // Su juego (el comprimido, o todas sus partes) ya se le pasó a Jícaro: no se descomprime otra vez solo
+        bool descomprimido = false;
         // Videos por partes: «formato» es "hls" o "dash" (vacío en una descarga normal) y «url» es su lista. En DASH,
         // «pista» dice cuál bajar: «video:<id>» o «audio:<id>». Se baja parte por parte y se junta en un archivo.
         std::string formato, pista;
@@ -159,6 +161,7 @@ namespace hnd
         void CambiarGrupo(uint64_t id, const std::wstring& paquete, const std::string& grupo);
         void UnirGrupos(const std::string& viejo, const std::string& nuevo, const std::wstring& paquete);
         void FijarIdentidad(uint64_t id, const IdentidadArchivo& identidad);
+        void MarcarDescomprimido(uint64_t id);
 
         // Recoge las conexiones que terminaron (para que la cola compartida vea los estados al día)
         void Recoger();

@@ -225,6 +225,8 @@ void hnd::Recolector::Cargar()
             e.origen = j.value("origen", "");
             e.marcado = j.value("marcado", true);
             e.agregado = j.value("agregado", (int64_t)0);
+            e.contrasenas = j.value("contrasenas", "");   // cifradas
+            if (e.contrasenas.size() > 64 * 1024) e.contrasenas.clear();
             m_lista.push_back(std::move(e));
         }
     }
@@ -245,9 +247,11 @@ bool hnd::Recolector::Guardar()
         version = m_version;
         for (auto& e : m_lista)
         {
-            l.push_back({ { "url", e.url }, { "referer", e.referer }, { "nombre", Utf8(e.nombre) }, { "tamano", e.tamano },
-                          { "estado", NombreComprobacion(e.estado) }, { "detalle", e.detalle }, { "paquete", Utf8(e.paquete) },
-                          { "origen", e.origen }, { "marcado", e.marcado }, { "agregado", e.agregado } });
+            json x = { { "url", e.url }, { "referer", e.referer }, { "nombre", Utf8(e.nombre) }, { "tamano", e.tamano },
+                       { "estado", NombreComprobacion(e.estado) }, { "detalle", e.detalle }, { "paquete", Utf8(e.paquete) },
+                       { "origen", e.origen }, { "marcado", e.marcado }, { "agregado", e.agregado } };
+            if (!e.contrasenas.empty()) x["contrasenas"] = e.contrasenas;   // cifradas con DPAPI
+            l.push_back(std::move(x));
         }
     }
     json todo = { { "version", 1 }, { "enlaces", l } };
@@ -308,6 +312,27 @@ void hnd::Recolector::Marcar(const std::vector<uint64_t>& ids, bool si)
     for (auto& e : m_lista)
     {
         if (std::find(ids.begin(), ids.end(), e.id) != ids.end()) e.marcado = si;
+    }
+    m_version++;
+}
+
+void hnd::Recolector::FijarContrasenas(const std::vector<uint64_t>& ids, const std::string& cifradas)
+{
+    std::lock_guard g(m_m);
+    for (auto& e : m_lista)
+    {
+        if (std::find(ids.begin(), ids.end(), e.id) != ids.end()) e.contrasenas = cifradas;
+    }
+    m_version++;
+}
+
+void hnd::Recolector::FijarContrasenasDe(const std::vector<std::string>& urls, const std::string& cifradas)
+{
+    std::lock_guard g(m_m);
+    std::set<std::string> cuales(urls.begin(), urls.end());
+    for (auto& e : m_lista)
+    {
+        if (cuales.count(e.url)) e.contrasenas = cifradas;
     }
     m_version++;
 }

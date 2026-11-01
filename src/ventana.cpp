@@ -483,7 +483,7 @@ private:
 VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Recolector& recolector, hnd::Ajustes& ajustes)
     : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_recolector(recolector), m_ajustes(ajustes),
       m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this), m_sitios(hnd::CarpetaDatos() + L"\\de-una-en-una.json"),
-      m_sitiosNavegador(hnd::CarpetaDatos() + L"\\sitios-navegador.json")
+      m_sitiosNavegador(hnd::CarpetaDatos() + L"\\sitios-navegador.json"), m_contrasenas(hnd::CarpetaDatos() + L"\\contrasenas.json")
 {
     wxIconBundle iconos(wxString(L"AAAA_APP"), (WXHINSTANCE)GetModuleHandleW(nullptr));
     SetIcons(iconos);
@@ -579,8 +579,18 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { DialogoNavegadores d(this); d.ShowModal(); }, ID_NAVEGADORES);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) {
         DialogoAjustes d(this, m_ajustes);
-        if (d.ShowModal() == wxID_OK) AplicarAjustes();
+        if (d.ShowModal() == wxID_OK)
+        {
+            AplicarAjustes();
+            // Apagado: las recordadas para otros paquetes se olvidan (las de cada paquete se quedan con su paquete)
+            if (!m_ajustes.recordarContrasenas && m_contrasenas.HayRecordadas())
+            {
+                m_contrasenas.OlvidarRecordadas();
+                GuardarContrasenas();
+            }
+        }
     }, ID_AJUSTES);
+    Bind(wxEVT_MENU, [this](wxCommandEvent&) { ContrasenaDelPaquete(); }, ID_CONTRASENA);
     Bind(wxEVT_MENU, [this](wxCommandEvent&) { Salir(); }, wxID_EXIT);
     Bind(wxEVT_CLOSE_WINDOW, &VentanaPrincipal::AlCerrar, this);
 
@@ -623,6 +633,18 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // las que no bajaron no llegaron al recolector, se intenta otra vez.
     m_sitios.Cargar();
     m_sitiosNavegador.Cargar();
+    // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola
+    m_contrasenas.Cargar();
+    {
+        std::set<std::string> vivos;
+        for (const auto& f : m_motor.Fotos()) vivos.insert(ClaveDeContrasena(f.datos));
+        for (const auto& p : m_sitios.Partes())
+        {
+            if (!p.grupo.empty()) vivos.insert(p.grupo);
+        }
+        m_contrasenas.QuedarseCon(vivos);
+        GuardarContrasenas();
+    }
     // Lo que se estaba probando cuando Atarraya se cerró queda para el navegador, que siguió bajando la suya: se quita
     // la de Atarraya antes de que arranque, así nunca bajan las dos
     auto aMedias = m_sitios.ResolverTomasAlAbrir();
@@ -1040,6 +1062,14 @@ void VentanaPrincipal::AbrirRecolector(bool sinFoco)
                 return ConfirmarRecolector(lista, carpeta, porPaquete, empezar);
             });
         m_ventanaRecolector->alCambiarAjustes = [this]() { AplicarAjustes(); };
+        m_ventanaRecolector->contrasenasRecordadas = [this]() {
+            return m_ajustes.recordarContrasenas ? m_contrasenas.Recordadas() : std::vector<std::string>();
+        };
+        m_ventanaRecolector->alEscribirContrasena = [this](const std::vector<std::string>& claves) {
+            if (!m_ajustes.recordarContrasenas) return;
+            RecordarContrasenas(claves);
+            GuardarContrasenas();
+        };
         m_ventanaRecolector->EstadoClickNLoad(m_estadoCnl);
     }
     if (sinFoco) m_ventanaRecolector->MostrarSinFoco();
@@ -1069,9 +1099,13 @@ void VentanaPrincipal::AplicarAjustes()
         VentanaPrincipal* yo = this;
         hilos::Vivo vivo = m_vivo;
         std::string error;
-        bool ok = m_cnl->Iniciar([yo, vivo](std::vector<std::string> lista, std::wstring paquete, std::string origen) {
-            hilos::Enviar([yo, vivo, lista, paquete, origen]() {
-                if (*vivo) yo->AlRecibirCnL(lista, paquete, origen);
+        bool ok = m_cnl->Iniciar([yo, vivo](std::vector<std::string> lista, std::wstring paquete, std::string origen,
+                                            std::vector<std::string> claves) {
+            // Las contraseñas pasan cifradas al hilo de la ventana
+            std::string cifradas = contrasenas::Cifrar(claves);
+            contrasenas::Borrar(claves);
+            hilos::Enviar([yo, vivo, lista, paquete, origen, cifradas]() {
+                if (*vivo) yo->AlRecibirCnL(lista, paquete, origen, contrasenas::Descifrar(cifradas));
             });
         }, error);
         m_estadoCnl = ok ? wxString(L"Click'n'Load: listo en 127.0.0.1:9666 (solo desde esta PC). Lo que llegue espera aquí.")
@@ -1124,10 +1158,23 @@ void VentanaPrincipal::PortapapelesCambio()
                                             : wxString::Format(L"Copiaste %zu enlaces: están en el recolector. Ábrelo para revisarlos y elegir.", n));
 }
 
-void VentanaPrincipal::AlRecibirCnL(std::vector<std::string> lista, std::wstring paquete, std::string origen)
+void VentanaPrincipal::AlRecibirCnL(std::vector<std::string> lista, std::wstring paquete, std::string origen,
+                                    std::vector<std::string> claves)
 {
-    if (m_saliendo) return;
+    if (m_saliendo)
+    {
+        contrasenas::Borrar(claves);
+        return;
+    }
     size_t n = m_recolector.Agregar(lista, paquete, origen, "clicknload");
+    if (!claves.empty())
+    {
+        // La contraseña que mandó el sitio (campo «passwords»): para todos esos enlaces, también los que ya estaban
+        m_recolector.FijarContrasenasDe(lista, contrasenas::Cifrar(claves));
+        RecordarContrasenas(claves);
+        GuardarContrasenas();
+        contrasenas::Borrar(claves);
+    }
     if (n < lista.size())
         Registrar("Click'n'Load: " + std::to_string(n) + " nuevos en el recolector; " + std::to_string(lista.size() - n)
                   + " ya estaban ahí o no cabían");
@@ -1237,6 +1284,35 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
                 hechos.push_back(paginas[i]->id);
             }
         }
+    }
+    // La contraseña de cada paquete (si la tiene) pasa a su grupo, cifrada: así Jícaro descomprime cada juego del paquete
+    // con ella, también lo que baja «de una en una»
+    std::map<std::wstring, std::vector<std::string>> claves;
+    for (const auto& e : lista)
+    {
+        if (e.contrasenas.empty() || std::find(hechos.begin(), hechos.end(), e.id) == hechos.end()) continue;
+        auto nuevas = contrasenas::Descifrar(e.contrasenas);
+        auto& c = claves[PaqueteDe(e)];
+        auto juntas = contrasenas::Juntar(c, nuevas);
+        contrasenas::Borrar(c);
+        c = std::move(juntas);
+        contrasenas::Borrar(nuevas);
+    }
+    for (auto& [paquete, l] : claves)
+    {
+        std::string grupo = tanda.Grupo(paquete);
+        auto viejas = m_contrasenas.Leer(grupo);
+        auto juntas = contrasenas::Juntar(l, viejas);
+        m_contrasenas.Fijar(grupo, juntas);
+        contrasenas::Borrar(viejas);
+        contrasenas::Borrar(juntas);
+        contrasenas::Borrar(l);
+    }
+    if (!claves.empty())
+    {
+        GuardarContrasenas();
+        Registrar("recolector: " + std::to_string(claves.size()) + (claves.size() == 1 ? " paquete con contraseña" : " paquetes con contraseña")
+                  + " (guardadas cifradas)");
     }
     Registrar("recolector: " + std::to_string(descargas) + " descargas y " + std::to_string(torrents) + " torrents a la lista");
     if (noEstan > 0 || fallaron > 0)
@@ -1980,6 +2056,9 @@ void VentanaPrincipal::MenuContextual(wxDataViewEvent&)
         m.Append(ID_CAMBIAR, L"Cambiar el enlace...");
         // El sitio respondió con una página: se puede abrir en el navegador
         if (f.datos.estado == Estado::Error && f.datos.error == TextoRespondioPagina) m.Append(ID_ABRIR_EN_NAVEGADOR, L"Abrir en el navegador");
+        // La contraseña de los comprimidos del paquete (o de esta descarga, si es suelta)
+        m.Append(ID_CONTRASENA, m_contrasenas.Tiene(ClaveDeContrasena(f.datos)) ? L"Cambiar la contraseña del paquete..."
+                                                                                 : L"Contraseña del paquete...");
     }
     m.Append(ID_HUELLA, L"Calcular la huella SHA-256");
     m.AppendSeparator();
@@ -2423,6 +2502,11 @@ void VentanaPrincipal::Avanzar()
     if (m_sitios.Terminada())
     {
         size_t total = m_sitios.Partes().size(), listas = m_sitios.Cuantas(EstadoParte::Lista), vuelven = 0;
+        std::set<std::string> grupos;
+        for (const auto& p : m_sitios.Partes())
+        {
+            if (!p.grupo.empty()) grupos.insert(p.grupo);
+        }
         // Las saltadas y las que fallaron vuelven al recolector, para intentarlas después
         if (!DevolverYVaciar(vuelven))
         {
@@ -2430,6 +2514,17 @@ void VentanaPrincipal::Avanzar()
                                      L"para intentarlo otra vez.", true);
             ActualizarBarraSitios();
             return;
+        }
+        // Ya no viene nada más de la cola: los juegos de esos paquetes que quedaron completos se descomprimen (si a alguno le
+        // falta una parte que no bajó, Jícaro dice cuál)
+        for (const auto& grupo : grupos)
+        {
+            for (const auto& f : m_motor.Fotos())
+            {
+                if (f.datos.grupo != grupo || f.datos.estado != Estado::Completada || f.datos.nombre.empty()) continue;
+                EncolarJicaro(PrepararJicaro(f.datos));
+                break;
+            }
         }
         if (listas == total) m_resumenSitios = total == 1 ? wxString(L"Listo: bajó la única parte.") : wxString::Format(L"Listo: bajaron las %zu partes.", total);
         else
@@ -2936,27 +3031,6 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
     std::wstring exe = jicaro::Buscar(m_ajustes.rutaJicaro);
     if (exe.empty()) return trabajos;   // sin Jícaro no se hace nada (en Ajustes, la casilla se ve apagada)
 
-    std::vector<jicaro::ParteBajada> propias;   // solo las descargas de este paquete (por id), o el comprimido suelto
-    std::string clave;
-    if (!d.grupo.empty())
-    {
-        // Tienen que haber terminado todas las del paquete, también las de «de una en una» que todavía no se bajan
-        propias = jicaro::ArchivosDelPaquete(d.grupo, m_motor.Fotos(), m_sitios.Partes());
-        if (propias.empty()) return trabajos;
-        clave = "paquete " + d.grupo;
-    }
-    else
-    {
-        // Suelta: solo un .rar, .zip o .7z entero. De unas partes sueltas no se sabe si ya llegaron todas (tampoco de
-        // un «peli.rar» que es la primera parte del estilo viejo).
-        std::wstring ruta = d.carpeta + L"\\" + d.nombre;
-        if (!jicaro::EsComprimidoSuelto(d.nombre) || jicaro::EsVolumenRar(ruta)) return trabajos;
-        propias.push_back({ d.id, ruta, d.identidad });
-        clave = "descarga " + std::to_string(d.id);
-    }
-    // Una sola vez por paquete (por ejemplo, si dos partes terminaron en el mismo momento)
-    if (!m_jicaroVistos.insert(clave).second) return trabajos;
-
     // Las carpetas que ya eligieron otros trabajos (puede que todavía no existan): no se repiten
     auto reservar = [&](const std::wstring& carpeta, const std::wstring& nombre) {
         std::wstring destino = jicaro::CarpetaDestino(carpeta, nombre);
@@ -2965,30 +3039,56 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         if (!destino.empty()) m_destinosJicaro.insert(Minusculas(destino));
         return destino;
     };
-    // Un paquete con nombre propio va todo a una carpeta con ese nombre, al lado de sus partes; si Atarraya no sabía el
-    // nombre («Páginas de ...»), cada comprimido va a una con el suyo
-    bool unaCarpeta = !d.paquete.empty() && jicaro::NombreDeCarpeta(d.paquete, L"") == d.paquete;
-    std::map<std::wstring, std::wstring> comunes;   // carpeta de las partes → carpeta para lo descomprimido
-    for (auto& plan : jicaro::Planear(propias, d.paquete))
-    {
+    auto agregar = [&](jicaro::Plan& plan, const std::string& clave) {
+        std::wstring destino = reservar(plan.carpeta, plan.nombre);
+        if (destino.empty()) return;
         TrabajoJicaro t;
         t.exe = exe;
         t.nombre = plan.nombre;
         t.primera = plan.primera;
         t.partes = std::move(plan.partes);
-        if (unaCarpeta)
-        {
-            auto& comun = comunes[Minusculas(plan.carpeta)];
-            if (comun.empty()) comun = reservar(plan.carpeta, plan.nombre);
-            t.destino = comun;
-        }
-        else t.destino = reservar(plan.carpeta, plan.nombre);
-        if (!t.destino.empty()) trabajos.push_back(std::move(t));
+        t.destino = destino;
+        t.clave = clave;
+        // Una sola vez por juego: queda anotado con cada parte (también si Atarraya se cierra)
+        for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga);
+        trabajos.push_back(std::move(t));
+    };
+
+    if (d.grupo.empty())
+    {
+        // Suelta: solo un .rar, .zip o .7z entero. De unas partes sueltas no se sabe si ya llegaron todas (tampoco de
+        // un «peli.rar» que es la primera parte del estilo viejo, ni del .zip de uno partido).
+        std::wstring ruta = d.carpeta + L"\\" + d.nombre;
+        if (d.descomprimido || !jicaro::EsComprimidoSuelto(d.nombre) || jicaro::EsVolumenRar(ruta) || jicaro::EsZipPartido(ruta))
+            return trabajos;
+        if (!m_jicaroVistos.insert("descarga " + std::to_string(d.id)).second) return trabajos;
+        for (auto& plan : jicaro::Planear({ { d.id, ruta, d.identidad } }, d.paquete)) agregar(plan, ClaveDeContrasena(d));
+        if (!trabajos.empty()) Registrar("jícaro: terminó un comprimido suelto");
+        return trabajos;
+    }
+
+    // De un paquete: cada juego apenas está completo, sin esperar al resto del paquete, y una sola vez. Con un solo
+    // juego y nombre propio, va a una carpeta con el nombre del paquete (como antes); con varios, cada uno a la suya.
+    auto juegos = jicaro::Juegos(d.grupo, m_motor.Fotos(), m_sitios.Partes());
+    bool unaCarpeta = juegos.juegos.size() == 1 && !d.paquete.empty() && jicaro::NombreDeCarpeta(d.paquete, L"") == d.paquete;
+    size_t listos = 0;
+    for (const auto& j : juegos.juegos)
+    {
+        if (!juegos.Completo(j) || j.descomprimido) continue;
+        if (!m_jicaroVistos.insert("juego " + d.grupo + " " + Utf8(j.clave)).second) continue;
+        for (auto& plan : jicaro::Planear(j.partes, unaCarpeta ? d.paquete : std::wstring())) agregar(plan, d.grupo);
+        listos++;
     }
     if (!trabajos.empty())
-        Registrar("jícaro: terminó " + std::string(d.grupo.empty() ? "un comprimido suelto" : "un paquete") + "; "
-                  + std::to_string(trabajos.size()) + (trabajos.size() == 1 ? " comprimido" : " comprimidos") + " para descomprimir");
+        Registrar("jícaro: " + std::to_string(listos) + (listos == 1 ? " juego completo" : " juegos completos") + " de un paquete ("
+                  + std::to_string(juegos.juegos.size()) + " en total); " + std::to_string(trabajos.size())
+                  + (trabajos.size() == 1 ? " comprimido" : " comprimidos") + " para descomprimir");
     return trabajos;
+}
+
+std::string VentanaPrincipal::ClaveDeContrasena(const DatosDescarga& d) const
+{
+    return d.grupo.empty() ? "d" + std::to_string(d.id) : d.grupo;
 }
 
 void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
@@ -3035,8 +3135,26 @@ void VentanaPrincipal::SiguienteJicaro()
             hnd::Foto f;
             if (m_motor.Buscar(p.descarga, f)) p.identidad = f.datos.identidad;
         }
-        std::wstring orden = jicaro::ArmarOrden(t.exe, t.primera, t.destino);
-        void* proceso = !orden.empty() && ExisteArchivo(t.primera) ? jicaro::Abrir(t.exe, orden) : nullptr;
+        // La contraseña del paquete (la que toca, en orden): se descifra recién ahora y se borra apenas se le pasa
+        std::vector<std::string> claves = t.clave.empty() ? std::vector<std::string>() : m_contrasenas.Leer(t.clave);
+        std::string clave = t.intento < claves.size() ? claves[t.intento] : std::string();
+        contrasenas::Borrar(claves);
+        if (!clave.empty())
+        {
+            // Hace falta Jícaro 0.2.0: antes no sabía recibirla por la entrada estándar
+            jicaro::Version v;
+            if (!jicaro::LeerVersion(t.exe, v) || !jicaro::AceptaContrasena(v))
+            {
+                contrasenas::Borrar(clave);
+                Registrar("jícaro: el paquete tiene contraseña y Jícaro es anterior a la 0.2.0; no se abrió");
+                MostrarResultadoJicaro(std::move(t), jicaro::Resultado::JicaroViejo);
+                continue;
+            }
+        }
+        t.conContrasena = !clave.empty();
+        std::wstring orden = jicaro::ArmarOrden(t.exe, t.primera, t.destino, t.conContrasena);
+        void* proceso = !orden.empty() && ExisteArchivo(t.primera) ? jicaro::Abrir(t.exe, orden, clave) : nullptr;
+        contrasenas::Borrar(clave);
         if (!proceso)
         {
             Registrar(orden.empty() ? "jícaro: una ruta no se puede pasar a Jícaro; no se abrió" : "jícaro: no se pudo abrir");
@@ -3045,7 +3163,9 @@ void VentanaPrincipal::SiguienteJicaro()
         }
         m_jicaroOcupado = true;
         m_jicaroActual = t;
-        Registrar("jícaro: descomprimiendo (" + std::to_string(t.partes.size()) + (t.partes.size() == 1 ? " archivo)" : " partes)"));
+        // Nunca la contraseña: solo si se le pasó una
+        Registrar("jícaro: descomprimiendo (" + std::to_string(t.partes.size()) + (t.partes.size() == 1 ? " archivo" : " partes")
+                  + (t.conContrasena ? ", con la contraseña " + std::to_string(t.intento + 1) + " del paquete)" : ")"));
         // Un hilo espera a que Jícaro se cierre y le pasa su código a la ventana
         VentanaPrincipal* yo = this;
         hilos::Vivo vivo = m_vivo;
@@ -3070,7 +3190,26 @@ void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
     Registrar("jícaro: terminó con el código " + std::to_string(codigo));
     TrabajoJicaro t = std::move(m_jicaroActual);
     m_jicaroActual = TrabajoJicaro();
-    MostrarResultadoJicaro(std::move(t), jicaro::LeerCodigo(codigo));
+    jicaro::Resultado r = jicaro::LeerCodigo(codigo);
+    if (t.conContrasena && jicaro::PideContrasena(r))
+    {
+        // La que se le pasó no sirvió: si el paquete trae otra, se prueba la siguiente (solo las suyas, en orden y como
+        // mucho 5; nunca claves a ciegas). Si no queda ninguna, se le pide a la persona.
+        auto lista = m_contrasenas.Leer(t.clave);   // solo se cuentan
+        size_t hay = lista.size();
+        contrasenas::Borrar(lista);
+        if (t.intento + 1 < hay && t.intento + 1 < contrasenas::Maximo)
+        {
+            t.intento++;
+            t.conContrasena = false;
+            Registrar("jícaro: la contraseña " + std::to_string(t.intento) + " del paquete no sirvió; se prueba la siguiente");
+            m_colaJicaro.push_front(std::move(t));
+            SiguienteJicaro();
+            return;
+        }
+        r = jicaro::Resultado::ContrasenaIncorrecta;
+    }
+    MostrarResultadoJicaro(std::move(t), r);
     SiguienteJicaro();
 }
 
@@ -3105,6 +3244,8 @@ void VentanaPrincipal::CrearBarraJicaro(wxWindow* padre)
     };
     m_bCarpetaJicaro = boton(L"Abrir la carpeta", L"Abre la carpeta con lo que sacó Jícaro");
     m_bBorrarPartes = boton(L"Borrar las partes", L"Manda a la Papelera las partes que bajó Atarraya (desde ahí se pueden recuperar)");
+    m_bContrasenaJicaro = boton(L"Escribir la contraseña...", L"La contraseña del paquete: Atarraya la guarda cifrada y Jícaro lo descomprime");
+    m_bPaginaJicaro = boton(L"Abrir la página de Jícaro", L"Para bajar la versión más nueva de Jícaro");
     m_bCerrarJicaro = boton(L"Cerrar", L"Quitar este aviso");
     caja->Add(botones, 0, wxALL, FromDIP(8));
     m_barraJicaro->SetSizer(caja);
@@ -3114,6 +3255,12 @@ void VentanaPrincipal::CrearBarraJicaro(wxWindow* padre)
         if (!m_resultadosJicaro.empty() && ExisteCarpeta(m_resultadosJicaro.front().t.destino)) sistema::Abrir(m_resultadosJicaro.front().t.destino);
     });
     m_bBorrarPartes->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { BorrarPartes(); });
+    m_bContrasenaJicaro->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+        if (m_resultadosJicaro.empty() || !jicaro::PideContrasena(m_resultadosJicaro.front().r)) return;
+        const auto& t = m_resultadosJicaro.front().t;
+        EscribirContrasena(t.clave, t.nombre, m_resultadosJicaro.front().r == jicaro::Resultado::ContrasenaIncorrecta);
+    });
+    m_bPaginaJicaro->Bind(wxEVT_BUTTON, [](wxCommandEvent&) { sistema::AbrirPaginaWeb("https://brizna-soft.github.io/programas/jicaro/"); });
     m_bCerrarJicaro->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         if (!m_resultadosJicaro.empty()) m_resultadosJicaro.pop_front();
         ActualizarBarraJicaro();
@@ -3124,7 +3271,7 @@ void VentanaPrincipal::ActualizarBarraJicaro()
 {
     if (!m_barraJicaro) return;
     wxString texto;
-    bool carpeta = false, borrar = false, cerrar = false;
+    bool carpeta = false, borrar = false, cerrar = false, contrasena = false, pagina = false;
     if (!m_resultadosJicaro.empty())
     {
         const auto& r = m_resultadosJicaro.front();
@@ -3133,6 +3280,8 @@ void VentanaPrincipal::ActualizarBarraJicaro()
         carpeta = (r.r == jicaro::Resultado::Listo || r.r == jicaro::Resultado::Parcial) && ExisteCarpeta(r.t.destino);
         // «Borrar las partes» solo si Jícaro terminó bien del todo
         borrar = r.r == jicaro::Resultado::Listo && !r.borradas;
+        contrasena = jicaro::PideContrasena(r.r) && !r.t.clave.empty();
+        pagina = r.r == jicaro::Resultado::JicaroViejo;
         cerrar = true;
     }
     else if (m_jicaroOcupado)
@@ -3157,6 +3306,8 @@ void VentanaPrincipal::ActualizarBarraJicaro()
     };
     ver(m_bCarpetaJicaro, carpeta);
     ver(m_bBorrarPartes, borrar);
+    ver(m_bContrasenaJicaro, contrasena);
+    ver(m_bPaginaJicaro, pagina);
     ver(m_bCerrarJicaro, cerrar);
     if (cambio)
     {
@@ -3210,4 +3361,77 @@ void VentanaPrincipal::BorrarPartes()
     else if (b.mandadas > 0 && quedan == 0 && b.fallaron == 0) texto += L" Lo descomprimido sigue en su carpeta.";
     r.texto = texto;
     ActualizarBarraJicaro();
+}
+
+// --- Contraseñas de los paquetes ------------------------------------------------------------------------------------
+// Siempre cifradas (DPAPI). Nunca van al registro ni a la línea de comandos: a Jícaro le llegan por su entrada estándar.
+
+bool VentanaPrincipal::EscribirContrasena(const std::string& clave, const std::wstring& nombre, bool incorrecta)
+{
+    if (clave.empty()) return false;
+    bool tenia = m_contrasenas.Tiene(clave);
+    wxString texto = incorrecta ? L"La contraseña de «" + wxString(nombre) + L"» no sirve. Escribe otra:"
+                     : tenia    ? L"«" + wxString(nombre) + L"» ya tiene contraseña. Escribe otra para cambiarla:"
+                                : L"La contraseña de «" + wxString(nombre) + L"», para descomprimirlo:";
+    std::vector<std::string> recordadas = m_ajustes.recordarContrasenas ? m_contrasenas.Recordadas() : std::vector<std::string>();
+    std::string nueva;
+    bool ok = PedirContrasena(IsShown() ? (wxWindow*)this : nullptr, L"Contraseña del paquete", texto, recordadas, nueva);
+    contrasenas::Borrar(recordadas);
+    auto lista = contrasenas::DeTexto(nueva);   // la misma revisión que las de Click'n'Load
+    contrasenas::Borrar(nueva);
+    if (!ok || lista.empty())
+    {
+        contrasenas::Borrar(lista);
+        return false;
+    }
+    // La nueva va primero. Si la de antes no servía, queda solo la nueva.
+    if (!incorrecta && tenia)
+    {
+        auto viejas = m_contrasenas.Leer(clave);
+        auto juntas = contrasenas::Juntar(lista, viejas);
+        contrasenas::Borrar(viejas);
+        contrasenas::Borrar(lista);
+        lista = std::move(juntas);
+    }
+    m_contrasenas.Fijar(clave, lista);
+    RecordarContrasenas(lista);
+    GuardarContrasenas();
+    contrasenas::Borrar(lista);
+    Registrar("contraseñas: se guardó la de un paquete (cifrada)");
+    // Los juegos de ese paquete que esperaban una contraseña: Jícaro sigue con ellos
+    size_t otraVez = 0;
+    for (auto it = m_resultadosJicaro.begin(); it != m_resultadosJicaro.end();)
+    {
+        if (it->t.clave == clave && jicaro::PideContrasena(it->r))
+        {
+            TrabajoJicaro t = std::move(it->t);
+            t.intento = 0;
+            t.conContrasena = false;
+            m_colaJicaro.push_back(std::move(t));
+            it = m_resultadosJicaro.erase(it);
+            otraVez++;
+        }
+        else ++it;
+    }
+    if (otraVez) Registrar("jícaro: " + std::to_string(otraVez) + (otraVez == 1 ? " juego vuelve" : " juegos vuelven") + " a descomprimirse con la contraseña nueva");
+    ActualizarBarraJicaro();
+    SiguienteJicaro();
+    return true;
+}
+
+void VentanaPrincipal::ContrasenaDelPaquete()
+{
+    hnd::Foto f;
+    if (!BuscarFoto(PrimeraSeleccion(), f) || f.torrent) return;
+    EscribirContrasena(ClaveDeContrasena(f.datos), f.datos.paquete.empty() ? f.datos.nombre : f.datos.paquete, false);
+}
+
+void VentanaPrincipal::RecordarContrasenas(const std::vector<std::string>& lista)
+{
+    if (m_ajustes.recordarContrasenas && !lista.empty()) m_contrasenas.Recordar(lista);
+}
+
+void VentanaPrincipal::GuardarContrasenas()
+{
+    if (!m_contrasenas.Guardar()) Registrar("contraseñas: no se pudieron guardar");
 }

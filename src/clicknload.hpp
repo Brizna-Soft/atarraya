@@ -10,6 +10,7 @@
 //                             de línea, espacios o comas. También llega como «GET /flash/add?urls=...».
 //   POST /flash/addcrypted2   campos «crypted» (base64) y «jk» (una función de JavaScript que devuelve la clave en
 //                             hexadecimal). Cifrado AES-128-CBC; la misma clave es el vector inicial.
+//   En los dos, el campo «passwords» trae la contraseña de los comprimidos (varias, separadas por saltos de línea).
 // El formulario puede venir como «application/x-www-form-urlencoded», «multipart/form-data» o «text/plain» (las tres
 // formas en que un navegador manda un formulario).
 //
@@ -42,8 +43,10 @@ namespace hnd
     class ServidorCnL
     {
     public:
-        // Se llama en el hilo del servidor: quien la recibe tiene que pasar los datos a su propio hilo
-        using AlRecibir = std::function<void(std::vector<std::string> enlaces, std::wstring paquete, std::string origen)>;
+        // Se llama en el hilo del servidor: quien la recibe tiene que pasar los datos a su propio hilo. «contrasenas»: las
+        // del campo «passwords» (las del paquete, para descomprimirlo), en el orden en que llegaron y como mucho 5.
+        using AlRecibir = std::function<void(std::vector<std::string> enlaces, std::wstring paquete, std::string origen,
+                                             std::vector<std::string> contrasenas)>;
 
         ServidorCnL() = default;
         ~ServidorCnL();
@@ -108,6 +111,9 @@ namespace hnd
         // Lo que traen los campos de enlaces («urls», «url», «links» o «link», también como «urls[]»), todos juntos.
         // Falso si no vino ninguno de esos campos.
         bool TextoDeEnlaces(const Campos& campos, std::string& texto);
+        // Las contraseñas del campo «passwords» (según la página de CNL2 de JDownloader: «enter the archive password
+        // here», y varias van separadas por saltos de línea, \r\n). Ver contrasenas::DeTexto. Nunca van al registro.
+        std::vector<std::string> Contrasenas(const Campos& campos);
 
         struct Lista
         {

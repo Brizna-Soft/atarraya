@@ -2,6 +2,7 @@
 
 #include <windows.h>
 #include <shlobj.h>
+#include <winver.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -9,6 +10,9 @@
 #include <cwchar>
 #include <map>
 #include <regex>
+#include <set>
+
+#pragma comment(lib, "version.lib")
 
 #include "nombres.hpp"
 #include "util.hpp"
@@ -62,7 +66,8 @@ namespace
         std::wstring bajo = hnd::Minusculas(nombre);
         static const std::wregex nuevo(LR"(^(.+)\.part(\d{1,4})\.rar$)", std::regex::icase);
         static const std::wregex numerado(LR"(^(.+\.(7z|zip|rar))\.(\d{3})$)", std::regex::icase);
-        static const std::wregex viejo(LR"(^(.+)\.([r-z])(\d\d)$)", std::regex::icase);
+        static const std::wregex zipPartido(LR"(^(.+)\.z(\d\d)$)", std::regex::icase);
+        static const std::wregex viejo(LR"(^(.+)\.([r-y])(\d\d)$)", std::regex::icase);
         std::wsmatch m;
         if (std::regex_match(nombre, m, nuevo))
         {
@@ -89,6 +94,14 @@ namespace
             p.nombre = nombre.substr(0, nombre.size() - 4);
             return true;
         }
+        if (std::regex_match(nombre, m, zipPartido))
+        {
+            // Un ZIP partido: «peli.z01», «peli.z02»... y al final «peli.zip», que es el que se abre
+            p.clave = L"z|" + carpeta + hnd::Minusculas(m[1].str());
+            p.numero = std::stoi(m[2].str());
+            p.nombre = m[1].str();
+            return p.numero >= 1;
+        }
         if (std::regex_match(nombre, m, viejo))
         {
             // Estilo viejo: .r00 ... .r99, después .s00 ...
@@ -98,7 +111,15 @@ namespace
             p.nombre = m[1].str();
             return true;
         }
-        if (TerminaCon(bajo, L".zip") || TerminaCon(bajo, L".7z"))
+        if (TerminaCon(bajo, L".zip"))
+        {
+            // Un .zip entero, o el último trozo (el que se abre) de uno partido en .z01, .z02...
+            p.clave = L"z|" + carpeta + bajo.substr(0, bajo.size() - 4);
+            p.numero = 0;
+            p.nombre = nombre.substr(0, nombre.size() - 4);
+            return true;
+        }
+        if (TerminaCon(bajo, L".7z"))
         {
             p.clave = L"u|" + carpeta + bajo;
             p.numero = 0;
@@ -106,6 +127,29 @@ namespace
             return true;
         }
         return false;
+    }
+
+    // ¿Tiene la extensión de un archivo que no es un comprimido («.nfo», «.mkv», «.jpg»...)? Así una parte que todavía
+    // no bajó se sabe que no es de ningún juego. Sin extensión (o con una de página), no se sabe.
+    bool OtroArchivo(const std::wstring& nombre)
+    {
+        auto punto = nombre.find_last_of(L'.');
+        if (punto == std::wstring::npos || punto == 0 || nombre.size() - punto > 6) return false;
+        std::wstring ext = hnd::Minusculas(nombre.substr(punto + 1));
+        if (ext.empty() || ext == L"html" || ext == L"htm" || ext == L"php" || ext == L"aspx" || ext == L"asp") return false;
+        return std::all_of(ext.begin(), ext.end(), [](wchar_t c) { return iswalnum(c) != 0; });
+    }
+
+    // El nombre de una parte de «de una en una» que todavía no bajó: el del final de su página, sin el «.html» que
+    // agregan algunos sitios («peli.part1.rar.html»)
+    std::wstring NombreDeParte(const std::wstring& nombre)
+    {
+        std::wstring bajo = hnd::Minusculas(nombre);
+        for (const wchar_t* f : { L".html", L".htm" })
+        {
+            if (TerminaCon(bajo, f)) return nombre.substr(0, nombre.size() - wcslen(f));
+        }
+        return nombre;
     }
 
     // Un número de RAR 5 («vint»): 7 bits por byte; el bit alto dice que sigue otro byte
@@ -178,11 +222,38 @@ bool hnd::jicaro::EsRutaDeJicaro(const std::wstring& ruta)
     return RutaSegura(ruta) && Minusculas(NombreDe(ruta)) == L"jicaro.exe";
 }
 
-std::wstring hnd::jicaro::ArmarOrden(const std::wstring& exe, const std::wstring& archivo, const std::wstring& destino)
+std::wstring hnd::jicaro::ArmarOrden(const std::wstring& exe, const std::wstring& archivo, const std::wstring& destino,
+                                     bool conContrasena)
 {
     if (!EsRutaDeJicaro(exe) || !RutaSegura(archivo) || !RutaSegura(destino)) return {};
     // Ninguna ruta trae comillas ni termina en «\»: entre comillas, cada una llega a Jícaro como un solo argumento
-    return L"\"" + exe + L"\" --extraer \"" + archivo + L"\" --destino \"" + destino + L"\"";
+    std::wstring orden = L"\"" + exe + L"\" --extraer \"" + archivo + L"\" --destino \"" + destino + L"\"";
+    if (conContrasena) orden += L" --contrasena-stdin";   // la contraseña va por la entrada estándar, nunca aquí
+    return orden;
+}
+
+bool hnd::jicaro::LeerVersion(const std::wstring& exe, Version& v)
+{
+    v = {};
+    DWORD nada = 0;
+    DWORD largo = GetFileVersionInfoSizeW(exe.c_str(), &nada);
+    if (largo == 0 || largo > 1024 * 1024) return false;
+    std::vector<BYTE> datos(largo);
+    if (!GetFileVersionInfoW(exe.c_str(), 0, largo, datos.data())) return false;
+    VS_FIXEDFILEINFO* info = nullptr;
+    UINT n = 0;
+    if (!VerQueryValueW(datos.data(), L"\\", reinterpret_cast<void**>(&info), &n) || !info || n < sizeof(VS_FIXEDFILEINFO)
+        || info->dwSignature != 0xFEEF04BD)
+        return false;
+    v.mayor = HIWORD(info->dwFileVersionMS);
+    v.menor = LOWORD(info->dwFileVersionMS);
+    v.parche = HIWORD(info->dwFileVersionLS);
+    return true;
+}
+
+bool hnd::jicaro::AceptaContrasena(const Version& v)
+{
+    return v.mayor > 0 || (v.mayor == 0 && v.menor >= 2);
 }
 
 std::vector<hnd::jicaro::Comprimido> hnd::jicaro::Comprimidos(const std::vector<std::wstring>& archivos)
@@ -205,6 +276,8 @@ std::vector<hnd::jicaro::Comprimido> hnd::jicaro::Comprimidos(const std::vector<
         // Sin el .rar de base, una «.s00» o «.t00» puede ser otra cosa: solo .r00 a .r99 cuentan solas
         if (clave[0] == L'v' && std::none_of(partes.begin(), partes.end(), [](const auto& x) { return x.first == 0; }))
             partes.erase(std::remove_if(partes.begin(), partes.end(), [](const auto& x) { return x.first > 100; }), partes.end());
+        // Un ZIP partido se abre por su .zip: sin él, no se puede
+        if (clave[0] == L'z' && std::none_of(partes.begin(), partes.end(), [](const auto& x) { return x.first == 0; })) continue;
         if (partes.empty()) continue;
         std::stable_sort(partes.begin(), partes.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
         Comprimido c;
@@ -220,7 +293,46 @@ bool hnd::jicaro::EsComprimidoSuelto(const std::wstring& nombre)
 {
     Pieza p;
     if (!PiezaDe(nombre, p)) return false;
-    return p.clave[0] == L'u' || (p.clave[0] == L'v' && p.numero == 0);
+    return p.clave[0] == L'u' || ((p.clave[0] == L'v' || p.clave[0] == L'z') && p.numero == 0);
+}
+
+bool hnd::jicaro::EsZipPartido(const std::string& fin)
+{
+    // El final del índice central («PK\5\6»): el número de este trozo (2 bytes) y el del trozo donde empieza el
+    // índice (2 bytes). En un ZIP entero, los dos son 0.
+    for (size_t p = fin.size() >= 22 ? fin.size() - 22 : std::string::npos; p != std::string::npos; p--)
+    {
+        if (fin.compare(p, 4, "PK\x05\x06", 4) == 0)
+        {
+            unsigned este = (unsigned char)fin[p + 4] | ((unsigned char)fin[p + 5] << 8);
+            unsigned inicio = (unsigned char)fin[p + 6] | ((unsigned char)fin[p + 7] << 8);
+            return este != 0 || inicio != 0;
+        }
+        if (p == 0) break;
+    }
+    return false;
+}
+
+bool hnd::jicaro::EsZipPartido(const std::wstring& ruta)
+{
+    HANDLE h = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                           OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) return false;
+    LARGE_INTEGER tamano = {};
+    std::string b;
+    if (GetFileSizeEx(h, &tamano) && tamano.QuadPart >= 22)
+    {
+        // El final del índice está en los últimos 64 KB más 22 bytes (lo que puede medir su comentario)
+        int64_t leer = std::min<int64_t>(tamano.QuadPart, 65536 + 22);
+        LARGE_INTEGER desde = {};
+        desde.QuadPart = tamano.QuadPart - leer;
+        b.resize((size_t)leer);
+        DWORD n = 0;
+        if (!SetFilePointerEx(h, desde, nullptr, FILE_BEGIN) || !ReadFile(h, b.data(), (DWORD)leer, &n, nullptr)) b.clear();
+        else b.resize(n);
+    }
+    CloseHandle(h);
+    return EsZipPartido(b);
 }
 
 bool hnd::jicaro::EsVolumenRar(const std::string& b)
@@ -276,6 +388,75 @@ std::vector<hnd::jicaro::ParteBajada> hnd::jicaro::ArchivosDelPaquete(const std:
         if (f.datos.grupo != grupo) continue;
         if (f.datos.estado != Estado::Completada) return {};
         if (!f.datos.nombre.empty()) r.push_back({ f.datos.id, f.datos.carpeta + L"\\" + f.datos.nombre, f.datos.identidad });
+    }
+    return r;
+}
+
+hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, const std::vector<Foto>& descargas,
+                                                   const std::vector<Parte>& cola)
+{
+    JuegosDelPaquete r;
+    if (grupo.empty()) return r;
+    std::map<std::wstring, size_t> posicion;                       // clave → juego
+    std::map<std::wstring, std::vector<std::pair<int, ParteBajada>>> bajadas;   // clave → (número, parte)
+    std::map<std::wstring, std::set<int>> numeros;                 // clave → números que hay (bajados o no)
+    auto juegoDe = [&](const Pieza& p, const std::wstring& carpeta) -> Juego& {
+        auto it = posicion.find(p.clave);
+        if (it == posicion.end())
+        {
+            Juego j;
+            j.clave = p.clave;
+            j.nombre = SinPuntoAlFinal(p.nombre);
+            if (j.nombre.empty()) j.nombre = L"descomprimido";
+            j.carpeta = carpeta;
+            r.juegos.push_back(std::move(j));
+            it = posicion.emplace(p.clave, r.juegos.size() - 1).first;
+        }
+        return r.juegos[it->second];
+    };
+    std::set<uint64_t> enLaLista;
+    for (const auto& f : descargas)
+    {
+        if (f.datos.grupo != grupo) continue;
+        enLaLista.insert(f.datos.id);
+        bool bajada = f.datos.estado == Estado::Completada;
+        std::wstring ruta = f.datos.carpeta + L"\\" + f.datos.nombre;
+        Pieza p;
+        if (f.datos.nombre.empty() || !PiezaDe(ruta, p))
+        {
+            // Una que todavía no baja y no se sabe qué es (sin nombre, o sin una extensión conocida): puede ser de un juego
+            if (!bajada && !OtroArchivo(f.datos.nombre)) r.dudosas++;
+            continue;
+        }
+        Juego& j = juegoDe(p, f.datos.carpeta);
+        numeros[p.clave].insert(p.numero);
+        if (bajada) bajadas[p.clave].push_back({ p.numero, { f.datos.id, ruta, f.datos.identidad } });
+        else j.faltan++;
+        if (f.datos.descomprimido) j.descomprimido = true;
+    }
+    for (const auto& q : cola)
+    {
+        // Las que ya bajaron (o la está bajando Atarraya) están en la lista de descargas
+        if (q.grupo != grupo || q.estado == EstadoParte::Lista || (q.descarga && enLaLista.count(q.descarga))) continue;
+        std::wstring nombre = NombreDeParte(q.nombre);
+        std::wstring carpeta = q.carpeta;
+        Pieza p;
+        if (nombre.empty() || carpeta.empty() || !PiezaDe(carpeta + L"\\" + nombre, p))
+        {
+            if (!OtroArchivo(nombre)) r.dudosas++;
+            continue;
+        }
+        juegoDe(p, carpeta).faltan++;
+        numeros[p.clave].insert(p.numero);
+    }
+    for (auto& j : r.juegos)
+    {
+        auto& b = bajadas[j.clave];
+        std::stable_sort(b.begin(), b.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
+        for (auto& [n, parte] : b) j.partes.push_back(std::move(parte));
+        // Un ZIP partido se abre por su .zip: hasta que llega, el juego no está completo
+        const auto& hay = numeros[j.clave];
+        if (j.clave[0] == L'z' && !hay.count(0)) j.faltan++;
     }
     return r;
 }
@@ -420,8 +601,14 @@ hnd::jicaro::Resultado hnd::jicaro::LeerCodigo(unsigned long codigo)
     case 4: return Resultado::Contrasena;
     case 5: return Resultado::YaExtrayendo;
     case 6: return Resultado::Parcial;
+    case 7: return Resultado::ContrasenaIncorrecta;   // Jícaro 0.2.0
     default: return Resultado::Error;   // 1, o Jícaro se cerró de golpe
     }
+}
+
+bool hnd::jicaro::PideContrasena(Resultado r)
+{
+    return r == Resultado::Contrasena || r == Resultado::ContrasenaIncorrecta;
 }
 
 std::wstring hnd::jicaro::Titulo(Resultado r)
@@ -432,6 +619,8 @@ std::wstring hnd::jicaro::Titulo(Resultado r)
     case Resultado::Parcial: return L"Jícaro: listo, con avisos";
     case Resultado::FaltanPartes: return L"Jícaro: faltan partes";
     case Resultado::Contrasena: return L"Jícaro: tiene contraseña";
+    case Resultado::ContrasenaIncorrecta: return L"Jícaro: la contraseña no sirve";
+    case Resultado::JicaroViejo: return L"Hace falta un Jícaro más nuevo";
     case Resultado::Cancelado: return L"Jícaro: cancelado";
     case Resultado::YaExtrayendo: return L"Jícaro ya lo está descomprimiendo";
     case Resultado::NoAbrio: return L"Jícaro no se abrió";
@@ -452,7 +641,14 @@ std::wstring hnd::jicaro::Texto(Resultado r, const std::wstring& nombre, const s
     case Resultado::FaltanPartes:
         return L"A " + n + L" le faltan partes. Jícaro dice cuáles en su ventana: bájalas, ponlas en la misma carpeta y ábrelo otra "
                L"vez con Jícaro.";
-    case Resultado::Contrasena: return n + L" tiene contraseña o un cifrado que Jícaro no abre. Las partes siguen en su carpeta.";
+    case Resultado::Contrasena:
+        return n + L" tiene contraseña (o un cifrado que Jícaro no abre). Escribe la contraseña del paquete y Atarraya lo descomprime. "
+               L"Las partes siguen en su carpeta.";
+    case Resultado::ContrasenaIncorrecta:
+        return L"La contraseña de " + n + L" no sirve. Escribe otra y Atarraya lo intenta de nuevo. Las partes siguen en su carpeta.";
+    case Resultado::JicaroViejo:
+        return n + L" tiene contraseña, y para pasársela a Jícaro hace falta Jícaro 0.2.0 o más nuevo. Actualiza Jícaro desde su página "
+               L"y vuelve a intentarlo. Las partes siguen en su carpeta.";
     case Resultado::Cancelado: return L"Se canceló la descompresión de " + n + L". Las partes siguen en su carpeta.";
     case Resultado::YaExtrayendo: return L"Jícaro ya está descomprimiendo " + n + L" en otra ventana.";
     case Resultado::NoAbrio: return L"No se pudo abrir Jícaro para descomprimir " + n + L". Revisa en Ajustes dónde está.";
@@ -460,18 +656,59 @@ std::wstring hnd::jicaro::Texto(Resultado r, const std::wstring& nombre, const s
     }
 }
 
-void* hnd::jicaro::Abrir(const std::wstring& exe, const std::wstring& orden)
+void* hnd::jicaro::Abrir(const std::wstring& exe, const std::wstring& orden, const std::string& contrasena)
 {
     if (orden.empty() || !EsRutaDeJicaro(exe) || !ExisteArchivo(exe)) return nullptr;
-    STARTUPINFOW si = {};
-    si.cb = sizeof(si);
-    si.dwFlags = STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_SHOWNOACTIVATE;
-    PROCESS_INFORMATION pi = {};
     std::wstring linea = orden;   // CreateProcessW puede escribir en ella
     std::wstring carpeta = CarpetaDe(exe);
-    // Con la ruta del programa aparte: Windows no busca otro Jicaro.exe en ningún lado
-    if (!CreateProcessW(exe.c_str(), linea.data(), nullptr, nullptr, FALSE, 0, nullptr, carpeta.c_str(), &si, &pi)) return nullptr;
+    PROCESS_INFORMATION pi = {};
+    if (contrasena.empty())
+    {
+        STARTUPINFOW si = {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESHOWWINDOW;
+        si.wShowWindow = SW_SHOWNOACTIVATE;
+        // Con la ruta del programa aparte: Windows no busca otro Jicaro.exe en ningún lado
+        if (!CreateProcessW(exe.c_str(), linea.data(), nullptr, nullptr, FALSE, 0, nullptr, carpeta.c_str(), &si, &pi)) return nullptr;
+        CloseHandle(pi.hThread);
+        return pi.hProcess;
+    }
+
+    // Con contraseña: un tubo para su entrada estándar. Jícaro hereda solo ese extremo (la lista de handles que puede
+    // heredar es exactamente esa) y nada más de Atarraya.
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+    HANDLE leer = nullptr, escribir = nullptr;
+    if (!CreatePipe(&leer, &escribir, &sa, 0)) return nullptr;
+    SetHandleInformation(escribir, HANDLE_FLAG_INHERIT, 0);
+    SIZE_T tam = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &tam);
+    std::vector<BYTE> lista(tam);
+    auto* atributos = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(lista.data());
+    bool ok = tam > 0 && InitializeProcThreadAttributeList(atributos, 1, 0, &tam)
+              && UpdateProcThreadAttribute(atributos, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &leer, sizeof(leer), nullptr, nullptr);
+    if (ok)
+    {
+        STARTUPINFOEXW si = {};
+        si.StartupInfo.cb = sizeof(si);
+        si.StartupInfo.dwFlags = STARTF_USESHOWWINDOW | STARTF_USESTDHANDLES;
+        si.StartupInfo.wShowWindow = SW_SHOWNOACTIVATE;
+        si.StartupInfo.hStdInput = leer;
+        si.lpAttributeList = atributos;
+        ok = CreateProcessW(exe.c_str(), linea.data(), nullptr, nullptr, TRUE, EXTENDED_STARTUPINFO_PRESENT, nullptr, carpeta.c_str(),
+                            &si.StartupInfo, &pi) != FALSE;
+        DeleteProcThreadAttributeList(atributos);
+    }
+    CloseHandle(leer);
+    if (!ok)
+    {
+        CloseHandle(escribir);
+        return nullptr;
+    }
     CloseHandle(pi.hThread);
+    // La contraseña, tal cual en UTF-8 y sin salto de línea; después se cierra la entrada (así Jícaro sabe que terminó).
+    // Cabe entera en el tubo: se escribe aunque Jícaro todavía no la lea.
+    DWORD escritos = 0;
+    WriteFile(escribir, contrasena.data(), (DWORD)contrasena.size(), &escritos, nullptr);
+    CloseHandle(escribir);
     return pi.hProcess;
 }

@@ -129,13 +129,27 @@ siempre (ver abajo). La extensión no pide permisos nuevos.
 Desde la 0.2.2, si tienes [Jícaro](https://brizna-soft.github.io/programas/jicaro/), el descompresor gratis de
 Brizna Soft, Atarraya le pide que descomprima lo que bajaste en cuanto termina:
 
-- **Cuándo:** cuando terminan todas las partes de un paquete (de «de una en una», del recolector o de **De una
-  página**) o un .rar, .zip o .7z suelto. Si una parte falla o todavía no se baja, espera; también a una que ya se
-  estaba bajando cuando llegó el paquete. Las partes que bajas sueltas desde el navegador no se descomprimen solas,
-  porque Atarraya no sabe si ya están todas.
-- **Dónde:** en una carpeta nueva con el nombre del paquete, al lado de las partes. Si ya existe, usa «nombre (2)».
-- **Qué te dice:** arriba de la lista ves cómo terminó: listo, faltan partes, tiene contraseña, cancelado o no se
-  pudo. Jícaro muestra los detalles en su propia ventana.
+- **Cuándo:** desde la 0.4.1, cada juego de un paquete apenas está completo, sin esperar al resto del paquete: un
+  comprimido entero al terminar, y uno en partes (`.part1.rar`, `.rar` con `.r00`, `.7z.001`, `.zip` con `.z01`...) al
+  llegar su última parte. Cada juego, una sola vez. También un .rar, .zip o .7z suelto. Si una parte falla o todavía no
+  se baja, su juego espera; también a una que ya se estaba bajando cuando llegó el paquete. Las partes que bajas sueltas
+  desde el navegador no se descomprimen solas, porque Atarraya no sabe si ya están todas.
+- **Dónde:** al lado de las partes. Un paquete con un solo juego va a una carpeta nueva con el nombre del paquete; con
+  varios, cada juego a la suya. Si ya existe, usa «nombre (2)».
+- **Con contraseña** (desde la 0.4.1): si tienes la contraseña de todo un lote de enlaces, escríbela una sola vez al
+  agregarlos: al pegarlos en el recolector, o en el menú del paquete (clic derecho) en el recolector o en la lista.
+  Si el sitio la manda por Click'n'Load (en su campo `passwords`), se toma sola. Si trae varias, se prueban solo esas,
+  en ese orden y como mucho 5: nunca claves a ciegas. Si no sirve, Atarraya te avisa y te la pide otra vez.
+  - Se guarda cifrada con la protección de Windows (DPAPI): solo tu cuenta de Windows, en esta PC, la puede leer.
+    Así sigue ahí después de cerrar Atarraya.
+  - A Jícaro le llega por su entrada estándar: nunca en la línea de comandos ni en el registro de Atarraya. Hace falta
+    Jícaro 0.2.0 o más nuevo; con uno anterior, Atarraya te avisa que lo actualices.
+  - **Recordar las contraseñas para otros paquetes** es aparte: viene apagado y se enciende en **Ajustes**. Así, al
+    escribir la contraseña de un paquete, puedes elegir una que ya usaste. También van cifradas, y al apagarlo se
+    olvidan.
+- **Qué te dice:** arriba de la lista ves cómo terminó: listo, faltan partes, tiene contraseña (con el botón
+  **Escribir la contraseña...**), la contraseña no sirve, cancelado o no se pudo. Jícaro muestra los detalles en su
+  propia ventana. Nada se abre solo.
 - **Las partes no se borran solas.** Cuando Jícaro termina bien, Atarraya te ofrece **Borrar las partes**: van a la
   Papelera, y solo si lo pulsas. Solo manda las de ese paquete que siguen siendo los mismos archivos que bajó; si
   alguna cambió o la reemplazaron, la deja donde está y te avisa.
@@ -270,6 +284,9 @@ Lo que no baja:
   escribe en tu propia cuenta (HKEY_CURRENT_USER), y «Quitar la conexión» lo borra.
 - Lo que quitas de la lista con «mandar a la Papelera» va a la Papelera de Windows. Si el disco no tiene Papelera
   (pasa con algunas memorias USB), Windows te pregunta antes de borrarlo.
+- Las contraseñas de los paquetes se guardan cifradas con DPAPI (en `contrasenas.json` y con los enlaces del
+  recolector): solo tu cuenta de Windows, en esta PC, las puede leer. Nunca van al registro, a la línea de comandos ni
+  a ningún servidor; las de un paquete que quitas de la lista se borran la próxima vez que abres Atarraya.
 - Tus ajustes y tus listas están en `%LOCALAPPDATA%\Atarraya`.
 - El código está aquí completo, para que cualquiera lo revise.
 

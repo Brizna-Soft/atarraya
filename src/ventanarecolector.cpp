@@ -15,6 +15,7 @@
 #include <set>
 
 #include "ayuda.hpp"
+#include "contrasenas.hpp"
 #include "dialogos.hpp"
 #include "enlaces.hpp"
 #include "sistema.hpp"
@@ -199,9 +200,11 @@ void VentanaRecolector::Refrescar()
     }
 
     std::map<std::wstring, std::pair<size_t, int64_t>> cuentas;   // paquete → (enlaces, tamaño conocido)
+    std::set<std::wstring> conContrasena;                          // paquetes con contraseña (cifrada)
     for (auto& e : lista)
     {
         std::wstring paquete = PaqueteDe(e);
+        if (!e.contrasenas.empty()) conContrasena.insert(paquete);
         auto p = m_paquetes.find(paquete);
         if (p == m_paquetes.end())
         {
@@ -241,7 +244,8 @@ void VentanaRecolector::Refrescar()
             it = m_paquetes.erase(it);
             continue;
         }
-        m_arbol->SetItemText(it->second, 0, wxString::Format(L"%s  (%zu)", it->first, c->second.first));
+        m_arbol->SetItemText(it->second, 0, wxString::Format(L"%s  (%zu)", it->first, c->second.first)
+                                                + (conContrasena.count(it->first) ? wxString(L"  · con contraseña") : wxString()));
         m_arbol->SetItemText(it->second, 1, c->second.second > 0 ? wxString(TextoTamano(c->second.second)) : wxString());
         auto hijo = m_arbol->GetFirstChild(it->second);
         if (hijo.IsOk()) m_arbol->UpdateItemParentStateRecursively(hijo);
@@ -322,7 +326,16 @@ void VentanaRecolector::AlMarcar(wxTreeListEvent& e)
 void VentanaRecolector::MenuContextual(wxTreeListEvent& e)
 {
     auto* d = static_cast<DatoFila*>(m_arbol->GetItemData(e.GetItem()));
-    if (!d || d->id == 0) return;
+    if (!d) return;
+    if (d->id == 0)
+    {
+        // Un paquete: su contraseña (para que Jícaro lo descomprima)
+        wxMenu m;
+        const int clave = wxWindow::NewControlId();
+        m.Append(clave, L"Contraseña del paquete...");
+        if (GetPopupMenuSelectionFromUser(m) == clave) ContrasenaDelPaquete(d->paquete);
+        return;
+    }
     EnlaceRecolectado enlace;
     bool hay = false;
     for (auto& x : m_recolector.Lista())
@@ -331,9 +344,11 @@ void VentanaRecolector::MenuContextual(wxTreeListEvent& e)
     }
     if (!hay) return;
     wxMenu m;
-    const int abrir = wxWindow::NewControlId(), copiar = wxWindow::NewControlId(), quitar = wxWindow::NewControlId();
+    const int abrir = wxWindow::NewControlId(), copiar = wxWindow::NewControlId(), quitar = wxWindow::NewControlId(),
+              clave = wxWindow::NewControlId();
     if (!enlaces::EsMagnet(enlace.url)) m.Append(abrir, L"Abrir en el navegador");
     m.Append(copiar, L"Copiar el enlace");
+    if (!enlaces::EsMagnet(enlace.url)) m.Append(clave, L"Contraseña del paquete...");
     m.AppendSeparator();
     m.Append(quitar, L"Quitar del recolector");
     if (!enlace.detalle.empty())
@@ -344,6 +359,7 @@ void VentanaRecolector::MenuContextual(wxTreeListEvent& e)
     int r = GetPopupMenuSelectionFromUser(m);
     if (r == abrir) sistema::AbrirPaginaWeb(enlace.url);
     else if (r == copiar) sistema::CopiarTexto(Ancho(enlace.url));
+    else if (r == clave) ContrasenaDelPaquete(PaqueteDe(enlace));
     else if (r == quitar)
     {
         m_recolector.Quitar({ enlace.id });
@@ -356,10 +372,48 @@ void VentanaRecolector::PegarEnlaces()
     DialogoVarios d(this, m_ajustes);
     if (d.ShowModal() != wxID_OK) return;
     size_t n = m_recolector.Agregar(d.Enlaces(), L"", "", "lista");
+    // Una sola contraseña para todo el lote (también para los que ya estaban): queda cifrada con cada enlace
+    std::string escrita = d.Contrasena();
+    auto claves = contrasenas::DeTexto(escrita);
+    contrasenas::Borrar(escrita);
+    if (!claves.empty())
+    {
+        m_recolector.FijarContrasenasDe(d.Enlaces(), contrasenas::Cifrar(claves));
+        if (alEscribirContrasena) alEscribirContrasena(claves);
+        contrasenas::Borrar(claves);
+    }
     if (n < d.Enlaces().size())
         ayuda::Aviso(wxString::Format(L"Entraron %zu enlaces nuevos. Los demás ya estaban en el recolector.", n), GetTitle(),
                      wxOK | wxICON_INFORMATION, this);
     Refrescar();
+}
+
+void VentanaRecolector::ContrasenaDelPaquete(const std::wstring& paquete)
+{
+    std::vector<uint64_t> ids;
+    bool tenia = false;
+    for (const auto& e : m_recolector.Lista())
+    {
+        if (PaqueteDe(e) != paquete) continue;
+        ids.push_back(e.id);
+        tenia = tenia || !e.contrasenas.empty();
+    }
+    if (ids.empty()) return;
+    std::vector<std::string> recordadas = contrasenasRecordadas ? contrasenasRecordadas() : std::vector<std::string>();
+    std::string escrita;
+    wxString texto = tenia ? L"«" + wxString(paquete) + L"» ya tiene contraseña. Escribe otra para cambiarla:"
+                           : L"La contraseña de «" + wxString(paquete) + L"», para que Jícaro lo descomprima al bajarlo:";
+    bool ok = PedirContrasena(this, L"Contraseña del paquete", texto, recordadas, escrita);
+    contrasenas::Borrar(recordadas);
+    auto claves = contrasenas::DeTexto(escrita);
+    contrasenas::Borrar(escrita);
+    if (ok && !claves.empty())
+    {
+        m_recolector.FijarContrasenas(ids, contrasenas::Cifrar(claves));
+        if (alEscribirContrasena) alEscribirContrasena(claves);
+        Refrescar();
+    }
+    contrasenas::Borrar(claves);
 }
 
 void VentanaRecolector::Confirmar(bool empezar)

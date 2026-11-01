@@ -43,6 +43,9 @@ namespace hnd
         std::string origen;       // "portapapeles", "lista" o "clicknload"
         bool marcado = true;
         int64_t agregado = 0;
+        // La contraseña (o las contraseñas) de su paquete, para descomprimirlo: cifradas con DPAPI (ver contrasenas.hpp);
+        // nunca en claro, tampoco en recolector.json
+        std::string contrasenas;
     };
 
     class Recolector
@@ -62,6 +65,10 @@ namespace hnd
                        const std::string& origen, bool comoSitio = false);
         std::vector<EnlaceRecolectado> Lista();
         void Marcar(const std::vector<uint64_t>& ids, bool si);
+        // La contraseña de su paquete (ya cifrada): a esos enlaces (por id, o por dirección: los que acaban de llegar y
+        // los que ya estaban). Vacía la quita.
+        void FijarContrasenas(const std::vector<uint64_t>& ids, const std::string& cifradas);
+        void FijarContrasenasDe(const std::vector<std::string>& urls, const std::string& cifradas);
         void Quitar(const std::vector<uint64_t>& ids);
         size_t Cantidad();
         bool Contiene(const std::string& url);

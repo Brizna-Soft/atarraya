@@ -33,9 +33,14 @@ public:
     void MostrarSinFoco();                          // aparece sin quitarle el teclado a otro programa
     void EstadoClickNLoad(const wxString& texto);   // «Click'n'Load: activo» o por qué no
     std::function<void()> alCambiarAjustes;         // la persona tocó «Vigilar el portapapeles»
+    // Contraseñas: las que Atarraya recuerda para otros paquetes (solo si la persona lo encendió) y para recordar una
+    // nueva. Las del paquete quedan cifradas con sus enlaces.
+    std::function<std::vector<std::string>()> contrasenasRecordadas;
+    std::function<void(const std::vector<std::string>&)> alEscribirContrasena;
 
 private:
     void PegarEnlaces();
+    void ContrasenaDelPaquete(const std::wstring& paquete);
     void Confirmar(bool empezar);
     std::vector<uint64_t> Elegidos() const;         // los seleccionados (no los marcados)
     void AlMarcar(wxTreeListEvent& e);

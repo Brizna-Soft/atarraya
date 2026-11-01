@@ -24,6 +24,9 @@ namespace hnd
         // encuentra Jícaro: en «rutaJicaro» (la que eligió la persona) o en %LOCALAPPDATA%\Programs\Jicaro.
         bool jicaroAlTerminar = true;
         std::wstring rutaJicaro;
+        // Recordar las contraseñas que se escriben para ofrecerlas en otros paquetes (cifradas). Viene apagado: sin
+        // esto, cada contraseña es solo de su paquete.
+        bool recordarContrasenas = false;
 
         // Ventana
         int x = -1, y = -1, ancho = 0, alto = 0;

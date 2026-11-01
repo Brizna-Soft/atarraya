@@ -80,6 +80,8 @@ public:
     DialogoVarios(wxWindow* padre, const hnd::Ajustes& ajustes);
 
     const std::vector<std::string>& Enlaces() const { return m_enlaces; }
+    // La contraseña de los comprimidos de estos enlaces (vacía si no se escribió). Quien la pide la borra al usarla.
+    std::string Contrasena() const;
 
 private:
     void Contar();
@@ -87,9 +89,15 @@ private:
     void AlAceptar();
 
     wxTextCtrl* m_texto = nullptr;
+    wxTextCtrl* m_contrasena = nullptr;
     wxStaticText* m_cuenta = nullptr;
     std::vector<std::string> m_enlaces;
 };
+
+// La contraseña de un paquete (para descomprimirlo). Se escribe oculta (con «Mostrar» para verla) y, si la persona
+// encendió «Recordar las contraseñas» en Ajustes, se puede elegir una que ya usó. Falso si canceló.
+bool PedirContrasena(wxWindow* padre, const wxString& titulo, const wxString& texto, const std::vector<std::string>& recordadas,
+                     std::string& contrasena);
 
 // «Enlaces de una página»: lee la página (o la lista de Internet Archive) y deja marcar qué bajar
 class DialogoPagina : public wxDialog
