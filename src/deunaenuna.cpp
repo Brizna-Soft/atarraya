@@ -38,6 +38,25 @@ namespace
         return "esperando";
     }
 
+    const char* NombreToma(hnd::EstadoToma e)
+    {
+        switch (e)
+        {
+        case hnd::EstadoToma::Probando: return "probando";
+        case hnd::EstadoToma::Tomada: return "tomada";
+        case hnd::EstadoToma::Navegador: return "navegador";
+        default: return "";
+        }
+    }
+
+    hnd::EstadoToma TomaDeNombre(const std::string& s)
+    {
+        if (s == "probando") return hnd::EstadoToma::Probando;
+        if (s == "tomada") return hnd::EstadoToma::Tomada;
+        if (s == "navegador") return hnd::EstadoToma::Navegador;
+        return hnd::EstadoToma::Ninguna;
+    }
+
     E EstadoDeNombre(const std::string& s)
     {
         if (s == "abierta") return E::Abierta;
@@ -207,6 +226,8 @@ void hnd::DeUnaEnUna::Cargar()
             p.avisada = j.value("avisada", false);
             p.toma = j.value("toma", "");
             if (p.toma.size() > 128) p.toma.clear();
+            p.estadoToma = p.toma.empty() ? EstadoToma::Ninguna : TomaDeNombre(j.value("estadoToma", ""));
+            p.tomaDesde = j.value("tomaDesde", (int64_t)0);
             p.rutaNavegador = Ancho(j.value("rutaNavegador", ""));
             if (auto id = j.find("identidadNavegador"); id != j.end() && id->is_object())
             {
@@ -238,7 +259,8 @@ bool hnd::DeUnaEnUna::Guardar() const
         l.push_back({ { "url", p.url }, { "referer", p.referer }, { "nombre", Utf8(p.nombre) }, { "paquete", Utf8(p.paquete) },
                       { "grupo", p.grupo }, { "carpeta", Utf8(p.carpeta) }, { "estado", NombreEstado(p.estado) },
                       { "descarga", p.descarga }, { "hasta", p.hasta }, { "limite", p.limite }, { "intentos", p.intentos },
-                      { "avisada", p.avisada }, { "toma", p.toma }, { "rutaNavegador", Utf8(p.rutaNavegador) },
+                      { "avisada", p.avisada }, { "toma", p.toma }, { "estadoToma", NombreToma(p.estadoToma) },
+                      { "tomaDesde", p.tomaDesde }, { "rutaNavegador", Utf8(p.rutaNavegador) },
                       { "identidadNavegador", json{ { "volumen", p.identidadNavegador.volumen }, { "indice", p.identidadNavegador.indice },
                                                     { "tamano", p.identidadNavegador.tamano },
                                                     { "modificado", p.identidadNavegador.modificado } } },
@@ -336,6 +358,65 @@ void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
     p.descarga = descarga;
     p.hasta = 0;
     p.limite = false;
+    p.toma.clear();
+    p.estadoToma = EstadoToma::Ninguna;
+}
+
+void hnd::DeUnaEnUna::Probar(int i, uint64_t descarga, const std::string& toma, int64_t ahora)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    Tomar(i, descarga);
+    auto& p = m_partes[i];
+    p.toma = toma;
+    p.estadoToma = EstadoToma::Probando;
+    p.tomaDesde = ahora;
+}
+
+uint64_t hnd::DeUnaEnUna::Decidir(int i, bool atarraya)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return 0;
+    auto& p = m_partes[i];
+    if (p.estadoToma != EstadoToma::Probando) return 0;
+    if (atarraya)
+    {
+        p.estadoToma = EstadoToma::Tomada;
+        return 0;
+    }
+    uint64_t quitar = p.descarga;
+    EnNavegador(i, p.toma);
+    return quitar;
+}
+
+std::vector<uint64_t> hnd::DeUnaEnUna::ResolverTomasAlAbrir()
+{
+    std::vector<uint64_t> quitar;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        if (m_partes[i].estadoToma != EstadoToma::Probando || m_partes[i].estado != EstadoParte::Tomada) continue;
+        uint64_t d = Decidir((int)i, false);
+        if (d) quitar.push_back(d);
+    }
+    return quitar;
+}
+
+uint64_t hnd::DeUnaEnUna::NavegadorSiguio(int i)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return 0;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Tomada || (p.estadoToma != EstadoToma::Tomada && p.estadoToma != EstadoToma::Probando)) return 0;
+    uint64_t quitar = p.descarga;
+    EnNavegador(i, p.toma);
+    return quitar;
+}
+
+int hnd::DeUnaEnUna::ParteDeToma(const std::string& toma) const
+{
+    if (toma.empty()) return -1;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        if (m_partes[i].toma == toma) return (int)i;
+    }
+    return -1;
 }
 
 int64_t hnd::MargenDeEspera(int64_t segundos)
@@ -436,6 +517,7 @@ void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
     auto& p = m_partes[i];
     p.estado = EstadoParte::Navegador;
     p.toma = toma;
+    p.estadoToma = EstadoToma::Navegador;
     p.descarga = 0;
     p.hasta = 0;
     p.limite = false;

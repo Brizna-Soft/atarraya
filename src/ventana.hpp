@@ -105,7 +105,7 @@ private:
     // La baja Atarraya, con una conexión. Con «toma», el navegador sigue bajando la suya mientras Atarraya prueba: si
     // Atarraya no puede (una página, un 403 o 410, un enlace de un solo uso), la deja en el navegador.
     void TomarParte(int i, hnd::DatosDescarga d, const std::string& toma = "");
-    void TomaANavegador(const std::string& toma, bool recordarSitio);
+    void TomaANavegador(int i, bool recordarSitio);
     void RevisarTomas();                   // ¿Atarraya pudo seguir las descargas que prueba?
     void RevisarEsperas();                 // esperas que terminaron: se abre la página otra vez y se avisa
     void PedidoNavegador(const std::string& toma, const std::string& estado, const std::string& url, const std::string& referer,
@@ -186,14 +186,8 @@ private:
 
     hnd::DeUnaEnUna m_sitios;
     hnd::SitiosNavegador m_sitiosNavegador; // sitios donde la descarga final solo funciona en el navegador
-    struct TomaEnCurso
-    {
-        int parte = -1;
-        uint64_t descarga = 0;              // la de Atarraya
-        int64_t inicio = 0;
-        hnd::Toma estado = hnd::Toma::Probando;
-    };
-    std::map<std::string, TomaEnCurso> m_tomas;   // descargas del navegador que Atarraya prueba seguir
+    // Descargas del navegador que no son de una parte (la extensión las sigue igual): ahí sigue el navegador
+    std::set<std::string> m_tomasSinParte;
     bool m_colaSinGuardar = false;          // ya se avisó que la cola no se pudo guardar
     wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
     wxPanel* m_barraSitios = nullptr;

@@ -243,7 +243,7 @@ int main()
                 }
                 else respuesta = { { "ok", false }, { "abierto", h != nullptr } };
             }
-            else if (tipo == "navegador" || tipo == "espera")
+            else if (tipo == "navegador" || tipo == "espera" || tipo == "soltar")
             {
                 // Avisos de «de una en una»: solo si Atarraya está abierto
                 std::string url = j.value("url", "");

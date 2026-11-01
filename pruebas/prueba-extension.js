@@ -12,7 +12,7 @@ const M = enNode
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
       MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
-const C = enNode ? require("../extension/comun/cola-navegador.js") : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento };
+const C = enNode ? require("../extension/comun/cola-navegador.js") : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar };
 
 let fallas = 0;
 function decir(texto) {
@@ -301,9 +301,14 @@ if (enNode) {
     "extensión: cola.js no hace nada en una página que no es de la cola");
   comprobar(!/\.click\(|dispatchEvent|\.submit\(|innerHTML|\.value\s*=|focus\(/.test(colaJs + esperasJs) && !/document\./.test(esperasJs),
     "extensión: cola.js y esperas.js solo leen el texto: no hacen clics, no escriben ni mandan formularios");
-  comprobar(/downloads\.cancel\(item\.id\)/.test(fondo) && /estado === "tomada"/.test(fondo)
-    && fondo.indexOf('estado === "tomada"') < fondo.indexOf("downloads.cancel(item.id)"),
-    "extensión: la descarga de una parte se cancela en el navegador solo cuando Atarraya ya la tomó");
+  const enLaCola = fondo.slice(fondo.indexOf("async function descargaDeLaCola"), fondo.indexOf("api.downloads.onCreated.addListener"));
+  comprobar(/downloads\.cancel\(item\.id\)/.test(enLaCola) && enLaCola.indexOf('accion === "cancelar"') > 0
+    && enLaCola.indexOf('accion === "cancelar"') < enLaCola.indexOf("downloads.cancel(item.id)")
+    && /new TomaDelNavegador\(/.test(enLaCola) && !/\.catch\(\(\) => \{\}\)/.test(enLaCola),
+    "extensión: la descarga de una parte se cancela en el navegador solo cuando Atarraya ya la tomó (y sin tragarse los errores)");
+  comprobar(/resultadoCancelar\(/.test(enLaCola) && /tipo: "soltar"/.test(enLaCola)
+    && enLaCola.indexOf("resultadoCancelar(") < enLaCola.indexOf("downloads.erase({ id: item.id })"),
+    "extensión: al vencer el plazo le pide a Atarraya que suelte la suya, y después de cancelar mira si de verdad se canceló");
 }
 
 // --- Avisos de espera de los sitios de descargas (esperas.js) ----------------------------------------------------------
@@ -403,6 +408,27 @@ comprobar(a4 && a4.estado === "fallo" && !a4.terminar && a5 && a5.estado === "ca
   "seguir: si se corta y se puede reanudar, se sigue mirando; si la persona la cancela, no");
 comprobar(C.avisoDeSeguimiento({ state: "interrupted", error: "NETWORK_FAILED", canResume: true }, { ...sg, ultimoEstado: "fallo" }, 19000) === null,
   "seguir: el corte se avisa una sola vez");
+
+// --- Una sola descarga por parte (TomaDelNavegador) ---------------------------------------------------------------------
+const t1 = new C.TomaDelNavegador(1000, 45000, 15000);
+comprobar(t1.paso("probando", 2000) === "esperar" && t1.paso("", 3000) === "esperar" && t1.paso("desconocida", 4000) === "esperar"
+  && t1.paso("tomada", 5000) === "cancelar",
+  "toma: mientras Atarraya prueba, la del navegador espera; si Atarraya la tomó, se cancela la del navegador");
+comprobar(new C.TomaDelNavegador(1000).paso("navegador", 2000) === "seguir" && new C.TomaDelNavegador(1000).paso("terminada", 2000) === "seguir",
+  "toma: si Atarraya no pudo (o la soltó), sigue la del navegador");
+const t2 = new C.TomaDelNavegador(1000, 45000, 15000);
+comprobar(t2.paso("probando", 45999) === "esperar" && t2.paso("probando", 46000) === "soltar" && t2.paso("probando", 50000) === "esperar"
+  && t2.paso("navegador", 51000) === "seguir",
+  "toma: al vencer el plazo, primero se le pide a Atarraya que suelte la suya y se espera que lo confirme");
+const t3 = new C.TomaDelNavegador(1000, 45000, 15000);
+comprobar(t3.paso("probando", 46000) === "soltar" && t3.paso("tomada", 47000) === "cancelar",
+  "toma: si Atarraya ya la tenía cuando se le pidió soltarla, se cancela la del navegador (nunca quedan las dos)");
+const t4 = new C.TomaDelNavegador(1000, 45000, 15000);
+comprobar(t4.paso("", 46000) === "soltar" && t4.paso("", 60999) === "esperar" && t4.paso("", 61000) === "seguir",
+  "toma: si Atarraya no contesta (está cerrado, no baja nada), sigue la del navegador; al abrirse, Atarraya quita la suya");
+comprobar(C.resultadoCancelar(null) === "cancelada" && C.resultadoCancelar({ state: "interrupted", error: "USER_CANCELED" }) === "cancelada"
+  && C.resultadoCancelar({ state: "complete" }) === "terminada" && C.resultadoCancelar({ state: "in_progress" }) === "sigue",
+  "toma: después de cancelar se mira cómo quedó; si no se canceló, sigue la del navegador y Atarraya quita la suya");
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
 if (enNode) process.exitCode = fallas ? 1 : 0;

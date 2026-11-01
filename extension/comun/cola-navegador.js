@@ -110,4 +110,40 @@ function avisoDeSeguimiento(item, seguida, ahora) {
   return { estado: "bajando", bajado, total, terminar: false };
 }
 
-if (typeof module !== "undefined") module.exports = { PestanasDeLaCola, sitioBase, avisoDeSeguimiento };
+// Mientras Atarraya prueba seguir la descarga del navegador: qué hace la extensión con cada respuesta. Nunca deja dos
+// descargas del mismo archivo: espera a que Atarraya decida; si se acaba el plazo, le pide que suelte la suya y espera
+// que conteste. Solo si Atarraya no contesta (está cerrado), sigue el navegador; al volver a abrirse, Atarraya quita la
+// suya en cuanto sabe que el navegador siguió.
+class TomaDelNavegador {
+  constructor(inicio, plazo = 45000, plazoSoltar = 15000) {
+    this.inicio = inicio;
+    this.plazo = plazo;
+    this.plazoSoltar = plazoSoltar;
+    this.soltada = 0;
+  }
+
+  // «estado»: lo que contestó Atarraya («probando», «tomada», «navegador», «terminada», «desconocida»; "" si no contestó).
+  // Devuelve «esperar», «soltar» (pedirle a Atarraya que suelte la suya), «cancelar» (la del navegador) o «seguir».
+  paso(estado, ahora) {
+    if (estado === "tomada") return "cancelar";
+    if (estado === "navegador" || estado === "terminada") return "seguir";
+    if (!this.soltada) {
+      if (ahora - this.inicio < this.plazo) return "esperar";
+      this.soltada = ahora;
+      return "soltar";
+    }
+    return ahora - this.soltada < this.plazoSoltar ? "esperar" : "seguir";
+  }
+}
+
+// Después de pedir que se cancele la del navegador, cómo quedó: «cancelada» (ya no baja), «terminada» (el navegador ya
+// la había terminado) o «sigue» (no se pudo cancelar). En los dos últimos casos sigue la del navegador y Atarraya quita
+// la suya.
+function resultadoCancelar(item) {
+  if (!item) return "cancelada";
+  if (item.state === "interrupted") return "cancelada";
+  if (item.state === "complete") return "terminada";
+  return "sigue";
+}
+
+if (typeof module !== "undefined") module.exports = { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar };

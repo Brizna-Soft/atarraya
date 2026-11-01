@@ -475,23 +475,50 @@ async function descargaDeLaCola(item, datos, r) {
     seguirEnNavegador(item, datos, toma);
     return;
   }
-  const fin = Date.now() + 60000;
-  while (Date.now() < fin) {
+  // Decide Atarraya (ver TomaDelNavegador en cola-navegador.js): nunca quedan las dos descargas
+  const decision = new TomaDelNavegador(Date.now());
+  for (;;) {
     await esperar(1000);
     let e = null;
     try {
       e = await hablar({ tipo: "toma", toma });
     } catch (x) {}
-    const estado = e && e.ok ? e.estado : "";
-    if (estado === "tomada") {
-      // Atarraya ya recibe el archivo: la del navegador sobra
-      await api.downloads.cancel(item.id).catch(() => {});
-      await api.downloads.erase({ id: item.id }).catch(() => {});
-      return;
+    const accion = decision.paso(e && e.ok ? e.estado : "", Date.now());
+    if (accion === "esperar") continue;
+    if (accion === "soltar") {
+      // Se acabó el plazo: que Atarraya suelte la suya (si todavía no la tomó); su respuesta dice quién la baja
+      try {
+        await hablar({ tipo: "soltar", toma });
+      } catch (x) {}
+      continue;
     }
-    if (estado === "navegador") break;
+    if (accion === "cancelar") {
+      // Atarraya ya recibe el archivo: la del navegador sobra. Si no se pudo cancelar (por ejemplo, el navegador ya la
+      // había terminado), sigue la del navegador y Atarraya quita la suya cuando la extensión le avisa
+      let cancelo = true;
+      try {
+        await api.downloads.cancel(item.id);
+      } catch (x) {
+        cancelo = false;
+      }
+      let ahora = null;
+      try {
+        [ahora] = await api.downloads.search({ id: item.id });
+      } catch (x) {}
+      const r = resultadoCancelar(ahora);
+      if (r === "cancelada") {
+        try {
+          await api.downloads.erase({ id: item.id });
+        } catch (x) {
+          // Ya no baja; solo queda en la lista del navegador
+        }
+        return;
+      }
+      console.warn("Atarraya: no se pudo cancelar la descarga del navegador (" + r + (cancelo ? "" : ", con error") + "); sigue esa");
+    }
+    break;
   }
-  // Atarraya no pudo (o no contestó a tiempo): que la termine el navegador
+  // La baja el navegador (Atarraya la soltó, no pudo, o no contesta): la extensión la sigue hasta el final
   seguirEnNavegador(item, datos, toma);
 }
 

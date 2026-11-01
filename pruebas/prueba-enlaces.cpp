@@ -1960,6 +1960,71 @@ namespace
         return ok != FALSE;
     }
 
+    // 0.4.0 (revisión): una sola descarga activa por parte, también si Atarraya se cierra a la mitad de una toma
+    void TomasPruebas()
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring archivo = std::wstring(temporal) + L"atarraya-prueba-tomas-" + std::to_wstring(GetCurrentProcessId()) + L".json";
+        auto parte = [](const char* url) {
+            Parte p;
+            p.url = url;
+            p.nombre = NombreDeUrl(url);
+            p.carpeta = L"C:\\Descargas\\Peli";
+            return p;
+        };
+        {
+            DeUnaEnUna q(archivo);
+            q.Agregar({ parte("https://ddownload.com/a1a1a1a1/peli.part1.rar"), parte("https://ddownload.com/b2b2b2b2/peli.part2.rar") });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 55, "n1-abc", 1000);
+            Comprobar(q.Partes()[i].estado == EstadoParte::Tomada && q.Partes()[i].estadoToma == EstadoToma::Probando && q.Partes()[i].descarga == 55
+                          && q.ParteDeToma("n1-abc") == i && q.BuscarToma("n1-abc") == -1,
+                      "tomas: mientras Atarraya prueba, la parte queda tomada y el navegador sigue con la suya");
+            q.Guardar();
+            // Atarraya se cierra a la mitad: al abrirlo, queda la del navegador y se quita la de Atarraya
+            DeUnaEnUna alVolver(archivo);
+            alVolver.Cargar();
+            auto quitar = alVolver.ResolverTomasAlAbrir();
+            const auto& p = alVolver.Partes()[i];
+            Comprobar(quitar == std::vector<uint64_t>{ 55 } && p.estado == EstadoParte::Navegador && p.estadoToma == EstadoToma::Navegador
+                          && p.toma == "n1-abc" && p.descarga == 0 && alVolver.BuscarToma("n1-abc") == i && alVolver.ResolverTomasAlAbrir().empty(),
+                      "tomas: un cierre a la mitad de una toma deja solo la del navegador (la de Atarraya se quita al abrir)");
+        }
+        {
+            DeUnaEnUna q(archivo);
+            q.Cargar();
+            q.Vaciar();
+            q.Agregar({ parte("https://ddownload.com/c3c3c3c3/peli.part3.rar") });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 66, "n2-def", 1000);
+            Comprobar(q.Decidir(i, true) == 0 && q.Partes()[i].estadoToma == EstadoToma::Tomada && q.Partes()[i].estado == EstadoParte::Tomada,
+                      "tomas: si Atarraya la tomó, sigue la de Atarraya (la extensión cancela la del navegador)");
+            q.Guardar();
+            DeUnaEnUna alVolver(archivo);
+            alVolver.Cargar();
+            Comprobar(alVolver.ResolverTomasAlAbrir().empty() && alVolver.Partes()[i].estadoToma == EstadoToma::Tomada,
+                      "tomas: una que ya tomó Atarraya sigue siendo de Atarraya al volver a abrirlo");
+            // Pero el navegador siguió con la suya (no se pudo cancelar): queda la del navegador y Atarraya quita la suya
+            Comprobar(alVolver.NavegadorSiguio(i) == 66 && alVolver.Partes()[i].estado == EstadoParte::Navegador
+                          && alVolver.NavegadorSiguio(i) == 0,
+                      "tomas: si el navegador siguió con una que tomó Atarraya, Atarraya quita la suya (una sola descarga)");
+            DeUnaEnUna otra(archivo);
+            otra.Cargar();
+            Comprobar(otra.Decidir(i, false) == 0, "tomas: decidir solo vale mientras se prueba");
+        }
+        {
+            DeUnaEnUna q(archivo);
+            q.Vaciar();
+            q.Agregar({ parte("https://ddownload.com/d4d4d4d4/peli.part4.rar") });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 77, "n3-ghi", 1000);
+            Comprobar(q.Decidir(i, false) == 77 && q.Partes()[i].estado == EstadoParte::Navegador && q.Partes()[i].estadoToma == EstadoToma::Navegador,
+                      "tomas: si Atarraya no puede (o se le pide soltarla), queda la del navegador y se quita la de Atarraya");
+        }
+        DeleteFileW(archivo.c_str());
+    }
+
     // 0.4.0 (revisión): lo que bajó el navegador se pasa a la carpeta del paquete solo si es el mismo archivo, sin enlaces
     // simbólicos ni puntos de unión en ninguna carpeta y sin pisar nada
     void MoverDelNavegadorPruebas()
@@ -2560,6 +2625,7 @@ int wmain(int argc, wchar_t** argv)
     ClickNLoadPruebas();
     EsperasYNavegadorPruebas();
     MoverDelNavegadorPruebas();
+    TomasPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

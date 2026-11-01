@@ -45,6 +45,10 @@ namespace hnd
     constexpr int64_t EsperaSinTiempo = 10 * 60;
     int64_t MargenDeEspera(int64_t segundos);   // 30 s, o el 5 % si es más; como mucho 5 minutos
 
+    // La descarga que empezó el navegador y Atarraya prueba seguir: se está probando, la tomó Atarraya (la del navegador
+    // se cancela) o sigue el navegador (la de Atarraya se quita). Nunca bajan las dos.
+    enum class EstadoToma { Ninguna, Probando, Tomada, Navegador };
+
     struct Parte
     {
         std::string url;          // la página del sitio de descargas
@@ -61,8 +65,12 @@ namespace hnd
         bool limite = false;      // la espera es un límite del sitio (se abre otra vez), no la cuenta de la página
         int intentos = 0;         // veces que se abrió otra vez por una espera
         bool avisada = false;     // ya se avisó que terminó la cuenta de la página
-        // Bajando en el navegador: la descarga que sigue la extensión y cómo va (lo que va no se guarda)
+        // La descarga del navegador que Atarraya prueba seguir o que sigue la extensión («toma»), quién la baja y desde
+        // cuándo se prueba. Se guarda: así un cierre a la mitad no deja dos descargas del mismo archivo.
         std::string toma;
+        EstadoToma estadoToma = EstadoToma::Ninguna;
+        int64_t tomaDesde = 0;
+        // Cómo va lo que baja el navegador (no se guarda)
         int64_t bajado = 0, total = -1;
         // Lo que bajó el navegador, anotado cuando avisó que terminó (ruta e identidad del archivo: volumen, número de
         // archivo de NTFS, tamaño y fecha). Se guarda: si Atarraya se cierra antes de pasarlo a la carpeta del paquete,
@@ -135,7 +143,20 @@ namespace hnd
         std::vector<int> CuentasTerminadas(int64_t ahora);
         // Bajando en el navegador, que la extensión sigue con «toma»
         void EnNavegador(int i, const std::string& toma);
-        int BuscarToma(const std::string& toma) const;
+        int BuscarToma(const std::string& toma) const;   // una que baja el navegador (o que se cortó ahí)
+        int ParteDeToma(const std::string& toma) const;  // en cualquier estado
+        // Atarraya prueba seguir con «descarga» la que empezó el navegador («toma»): mientras se decide, la parte queda
+        // tomada y el navegador sigue con la suya
+        void Probar(int i, uint64_t descarga, const std::string& toma, int64_t ahora);
+        // Se decidió quién la baja. Con «atarraya», Atarraya (la extensión cancela la del navegador); si no, el navegador:
+        // la parte pasa a «Navegador» y devuelve la descarga de Atarraya que hay que quitar
+        uint64_t Decidir(int i, bool atarraya);
+        // Al abrir Atarraya: las que estaban probando quedan para el navegador, que siguió bajando la suya. Devuelve las
+        // descargas de Atarraya que hay que quitar.
+        std::vector<uint64_t> ResolverTomasAlAbrir();
+        // El navegador siguió bajando una que Atarraya ya había tomado (por ejemplo, no se pudo cancelar, o la extensión no
+        // supo de Atarraya a tiempo): queda la del navegador. Devuelve la descarga de Atarraya que hay que quitar (0: ninguna).
+        uint64_t NavegadorSiguio(int i);
         void Progreso(int i, int64_t bajado, int64_t total);
         // Lo que bajó el navegador terminó: lista (con la descarga que la anota en la lista de Atarraya) o con error
         void TerminarEnNavegador(int i, bool ok, uint64_t descarga);
