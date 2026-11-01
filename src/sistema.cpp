@@ -8,6 +8,10 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json.hpp>
+
+#include "canal.hpp"
+#include "deunaenuna.hpp"
 #include "nombres.hpp"
 #include "util.hpp"
 
@@ -36,6 +40,50 @@ void hnd::sistema::AbrirPaginaWeb(const std::string& url)
 #else
     ShellExecuteW(nullptr, L"open", Ancho(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #endif
+}
+
+namespace
+{
+    // El programa del navegador predeterminado (solo se lee cuál es; no se cambia nada)
+    std::wstring NavegadorPredeterminado()
+    {
+#ifdef ATARRAYA_PRUEBAS
+        return L"";   // la copia de prueba no mira nada de la PC de la persona
+#else
+        wchar_t valor[256] = {};
+        DWORD largo = sizeof(valor);
+        if (RegGetValueW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\Shell\\Associations\\UrlAssociations\\https\\UserChoice",
+                         L"ProgId", RRF_RT_REG_SZ, nullptr, valor, &largo) != ERROR_SUCCESS)
+            return L"";
+        return hnd::ProgramaDeProgId(valor);
+#endif
+    }
+}
+
+bool hnd::sistema::PedirALaExtension(int64_t id, const std::string& url)
+{
+    std::string inicio = url.substr(0, 8);
+    for (auto& c : inicio) c = (char)tolower((unsigned char)c);
+    if (inicio.rfind("http://", 0) != 0 && inicio.rfind("https://", 0) != 0) return false;   // solo páginas web
+    std::vector<HWND> puertos;
+    std::vector<std::wstring> navegadores;
+    for (HWND h = nullptr; puertos.size() < 16 && (h = FindWindowExW(HWND_MESSAGE, h, ATARRAYA_CLASE_PUERTO, nullptr)) != nullptr;)
+    {
+        wchar_t titulo[64] = {};
+        GetWindowTextW(h, titulo, 64);   // el navegador de ese puerto («chrome.exe»...)
+        puertos.push_back(h);
+        navegadores.push_back(titulo);
+    }
+    if (puertos.empty()) return false;
+    std::string orden = nlohmann::json{ { "tipo", "abrir" }, { "id", id }, { "url", url } }.dump();
+    AllowSetForegroundWindow(ASFW_ANY);   // para que el navegador pueda pasar al frente con la página
+    for (size_t i : OrdenDePuertos(navegadores, NavegadorPredeterminado()))
+    {
+        COPYDATASTRUCT cds = { 0x41545231, (DWORD)orden.size(), (PVOID)orden.data() };   // «ATR1»
+        DWORD_PTR r = 0;
+        if (SendMessageTimeoutW(puertos[i], WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 3000, &r) && r == TRUE) return true;
+    }
+    return false;
 }
 
 void hnd::sistema::Sonar()

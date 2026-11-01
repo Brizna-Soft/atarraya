@@ -82,8 +82,8 @@ jobs:
             }
             return $false
           }
-          foreach ($t in 'ATARRAYA_PRUEBA', 'Atarraya.Mensajes.Prueba', 'com.briznasoft.atarraya.prueba', 'atarraya-puente-prueba',
-                         'Atarraya-prueba.exe', 'paginas-abiertas', 'copia de prueba') {
+          foreach ($t in 'ATARRAYA_PRUEBA', 'Atarraya.Mensajes.Prueba', 'Atarraya.Puente.Puerto.Prueba', 'com.briznasoft.atarraya.prueba',
+                         'atarraya-puente-prueba', 'Atarraya-prueba.exe', 'paginas-abiertas', 'copia de prueba') {
             foreach ($exe in 'programa/Atarraya.exe', 'programa/atarraya-puente.exe') {
               if (Tiene $exe $t) { throw "$exe trae «$t»" }
             }

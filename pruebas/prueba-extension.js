@@ -14,7 +14,8 @@ const M = enNode
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
-  : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado, seguidasGuardadas };
+  : { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado,
+      seguidasGuardadas };
 
 let fallas = 0;
 function decir(texto) {
@@ -301,6 +302,19 @@ if (enNode) {
   const esperasJs = leer("../extension/comun/esperas.js");
   comprobar(/tipo: "soyDeLaCola"/.test(colaJs) && /if \(r && r\.cola\) empezar\(\)/.test(colaJs),
     "extensión: cola.js no hace nada en una página que no es de la cola");
+  // Una pestaña es de la cola solo si la abrió la misma extensión, cuando Atarraya se lo pidió por el puerto
+  const abrir = fondo.slice(fondo.indexOf("function abrirParaAtarraya"), fondo.indexOf("// Se prueba al despertar"));
+  comprobar(!/tabs\.onCreated/.test(fondo) && !/tipo: "cola"/.test(fondo) && !/openerTabId === undefined/.test(fondo)
+    && (fondo.match(/cola\.marcar\(/g) || []).length === 1 && (fondo.match(/tabs\.create\(/g) || []).length === 1
+    && abrir.indexOf("tabs.create(") > 0 && abrir.indexOf("tabs.create(") < abrir.indexOf("cola.marcar(") && /paginaPorAbrir\(orden\)/.test(abrir),
+    "extensión: una pestaña es de la cola solo si la abrió la misma extensión (tabs.create), a pedido de Atarraya");
+  comprobar(/connectNative\(HOST\)/.test(fondo) && /postMessage\(\{ tipo: "hola" \}\)/.test(fondo) && /m\.tipo === "listo"\) alVolverAtarraya\(\)/.test(fondo)
+    && /cola\.paginaVista\(tabId, url/.test(fondo) && /cola\.leeAvisos\(tabId, remitente\.url/.test(fondo),
+    "extensión: el puerto con Atarraya; al conectar van los avisos finales guardados, y los avisos de espera solo de pestañas de la cola");
+  const puenteCpp = leer("../puente/puente.cpp");
+  comprobar(/tipo == "hola"\) return Puerto\(\)/.test(puenteCpp) && /tipo", "adios"/.test(puenteCpp) && !/tipo == "cola"/.test(puenteCpp)
+    && /DireccionWeb\(url\)\) return FALSE/.test(puenteCpp),
+    "puente: el puerto solo con Atarraya abierto (si no, «adios»), solo abre páginas http o https y ya no hay consulta «cola»");
   comprobar(!/\.click\(|dispatchEvent|\.submit\(|innerHTML|\.value\s*=|focus\(/.test(colaJs + esperasJs) && !/document\./.test(esperasJs),
     "extensión: cola.js y esperas.js solo leen el texto: no hacen clics, no escriben ni mandan formularios");
   const enLaCola = fondo.slice(fondo.indexOf("async function descargaDeLaCola"), fondo.indexOf("api.downloads.onCreated.addListener"));
@@ -377,23 +391,40 @@ comprobar(ve("Free users have to wait 30 seconds.\nBlocked: wait 10 minutes").cl
   "esperas: si hay un límite y una cuenta, gana el límite");
 
 // --- Las pestañas de la cola y lo que se sigue en el navegador (cola-navegador.js) --------------------------------------
-const pc = new C.PestanasDeLaCola(120000, 3600000, 3);
-pc.candidata(5, 1000);
-comprobar(pc.puedePreguntar(5, 2000) && pc.puedePreguntar(5, 3000) && pc.puedePreguntar(5, 4000) && !pc.puedePreguntar(5, 5000),
-  "cola: por una pestaña nueva se pregunta como mucho 3 veces");
-pc.candidata(6, 1000);
-comprobar(!pc.puedePreguntar(6, 1000 + 121000) && !pc.puedePreguntar(7, 2000),
-  "cola: pasados 2 minutos (o si no la abrió otro programa) ya no se pregunta");
-pc.candidata(8, 1000);
-pc.marcar(8, "https://ddownload.com/abc123def/peli.part2.rar", 2000);
-comprobar(pc.parte(8, 3000) === "https://ddownload.com/abc123def/peli.part2.rar" && !pc.candidatas.has(8) && pc.parte(9, 3000) === "",
-  "cola: una pestaña de la cola recuerda la página que abrió Atarraya");
+const pc = new C.PestanasDeLaCola(3600000, 60000);
+// Una pestaña abierta a mano (por la persona, o por Atarraya sin la extensión conectada): nunca es de la cola
+const parte2 = "https://ddownload.com/abc123def/peli.part2.rar";
+comprobar(!pc.paginaVista(5, parte2, 2000) && pc.parte(5, 2000) === "" && !pc.leeAvisos(5, parte2, 2000),
+  "cola: una pestaña abierta a mano no es de la cola, aunque tenga la página de una parte (ahí no se leen avisos)");
+pc.marcar(8, parte2, 2000);
+comprobar(pc.paginaVista(8, parte2, 2500) && pc.parte(8, 3000) === parte2 && pc.parte(9, 3000) === ""
+  && pc.paginaVista(8, "https://s3.ddownload.com/captcha", 4000) && pc.leeAvisos(8, "https://ddownload.com/x", 4000),
+  "cola: en la pestaña que abrió la extensión para una parte se leen los avisos de su sitio");
+comprobar(!pc.paginaVista(8, "https://otro-sitio.com/", 5000) && !pc.leeAvisos(8, "https://otro-sitio.com/", 5000) && pc.parte(8, 5000) === parte2,
+  "cola: si en esa pestaña se va a otro sitio, ahí no se leen avisos (sus descargas siguen siendo de la parte)");
+pc.marcar(9, "https://katfile.com/xyz/peli.part3.rar", 10000);
+comprobar(pc.paginaVista(9, "https://katfile.cloud/xyz", 11000) && pc.leeAvisos(9, "https://katfile.cloud/otra", 12000),
+  "cola: si el sitio la manda enseguida a otro al abrirla (una redirección), también se leen ahí");
+pc.marcar(10, "https://katfile.com/xyz/peli.part4.rar", 10000);
+pc.marcar(11, "https://rapidgator.net/file/1", 10000);
+pc.paginaVista(11, "https://rapidgator.net/file/1", 10500);
+comprobar(!pc.paginaVista(10, "https://katfile.cloud/xyz", 10000 + 61000) && !pc.paginaVista(11, "https://rg.to/file/1", 11000),
+  "cola: la redirección cuenta solo para la primera página y en el primer minuto");
 const otra = new C.PestanasDeLaCola();
 otra.cargar(JSON.parse(JSON.stringify(pc.exportar())));
-comprobar(otra.parte(8, 3000) === pc.parte(8, 3000), "cola: se recuerda aunque el «service worker» se apague (storage.session)");
+comprobar(otra.parte(8, 3000) === parte2 && otra.leeAvisos(9, "https://katfile.cloud/z", 13000) && !otra.leeAvisos(5, parte2, 3000),
+  "cola: se recuerda aunque el «service worker» se apague (storage.session)");
 comprobar(pc.parte(8, 2000 + 3600001) === "", "cola: una pestaña de la cola se olvida después de unas horas");
-pc.marcar(10, "javascript:alert(1)", 1000);
-comprobar(pc.parte(10, 1000) === "", "cola: solo páginas http o https");
+pc.marcar(12, "javascript:alert(1)", 1000);
+comprobar(pc.parte(12, 1000) === "", "cola: solo páginas http o https");
+const raro = new C.PestanasDeLaCola();
+raro.cargar({ cola: [[13, { parte: "javascript:alert(1)", desde: 1000 }], ["x", { parte: "https://a.com/", desde: 1 }], [14, null], "z"] });
+comprobar(raro.cola.size === 0, "cola: lo guardado se revisa al cargarlo");
+comprobar(C.paginaPorAbrir({ tipo: "abrir", id: 3, url: "https://ddownload.com/abc/peli.part1.rar" }) === "https://ddownload.com/abc/peli.part1.rar"
+  && C.paginaPorAbrir({ tipo: "abrir", id: 3, url: "javascript:alert(1)" }) === "" && C.paginaPorAbrir({ tipo: "abrir", id: 3, url: "file:///C:/x" }) === ""
+  && C.paginaPorAbrir({ tipo: "abrir", url: "https://a.com/" }) === "" && C.paginaPorAbrir({ tipo: "otra", id: 1, url: "https://a.com/" }) === ""
+  && C.paginaPorAbrir({ tipo: "abrir", id: 1, url: "https://a.com/\"><x" }) === "" && C.paginaPorAbrir(null) === "",
+  "cola: por el puerto, Atarraya solo puede pedir que se abran páginas http o https");
 comprobar(C.sitioBase("https://s12.ddownload.com/d/x") === "ddownload.com" && C.sitioBase("https://www.ejemplo.co.uk/a") === "ejemplo.co.uk"
   && C.sitioBase("http://127.0.0.1:47613/p") === "127.0.0.1" && C.sitioBase("no es una dirección") === "",
   "cola: el sitio de una dirección (sin los servidores de adelante)");

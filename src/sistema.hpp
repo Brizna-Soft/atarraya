@@ -3,6 +3,7 @@
 // Ayudas de Windows para la ventana: abrir, mostrar en la carpeta, Papelera, portapapeles y la marca
 // «descargado de internet» que usa Windows para avisar antes de abrir programas bajados.
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <vector>
@@ -13,6 +14,11 @@ namespace hnd::sistema
     // Abre una página web (solo http o https) en el navegador. En la copia de prueba solo la anota en
     // «paginas-abiertas.txt», sin abrir ningún navegador.
     void AbrirPaginaWeb(const std::string& url);
+    // Le pide a la extensión del navegador, por el «puerto» que deja abierto mientras Atarraya está abierto, que abra
+    // la página en una pestaña nueva (solo en esas lee los avisos de espera de «de una en una»). Si hay varios
+    // navegadores conectados, va primero el predeterminado. La extensión contesta «abierta» con el mismo «id». Falso si
+    // ninguna está conectada o no recibió la orden. En la copia de prueba, solo los puertos del puente de prueba.
+    bool PedirALaExtension(int64_t id, const std::string& url);
     void MostrarEnCarpeta(const std::wstring& ruta);
     // El sonido de aviso de Windows (por ejemplo, «Toca resolver un captcha»). La copia de prueba no suena: lo anota.
     void Sonar();

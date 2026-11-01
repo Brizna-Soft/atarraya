@@ -40,11 +40,11 @@ function guardarPronto() {
   }, 300);
 }
 
-// La cola de «de una en una» de Atarraya (ver cola-navegador.js): las pestañas que abrió para sus partes y las
-// descargas que baja el navegador y la extensión sigue hasta el final (cuando el sitio no deja que otro programa las
-// baje). Las pestañas se guardan en storage.session (se borra al cerrar el navegador); las descargas que se siguen, en
-// storage.local hasta que Atarraya confirma su aviso final (el navegador recuerda sus descargas aunque se cierre). Este
-// «service worker» se apaga cuando no hace nada.
+// La cola de «de una en una» de Atarraya (ver cola-navegador.js): las pestañas que la extensión abrió para sus partes
+// (cuando Atarraya se lo pidió por el puerto) y las descargas que baja el navegador y la extensión sigue hasta el final
+// (cuando el sitio no deja que otro programa las baje). Las pestañas se guardan en storage.session (se borra al cerrar
+// el navegador); las descargas que se siguen, en storage.local hasta que Atarraya confirma su aviso final (el navegador
+// recuerda sus descargas aunque se cierre). Este «service worker» se apaga cuando no hace nada.
 const cola = new PestanasDeLaCola();
 // id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde, final }
 // («final»: el aviso final, guardado hasta que Atarraya lo confirma)
@@ -71,31 +71,71 @@ function guardarCola() {
   api.storage.local.set({ seguidas: [...seguidas] }).catch(() => {});
 }
 
-// Una pestaña que no abrió otra pestaña la abrió otro programa (por ejemplo, Atarraya): puede ser de su cola
-api.tabs.onCreated.addListener((tab) => {
-  if (!tab || typeof tab.id !== "number" || tab.openerTabId !== undefined) return;
-  listoCola.then(() => {
-    cola.candidata(tab.id, Date.now());
+// --- El puerto: la conexión que la extensión deja abierta mientras Atarraya está abierto ------------------------------
+// Por ahí Atarraya le pide que abra la página de cada parte de la cola. La extensión la abre ella misma en una pestaña
+// nueva y anota esa pestaña: solo en esas lee los avisos de espera. Si Atarraya está cerrado, el puente contesta
+// «adios» y se cierra; se vuelve a probar a lo sumo cada 30 segundos, cuando la extensión está despierta.
+let puerto = null;
+let intentoPuerto = 0;
+const abriendo = new Set();   // pestañas que se están abriendo para Atarraya (se espera a saber su número)
+
+function conectarPuerto() {
+  if (puerto || Date.now() - intentoPuerto < 30000) return;
+  intentoPuerto = Date.now();
+  let p = null;
+  try {
+    p = api.runtime.connectNative(HOST);
+  } catch (e) {
+    return;   // sin el puente (Atarraya no está conectado con este navegador)
+  }
+  puerto = p;
+  p.onMessage.addListener((m) => {
+    if (!m || typeof m.tipo !== "string") return;
+    if (m.tipo === "listo") alVolverAtarraya();   // Atarraya está abierto: los avisos finales guardados van ya
+    else if (m.tipo === "abrir") abrirParaAtarraya(p, m);
+  });
+  p.onDisconnect.addListener(() => {
+    void api.runtime.lastError;   // Atarraya se cerró (o no estaba abierto)
+    if (puerto === p) puerto = null;
+  });
+  try {
+    p.postMessage({ tipo: "hola" });
+  } catch (e) {
+    if (puerto === p) puerto = null;
+  }
+}
+
+// Atarraya pidió abrir la página de una parte: en una pestaña nueva que abre la extensión, que es la única donde se
+// leen sus avisos de espera. Si no se puede, Atarraya la abre como antes.
+function abrirParaAtarraya(p, orden) {
+  const url = paginaPorAbrir(orden);
+  if (!url) return;
+  const tarea = (async () => {
+    let tab = null;
+    try {
+      tab = await api.tabs.create({ url });
+    } catch (e) {
+      return;
+    }
+    if (!tab || typeof tab.id !== "number") return;
+    await listoCola;
+    cola.marcar(tab.id, url, Date.now());
     guardarCola();
-  });
-});
-// Al abrir el navegador con una página de Atarraya, la pestaña puede existir antes que la extensión: en el primer
-// minuto y medio después de abrir el navegador, las pestañas que no abrió otra pestaña también son candidatas
-let arranque = 0;
-if (api.runtime.onStartup) {
-  api.runtime.onStartup.addListener(() => {
-    arranque = Date.now();
-    if (api.storage.session) api.storage.session.set({ arranque }).catch(() => {});
-  });
+    // Como cuando Atarraya la abría desde Windows: el navegador pasa al frente con la página
+    try {
+      if (typeof tab.windowId === "number" && api.windows) await api.windows.update(tab.windowId, { focused: true });
+    } catch (e) {}
+    try {
+      p.postMessage({ tipo: "abierta", id: orden.id, pestana: tab.id });
+    } catch (e) {}
+  })();
+  abriendo.add(tarea);
+  tarea.finally(() => abriendo.delete(tarea));
 }
-if (api.storage.session) {
-  api.storage.session
-    .get("arranque")
-    .then((g) => {
-      if (g && typeof g.arranque === "number" && !arranque) arranque = g.arranque;
-    })
-    .catch(() => {});
-}
+
+// Se prueba al despertar, cada 30 segundos mientras está despierta y cuando la persona navega o baja algo
+conectarPuerto();
+setInterval(conectarPuerto, 30000);
 
 // Las descargas que salen de un formulario (POST) no se pueden repetir desde el programa: esas se quedan
 // en el navegador (salvo las de la cola, que la extensión sigue). Aquí se anotan las direcciones pedidas con otro
@@ -104,6 +144,7 @@ const noRepetibles = new Map();   // url -> cuándo
 api.webRequest.onBeforeRequest.addListener(
   (d) => {
     pestanas.anotar(d.url, d.tabId);
+    if (d.type === "main_frame") conectarPuerto();   // la persona navega: si Atarraya se abrió, se conecta
     // Una página nueva en la pestaña (o en uno de sus marcos): se olvidan sus videos de antes
     if (d.tabId >= 0 && (d.type === "main_frame" || d.type === "sub_frame")) {
       listo.then(() => {
@@ -583,6 +624,7 @@ async function descargaDeLaCola(item, datos, r) {
 }
 
 api.downloads.onCreated.addListener(async (item) => {
+  conectarPuerto();
   try {
     const url = item.finalUrl || item.url;
     if (devueltas.has(url)) {
@@ -693,36 +735,25 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
   switch (mensaje.tipo) {
     case "estado":
       listoHasta = 0;
+      intentoPuerto = 0;   // la persona abrió la ventanita: se prueba conectar ya
+      conectarPuerto();
       hablar({ tipo: "ping" })
         .then((r) => responder({ ok: !!(r && r.ok), version: r && r.version }))
         .catch(() => responder({ ok: false }));
       return true;
 
     case "soyDeLaCola": {
-      // cola.js: ¿esta pestaña es de la cola de Atarraya? Solo se le pregunta a Atarraya por las candidatas (pestañas
-      // que abrió otro programa) y por las que ya son de la cola cuando cambian de sitio.
+      // cola.js: ¿esta pestaña es de la cola de Atarraya? Solo si la abrió la misma extensión cuando Atarraya se lo
+      // pidió (ver abrirParaAtarraya); una pestaña que abrió la persona nunca lo es. Si una se está abriendo justo
+      // ahora, se espera a saber su número.
       if (!deUnaPagina || remitente.frameId !== 0) return false;
       const tabId = remitente.tab.id;
       const url = typeof remitente.url === "string" ? remitente.url : "";
-      listoCola
-        .then(async () => {
-          if (!/^https?:/i.test(url)) return { cola: false };
-          const ya = cola.parte(tabId);
-          if (ya && sitioBase(ya) === sitioBase(url)) return { cola: true };
-          const alAbrir = remitente.tab.openerTabId === undefined && arranque > 0 && Date.now() - arranque < 90000;
-          if (!ya && !cola.puedePreguntar(tabId, Date.now()) && !alAbrir) return { cola: false };
-          let r = null;
-          try {
-            r = await hablar({ tipo: "cola", url });
-          } catch (e) {}
-          if (r && r.ok && typeof r.parte === "number" && r.parte >= 0 && typeof r.url === "string") {
-            cola.marcar(tabId, r.url, Date.now());
-            guardarCola();
-            return { cola: true };
-          }
-          // Una pestaña de la cola que pasó a otra página de otro sitio: sus descargas siguen siendo de la parte, pero
-          // en esa página no se leen avisos
-          return { cola: false };
+      Promise.all([listoCola, ...abriendo])
+        .then(() => {
+          const si = cola.paginaVista(tabId, url, Date.now());
+          if (cola.parte(tabId)) guardarCola();
+          return { cola: si };
         })
         .then(responder)
         .catch(() => responder({ cola: false }));
@@ -735,7 +766,7 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
       const tabId = remitente.tab.id;
       listoCola.then(() => {
         const paginaCola = cola.parte(tabId);
-        if (!paginaCola) return;
+        if (!paginaCola || !cola.leeAvisos(tabId, remitente.url, Date.now())) return;
         const segundos = Number.isFinite(mensaje.segundos) ? Math.max(-1, Math.round(mensaje.segundos)) : -1;
         const url = typeof remitente.url === "string" && /^https?:/i.test(remitente.url) ? remitente.url : "";
         hablar({ tipo: "espera", paginaCola, url, clase: mensaje.clase === "limite" ? "limite" : "pagina", segundos }).catch(() => {});

@@ -819,6 +819,7 @@ void VentanaPrincipal::Refrescar()
     RevisarPartes();
     RevisarTomas();
     RevisarEsperas();
+    if (!m_porAbrir.empty()) RevisarPorAbrir();
     // Las cuentas regresivas de la cola cambian cada segundo
     if (m_sitios.HayEnEspera() || m_sitios.Cuantas(EstadoParte::Navegador) > 0
         || std::any_of(m_sitios.Partes().begin(), m_sitios.Partes().end(), [](const Parte& p) { return p.hasta > 0; }))
@@ -1478,6 +1479,17 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     {
         // La página de una parte pide esperar (lo leyó la extensión en la página que abrió Atarraya)
         PedidoEspera(campo("paginaCola"), campo("clase"), numero("segundos", -1));
+        return;
+    }
+    if (tipo == "abierta")
+    {
+        // La extensión abrió la página que le pidió Atarraya (en una pestaña que abrió ella misma)
+        auto it = j.find("id");
+        if (it == j.end() || !it->is_number_integer()) return;
+        auto a = m_porAbrir.find(it->get<int64_t>());
+        if (a == m_porAbrir.end()) return;
+        Registrar("de una en una: parte " + std::to_string(a->second.parte + 1) + ": la extensión abrió su página");
+        m_porAbrir.erase(a);
         return;
     }
     if (tipo == "soltar")
@@ -2335,11 +2347,35 @@ void VentanaPrincipal::AbrirParte(int i, bool avisar)
     if (i < 0 || (size_t)i >= partes.size()) return;
     std::string url = partes[i].url;
     size_t total = partes.size();
-    sistema::AbrirPaginaWeb(url);
+    // La abre la extensión, si está conectada: abre ella misma la pestaña y solo en esas lee los avisos de espera. Si
+    // no, como antes (en esa pestaña no se leen los avisos de espera).
+    int64_t orden = ++m_ultimaOrden;
+    bool porLaExtension = sistema::PedirALaExtension(orden, url);
+    if (porLaExtension) m_porAbrir[orden] = { i, url, GetTickCount64() };
+    else sistema::AbrirPaginaWeb(url);
     Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " abierta en el navegador ("
-              + SoloSitio(url) + ")");
+              + SoloSitio(url)
+              + (porLaExtension ? std::string(", por la extensión)") : std::string("; la extensión no está conectada: ahí no se leen los avisos de espera)")));
     if (avisar)
         Avisar(wxString::Format(L"Parte %d de %zu en tu navegador", i + 1, total), L"Resuelve el captcha y pulsa descargar. Atarraya la toma sola.");
+}
+
+void VentanaPrincipal::RevisarPorAbrir()
+{
+    uint64_t ahora = GetTickCount64();
+    for (auto it = m_porAbrir.begin(); it != m_porAbrir.end();)
+    {
+        if (ahora - it->second.desde < 6000)
+        {
+            ++it;
+            continue;
+        }
+        // La extensión recibió la orden pero no contestó que abrió la página: se abre como antes
+        Registrar("de una en una: parte " + std::to_string(it->second.parte + 1)
+                  + ": la extensión no abrió la página; se abre como antes (ahí no se leen los avisos de espera)");
+        sistema::AbrirPaginaWeb(it->second.url);
+        it = m_porAbrir.erase(it);
+    }
 }
 
 void VentanaPrincipal::Avanzar()
@@ -2823,18 +2859,7 @@ std::string VentanaPrincipal::Consulta(const std::string& texto)
     std::string tipo = campo("tipo");
     const auto& partes = m_sitios.Partes();
     nlohmann::json r = nlohmann::json::object();
-    if (tipo == "cola")
-    {
-        // ¿Atarraya abrió esta página para una parte? Solo en esas la extensión lee los avisos de espera.
-        int i = m_sitios.ParteDePagina(campo("url"));
-        r["parte"] = i;
-        if (i >= 0)
-        {
-            r["url"] = partes[i].url;
-            r["total"] = partes.size();
-        }
-    }
-    else if (tipo == "emparejar")
+    if (tipo == "emparejar")
     {
         // ¿Es de una parte? La extensión solo deja la descarga en el navegador mientras Atarraya prueba si es seguro
         std::string paginaCola = campo("paginaCola");

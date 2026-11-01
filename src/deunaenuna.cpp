@@ -435,6 +435,34 @@ hnd::DeUnaEnUna::RespuestaToma hnd::DeUnaEnUna::EstadoDeToma(const std::string& 
     return r;
 }
 
+std::vector<size_t> hnd::OrdenDePuertos(const std::vector<std::wstring>& navegadores, const std::wstring& predeterminado)
+{
+    std::vector<size_t> orden;
+    for (int primero = 1; primero >= 0; primero--)
+    {
+        for (size_t i = 0; i < navegadores.size(); i++)
+        {
+            bool es = !predeterminado.empty() && Minusculas(navegadores[i]) == Minusculas(predeterminado);
+            if (es == (primero == 1)) orden.push_back(i);
+        }
+    }
+    return orden;
+}
+
+std::wstring hnd::ProgramaDeProgId(const std::wstring& progId)
+{
+    std::wstring p = Minusculas(progId);
+    auto empieza = [&](const wchar_t* x) { return p.rfind(x, 0) == 0; };
+    if (empieza(L"chromehtml") || empieza(L"chromebhtml") || empieza(L"chromedhtml") || empieza(L"chromesshtm") || empieza(L"chromiumhtm"))
+        return L"chrome.exe";
+    if (empieza(L"msedge")) return L"msedge.exe";
+    if (empieza(L"firefoxurl") || empieza(L"firefoxhtml")) return L"firefox.exe";
+    if (empieza(L"brave")) return L"brave.exe";
+    if (empieza(L"opera")) return L"opera.exe";
+    if (empieza(L"vivaldi")) return L"vivaldi.exe";
+    return L"";
+}
+
 int64_t hnd::MargenDeEspera(int64_t segundos)
 {
     return std::min<int64_t>(5 * 60, std::max<int64_t>(30, segundos / 20));

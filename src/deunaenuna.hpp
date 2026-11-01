@@ -45,6 +45,13 @@ namespace hnd
     constexpr int64_t EsperaSinTiempo = 10 * 60;
     int64_t MargenDeEspera(int64_t segundos);   // 30 s, o el 5 % si es más; como mucho 5 minutos
 
+    // Las páginas de la cola las abre la extensión, a pedido de Atarraya, por el «puerto» que deja abierto mientras
+    // Atarraya está abierto (solo en esas pestañas lee los avisos de espera). Si hay varios navegadores conectados, va
+    // primero el predeterminado. «navegadores»: el programa de cada puerto («chrome.exe»...); devuelve el orden.
+    std::vector<size_t> OrdenDePuertos(const std::vector<std::wstring>& navegadores, const std::wstring& predeterminado);
+    // El programa del navegador predeterminado según su «ProgId» de Windows («ChromeHTML» → «chrome.exe»); "" si no se sabe
+    std::wstring ProgramaDeProgId(const std::wstring& progId);
+
     // La descarga que empezó el navegador y Atarraya prueba seguir: se está probando, la tomó Atarraya (la del navegador
     // se cancela) o sigue el navegador (la de Atarraya se quita). Nunca bajan las dos.
     enum class EstadoToma { Ninguna, Probando, Tomada, Navegador };

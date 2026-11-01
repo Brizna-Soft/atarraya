@@ -1,47 +1,24 @@
 // Lo que la extensión hace por la cola de «de una en una» de Atarraya. Lo usa background.js; está aparte para poder
 // probarlo sin navegador (pruebas/prueba-extension.js).
 //
-// 1. Qué pestañas abrió Atarraya para su cola. Atarraya abre cada página desde Windows, así que llega como una pestaña
-//    que no abrió otra pestaña. Esas son candidatas: cuando su página carga, se le pregunta a Atarraya si es de su
-//    cola. Solo en esas se leen los avisos de espera, y sus descargas van con la página que abrió Atarraya.
+// 1. Qué pestañas son de la cola: solo las que abrió la misma extensión (tabs.create) cuando Atarraya se lo pidió por
+//    el puente. Solo en esas se leen los avisos de espera, y sus descargas van con la página que abrió Atarraya. Una
+//    pestaña que abrió la persona (o Atarraya sin la extensión conectada) nunca es de la cola.
 // 2. Cómo va una descarga que baja el navegador y la extensión sigue (cuando el sitio no deja que otro programa la
 //    baje): el aviso para Atarraya. El aviso final se guarda hasta que Atarraya lo confirma.
 // 3. Quién baja una parte mientras Atarraya prueba seguir la descarga del navegador: nunca quedan las dos.
 
 class PestanasDeLaCola {
-  constructor(vidaCandidata = 2 * 60000, vidaCola = 6 * 3600000, consultas = 3) {
-    this.vidaCandidata = vidaCandidata;   // cuánto se espera que una candidata cargue una página de la cola
-    this.vidaCola = vidaCola;             // cuánto se recuerda una pestaña de la cola
-    this.consultas = consultas;           // cuántas veces como mucho se pregunta por una candidata
-    this.cola = new Map();                // tabId -> { parte (la página que abrió Atarraya), desde }
-    this.candidatas = new Map();          // tabId -> { cuando, consultas }
+  constructor(vidaCola = 6 * 3600000, vidaRedireccion = 60000) {
+    this.vidaCola = vidaCola;                 // cuánto se recuerda una pestaña de la cola
+    this.vidaRedireccion = vidaRedireccion;   // la primera página puede ser de otro sitio si llega enseguida (una redirección)
+    this.cola = new Map();                    // tabId -> { parte (la página que abrió Atarraya), desde, otroSitio, vista }
   }
 
-  candidata(tabId, ahora) {
-    if (typeof tabId !== "number" || tabId < 0 || this.cola.has(tabId)) return;
-    this.candidatas.set(tabId, { cuando: ahora, consultas: 0 });
-    if (this.candidatas.size > 200) {
-      for (const [id, c] of this.candidatas) if (ahora - c.cuando > this.vidaCandidata || this.candidatas.size > 200) this.candidatas.delete(id);
-    }
-  }
-
-  // ¿Se le pregunta a Atarraya por esta pestaña? Cada candidata, en sus primeros minutos y pocas veces (la página que
-  // abre Atarraya carga enseguida; así navegar en una pestaña nueva no hace preguntas sin fin)
-  puedePreguntar(tabId, ahora) {
-    const c = this.candidatas.get(tabId);
-    if (!c) return false;
-    if (ahora - c.cuando > this.vidaCandidata || c.consultas >= this.consultas) {
-      this.candidatas.delete(tabId);
-      return false;
-    }
-    c.consultas++;
-    return true;
-  }
-
+  // La extensión acaba de abrir esta pestaña, a pedido de Atarraya, con la página de una parte
   marcar(tabId, parte, ahora) {
     if (typeof tabId !== "number" || tabId < 0 || !/^https?:/i.test(parte || "")) return;
-    this.cola.set(tabId, { parte, desde: ahora });
-    this.candidatas.delete(tabId);
+    this.cola.set(tabId, { parte, desde: ahora, otroSitio: "", vista: false });
   }
 
   // La página que abrió Atarraya en esa pestaña, o "" si no es de la cola
@@ -55,24 +32,54 @@ class PestanasDeLaCola {
     return c.parte;
   }
 
+  // Una página que cargó en la pestaña: ¿se leen sus avisos de espera? Solo en una pestaña de la cola, en el sitio de
+  // la página que abrió Atarraya o, si el sitio la mandó enseguida a otro al abrirla (una redirección), en ese.
+  paginaVista(tabId, url, ahora = Date.now()) {
+    const c = this.cola.get(tabId);
+    const sitio = /^https?:/i.test(url || "") ? sitioBase(url) : "";
+    if (!this.parte(tabId, ahora) || !c || !sitio) return false;
+    const primera = !c.vista;
+    c.vista = true;
+    if (sitio === sitioBase(c.parte) || sitio === c.otroSitio) return true;
+    if (primera && ahora - c.desde < this.vidaRedireccion) {
+      c.otroSitio = sitio;
+      return true;
+    }
+    return false;
+  }
+
+  // Lo mismo, sin anotar nada (para un aviso que llega de esa página)
+  leeAvisos(tabId, url, ahora = Date.now()) {
+    const c = this.cola.get(tabId);
+    const sitio = /^https?:/i.test(url || "") ? sitioBase(url) : "";
+    return !!(this.parte(tabId, ahora) && c && sitio && (sitio === sitioBase(c.parte) || sitio === c.otroSitio));
+  }
+
   olvidar(tabId) {
     this.cola.delete(tabId);
-    this.candidatas.delete(tabId);
   }
 
   exportar() {
-    return { cola: [...this.cola], candidatas: [...this.candidatas] };
+    return { cola: [...this.cola] };
   }
 
   cargar(datos) {
     if (!datos || typeof datos !== "object") return;
-    for (const [id, c] of Array.isArray(datos.cola) ? datos.cola : []) {
-      if (typeof id === "number" && c && typeof c.parte === "string" && typeof c.desde === "number") this.cola.set(id, c);
-    }
-    for (const [id, c] of Array.isArray(datos.candidatas) ? datos.candidatas : []) {
-      if (typeof id === "number" && c && typeof c.cuando === "number") this.candidatas.set(id, { cuando: c.cuando, consultas: Number(c.consultas) || 0 });
+    for (const par of Array.isArray(datos.cola) ? datos.cola : []) {
+      const [id, c] = Array.isArray(par) ? par : [];
+      if (typeof id !== "number" || !c || typeof c.parte !== "string" || !/^https?:/i.test(c.parte) || typeof c.desde !== "number") continue;
+      this.cola.set(id, { parte: c.parte, desde: c.desde, otroSitio: typeof c.otroSitio === "string" ? c.otroSitio : "", vista: !!c.vista });
     }
   }
+}
+
+// Una orden de Atarraya que llegó por el puerto: la página que hay que abrir en una pestaña nueva, o "" si no vale
+// (solo http o https, de un largo razonable)
+function paginaPorAbrir(orden) {
+  if (!orden || typeof orden !== "object" || orden.tipo !== "abrir" || !Number.isInteger(orden.id)) return "";
+  const url = typeof orden.url === "string" ? orden.url : "";
+  if (url.length > 8192 || !/^https?:\/\/[^\s"<>]+$/i.test(url)) return "";
+  return url;
 }
 
 // El sitio de una dirección sin los servidores de adelante (s12.ddownload.com → ddownload.com). Solo para saber si una
@@ -181,6 +188,6 @@ function seguidasGuardadas(lista, ahora) {
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { PestanasDeLaCola, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado,
-                     seguidasGuardadas };
+  module.exports = { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal,
+                     finalEntregado, seguidasGuardadas };
 }

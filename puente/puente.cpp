@@ -4,18 +4,28 @@
 // en UTF-8. El puente pasa cada pedido a Atarraya con WM_COPYDATA (lo abre si no está abierto) y responde
 // de la misma forma. No guarda nada, no se conecta a internet y solo acepta direcciones http, https, ftp o magnet.
 //
-// Las consultas de «de una en una» («cola»: ¿esta pestaña la abrió Atarraya?, «emparejar»: ¿esta descarga es de una
-// parte?, «toma»: ¿Atarraya pudo seguir esta descarga?) esperan la respuesta: Atarraya la manda enseguida con
-// WM_COPYDATA a una ventana invisible del puente. Las consultas y los avisos («navegador»: cómo va una descarga que
-// sigue la extensión, «espera»: la página pide esperar) nunca abren Atarraya.
+// Las consultas de «de una en una» («emparejar»: ¿esta descarga es de una parte?, «toma»: ¿quién baja esta descarga?)
+// esperan la respuesta: Atarraya la manda enseguida con WM_COPYDATA a una ventana invisible del puente. Las consultas y
+// los avisos («navegador»: cómo va una descarga que sigue la extensión, «espera»: la página pide esperar, «soltar»: que
+// siga el navegador) nunca abren Atarraya.
+//
+// El «puerto»: si lo primero que llega es «hola», la extensión deja este puente abierto mientras Atarraya está abierto
+// (si no lo está, contesta «adios» y termina). El puente crea una ventana invisible donde Atarraya le deja sus órdenes
+// para la extensión (por ahora, «abrir»: que abra la página de una parte en una pestaña nueva) y le pasa a Atarraya lo
+// que contesta la extensión («abierta»). Termina cuando Atarraya se cierra o cuando el navegador cierra el puerto.
 
 #include <windows.h>
 #include <fcntl.h>
 #include <io.h>
+#include <tlhelp32.h>
 
 #include <cstdint>
 #include <cstdio>
+#include <cwctype>
+#include <map>
+#include <memory>
 #include <string>
+#include <thread>
 
 #include <nlohmann/json.hpp>
 
@@ -25,11 +35,15 @@
 namespace
 {
     const wchar_t* ClaseMensajes = ATARRAYA_CLASE_MENSAJES;
+    const wchar_t* ClasePuerto = ATARRAYA_CLASE_PUERTO;
     const ULONG_PTR MarcaCopia = 0x41545231;      // «ATR1», igual que en Atarraya.exe
     const ULONG_PTR MarcaRespuesta = 0x41545232;  // «ATR2»: la respuesta de Atarraya a una consulta
+    const UINT LlegoDeLaExtension = WM_APP + 1;   // lParam: un mensaje de la extensión (std::string*)
+    const UINT SeCerroElPuerto = WM_APP + 2;      // el navegador cerró la entrada
 
     std::string g_respuesta;
     bool g_hayRespuesta = false;
+    HWND g_programa = nullptr;   // en el puerto: la ventana de Atarraya
 
     LRESULT CALLBACK AlRecibirRespuesta(HWND h, UINT mensaje, WPARAM w, LPARAM l)
     {
@@ -61,22 +75,45 @@ namespace
         return h;
     }
 
+    // Con ReadFile y WriteFile, sin el búfer de la biblioteca de C: en el puerto, un hilo lee mientras el otro escribe
+    bool LeerTodo(void* destino, DWORD largo)
+    {
+        HANDLE h = GetStdHandle(STD_INPUT_HANDLE);
+        auto* p = static_cast<char*>(destino);
+        while (largo > 0)
+        {
+            DWORD n = 0;
+            if (!ReadFile(h, p, largo, &n, nullptr) || n == 0) return false;
+            p += n;
+            largo -= n;
+        }
+        return true;
+    }
+
     bool Leer(std::string& mensaje)
     {
         uint32_t largo = 0;
-        if (fread(&largo, sizeof(largo), 1, stdin) != 1) return false;
+        if (!LeerTodo(&largo, sizeof(largo))) return false;
         if (largo == 0 || largo > 8 * 1024 * 1024) return false;
         mensaje.resize(largo);
-        return fread(mensaje.data(), 1, largo, stdin) == largo;
+        return LeerTodo(mensaje.data(), largo);
     }
 
     void Escribir(const nlohmann::json& j)
     {
         std::string s = j.dump();
         uint32_t largo = (uint32_t)s.size();
-        fwrite(&largo, sizeof(largo), 1, stdout);
-        fwrite(s.data(), 1, s.size(), stdout);
-        fflush(stdout);
+        std::string todo(reinterpret_cast<const char*>(&largo), sizeof(largo));
+        todo += s;
+        HANDLE h = GetStdHandle(STD_OUTPUT_HANDLE);
+        const char* p = todo.data();
+        size_t falta = todo.size();
+        DWORD n = 0;
+        while (falta > 0 && WriteFile(h, p, (DWORD)falta, &n, nullptr) && n > 0)
+        {
+            p += n;
+            falta -= n;
+        }
     }
 
     HWND BuscarPrograma()
@@ -168,6 +205,8 @@ namespace
         numero("segundos");
         numero("bajado");
         numero("total");
+        numero("id");        // abierta: la orden «abrir» de Atarraya que se cumplió
+        numero("pestana");   // abierta: la pestaña que abrió la extensión
         return r;
     }
 
@@ -189,6 +228,117 @@ namespace
         for (auto& c : bajo) c = (char)tolower((unsigned char)c);
         return bajo.rfind("http://", 0) == 0 || bajo.rfind("https://", 0) == 0;
     }
+
+    // --- El puerto -------------------------------------------------------------------------------------------------
+
+    // El navegador que abrió este puente, en minúsculas («chrome.exe», «msedge.exe», «firefox.exe»...). Chrome y Edge
+    // lo abren con cmd.exe en el medio. Atarraya lo usa para preferir el navegador predeterminado si hay varios.
+    std::wstring NavegadorQueAbrio()
+    {
+        HANDLE foto = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if (foto == INVALID_HANDLE_VALUE) return L"";
+        std::map<DWORD, std::pair<DWORD, std::wstring>> procesos;   // id -> (padre, programa)
+        PROCESSENTRY32W pe = { sizeof(pe) };
+        for (BOOL ok = Process32FirstW(foto, &pe); ok; ok = Process32NextW(foto, &pe))
+            procesos[pe.th32ProcessID] = { pe.th32ParentProcessID, pe.szExeFile };
+        CloseHandle(foto);
+        DWORD id = GetCurrentProcessId();
+        for (int i = 0; i < 4; i++)
+        {
+            auto yo = procesos.find(id);
+            if (yo == procesos.end()) return L"";
+            auto padre = procesos.find(yo->second.first);
+            if (padre == procesos.end()) return L"";
+            std::wstring exe = padre->second.second;
+            for (auto& c : exe) c = (wchar_t)towlower(c);
+            if (exe != L"cmd.exe" && exe != L"conhost.exe") return exe.size() < 64 ? exe : L"";
+            id = padre->first;
+        }
+        return L"";
+    }
+
+    LRESULT CALLBACK AlRecibirEnElPuerto(HWND h, UINT mensaje, WPARAM w, LPARAM l)
+    {
+        if (mensaje == WM_COPYDATA)
+        {
+            // Una orden de Atarraya para la extensión: abrir la página de una parte (solo http o https)
+            auto* d = reinterpret_cast<const COPYDATASTRUCT*>(l);
+            if (!d || d->dwData != MarcaCopia || d->cbData == 0 || d->cbData > 64 * 1024) return FALSE;
+            try
+            {
+                auto j = nlohmann::json::parse(std::string(static_cast<const char*>(d->lpData), d->cbData));
+                auto id = j.find("id");
+                std::string url = j.value("url", "");
+                if (j.value("tipo", "") != "abrir" || id == j.end() || !id->is_number_integer() || !DireccionWeb(url)) return FALSE;
+                Escribir({ { "tipo", "abrir" }, { "id", id->get<int64_t>() }, { "url", url } });
+                return TRUE;
+            }
+            catch (...)
+            {
+                return FALSE;
+            }
+        }
+        if (mensaje == LlegoDeLaExtension)
+        {
+            // Lo que contesta la extensión: «abierta» (ya abrió la página), a Atarraya
+            std::unique_ptr<std::string> texto(reinterpret_cast<std::string*>(l));
+            try
+            {
+                auto j = nlohmann::json::parse(*texto);
+                if (j.is_object() && j.value("tipo", "") == "abierta" && IsWindow(g_programa)) Enviar(g_programa, SoloLoPermitido(j).dump());
+            }
+            catch (...)
+            {
+            }
+            return 0;
+        }
+        if (mensaje == SeCerroElPuerto || (mensaje == WM_TIMER && !IsWindow(g_programa)))
+        {
+            // El navegador cerró el puerto, o Atarraya se cerró: la extensión vuelve a conectar cuando lo necesite
+            PostQuitMessage(0);
+            return 0;
+        }
+        return DefWindowProcW(h, mensaje, w, l);
+    }
+
+    int Puerto()
+    {
+        g_programa = BuscarPrograma();   // nunca se abre Atarraya por esto
+        HWND ventana = nullptr;
+        if (g_programa)
+        {
+            WNDCLASSEXW c = { sizeof(c) };
+            c.lpfnWndProc = AlRecibirEnElPuerto;
+            c.hInstance = GetModuleHandleW(nullptr);
+            c.lpszClassName = ClasePuerto;
+            RegisterClassExW(&c);
+            ventana = CreateWindowExW(0, ClasePuerto, NavegadorQueAbrio().c_str(), 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, c.hInstance, nullptr);
+        }
+        if (!ventana)
+        {
+            Escribir({ { "tipo", "adios" } });
+            return 0;
+        }
+        SetTimer(ventana, 1, 2000, nullptr);   // ¿sigue abierto Atarraya?
+        Escribir({ { "tipo", "listo" }, { "version", APP_VERSION } });
+        std::thread([ventana]() {
+            std::string m;
+            while (Leer(m))
+            {
+                auto* copia = new std::string(m);
+                if (!PostMessageW(ventana, LlegoDeLaExtension, 0, (LPARAM)copia)) delete copia;
+            }
+            PostMessageW(ventana, SeCerroElPuerto, 0, 0);
+        }).detach();
+        MSG msg;
+        while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+        {
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
+        }
+        DestroyWindow(ventana);
+        return 0;
+    }
 }
 
 int main()
@@ -197,6 +347,7 @@ int main()
     _setmode(_fileno(stdout), _O_BINARY);
 
     std::string mensaje;
+    bool primero = true;
     while (Leer(mensaje))
     {
         nlohmann::json respuesta;
@@ -204,6 +355,8 @@ int main()
         {
             auto j = nlohmann::json::parse(mensaje);
             std::string tipo = j.value("tipo", "");
+            if (primero && tipo == "hola") return Puerto();
+            primero = false;
             if (tipo == "ping")
             {
                 respuesta = { { "ok", true }, { "version", APP_VERSION }, { "abierto", BuscarPrograma() != nullptr } };
@@ -228,13 +381,13 @@ int main()
                     if (!h) respuesta["error"] = "no se pudo abrir Atarraya";
                 }
             }
-            else if (tipo == "cola" || tipo == "emparejar" || tipo == "toma")
+            else if (tipo == "emparejar" || tipo == "toma")
             {
                 // Consultas: si Atarraya no está abierto, no hay cola (no se abre por esto)
                 std::string url = j.value("url", "");
                 HWND h = BuscarPrograma();
                 nlohmann::json r;
-                if (tipo != "toma" && !DireccionWeb(url) && !(tipo == "emparejar" && DireccionValida(url)))
+                if (tipo == "emparejar" && !DireccionValida(url))
                     respuesta = { { "ok", false }, { "error", "direccion no valida" } };
                 else if (h && Consultar(h, SoloLoPermitido(j).dump(), r))
                 {

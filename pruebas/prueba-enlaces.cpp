@@ -1960,6 +1960,20 @@ namespace
         return ok != FALSE;
     }
 
+    // 0.4.0 (revisión): las páginas de la cola las abre la extensión; con varios navegadores conectados, el predeterminado
+    void PuertosPruebas()
+    {
+        Comprobar(ProgramaDeProgId(L"ChromeHTML") == L"chrome.exe" && ProgramaDeProgId(L"MSEdgeHTM") == L"msedge.exe"
+                      && ProgramaDeProgId(L"FirefoxURL-308046B0AF4A39CB") == L"firefox.exe" && ProgramaDeProgId(L"BraveHTML") == L"brave.exe"
+                      && ProgramaDeProgId(L"OperaStable") == L"opera.exe" && ProgramaDeProgId(L"AppXq0fevzme2pys62n3e0fbqa7peapykr8v") == L""
+                      && ProgramaDeProgId(L"") == L"",
+                  "puerto: el programa del navegador predeterminado según su ProgId (si no se sabe, ninguno)");
+        Comprobar(OrdenDePuertos({ L"chrome.exe", L"msedge.exe", L"firefox.exe" }, L"MSEDGE.EXE") == std::vector<size_t>{ 1, 0, 2 }
+                      && OrdenDePuertos({ L"chrome.exe", L"msedge.exe" }, L"") == std::vector<size_t>{ 0, 1 }
+                      && OrdenDePuertos({ L"chrome.exe" }, L"firefox.exe") == std::vector<size_t>{ 0 } && OrdenDePuertos({}, L"chrome.exe").empty(),
+                  "puerto: con varios navegadores conectados va primero el predeterminado; si no está, cualquiera de los otros");
+    }
+
     // 0.4.0 (revisión): el aviso final de lo que bajó el navegador no se pierde aunque Atarraya esté cerrado
     void AvisoFinalPruebas()
     {
@@ -2685,6 +2699,7 @@ int wmain(int argc, wchar_t** argv)
     MoverDelNavegadorPruebas();
     TomasPruebas();
     AvisoFinalPruebas();
+    PuertosPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

@@ -101,8 +101,8 @@ hasta el final: cuando termina, Atarraya pasa el archivo a la carpeta del paquet
 página siguiente. Atarraya recuerda esos sitios: la próxima vez deja la descarga en el navegador desde el principio.
 También funciona cuando la descarga sale de un formulario (los sitios que bajan después de pulsar un botón).
 
-**Esperas.** En las páginas que abrió de su cola (y solo en esas), la extensión lee el texto que se ve y reconoce
-los avisos de espera: «You have to wait 9 minutes till next download», «Blocked: wait 10 minutes», «Download limit
+**Esperas.** Mientras Atarraya está abierto, le pide a la extensión que abra cada página de la cola. En esas pestañas
+(y solo en esas: nunca en una que abriste tú), la extensión lee el texto que se ve y reconoce los avisos de espera: «You have to wait 9 minutes till next download», «Blocked: wait 10 minutes», «Download limit
 reached», «Debes esperar 5 minutos», «Vous devez attendre 15 minutes», relojes de cuenta regresiva... Atarraya te
 muestra la cuenta regresiva arriba de la lista y:
 
@@ -110,6 +110,15 @@ muestra la cuenta regresiva arriba de la lista y:
   avisa con un sonido y «Toca resolver un captcha». Si la página todavía pide esperar, vuelve a intentar más tarde,
   hasta 6 veces; después la deja para el final (vuelve al recolector);
 - si es la cuenta regresiva de la página, te avisa cuando termina.
+
+Si la extensión no está conectada, Atarraya abre la página en tu navegador como antes, pero ahí no se leen los
+avisos de espera.
+
+**Nunca bajan dos veces la misma parte.** Mientras Atarraya prueba seguir la descarga del navegador, lo anota en la
+cola: si se cierra a la mitad, al volver a abrirlo queda la del navegador y quita la suya. Si el navegador termina
+una parte con Atarraya cerrado, la extensión guarda el aviso y se lo pasa cuando vuelve a abrirse: la parte se pasa a
+la carpeta del paquete y sigue hasta Jícaro. Antes de mover lo que bajó el navegador, Atarraya revisa que sea el
+mismo archivo, sin enlaces en ninguna carpeta, y lo mueve sin pisar nada.
 
 Cuando terminan todas las partes de un paquete, también las que bajó el navegador, Jícaro las descomprime como
 siempre (ver abajo). La extensión no pide permisos nuevos.
@@ -169,19 +178,20 @@ La extensión pide solo lo que usa, y nada de lo que ve sale de tu PC:
 - **Descargas** (`downloads`): para pasarle a Atarraya lo que bajas en el navegador y, en «de una en una», para
   seguir hasta el final una descarga que el sitio solo deja bajar al navegador (cuánto va y dónde quedó).
 - **Comunicación con programas** (`nativeMessaging`): para hablar con Atarraya, que está en tu misma PC. No habla
-  con ningún servidor.
+  con ningún servidor. Mientras Atarraya está abierto, la conexión queda abierta para que te abra las páginas de «de
+  una en una»; si lo cierras, se cierra sola.
 - **Menú del clic derecho** (`contextMenus`): para **Descargar con Atarraya**.
 - **Cookies** (`cookies`): para que Atarraya pueda bajar lo que pide haber iniciado sesión. Solo lee las del sitio
   de esa descarga (para un video, las del marco donde está), y solo cuando empieza una descarga o pulsas un botón.
 - **Almacenamiento** (`storage`): para tus ajustes de la extensión; mientras el navegador está abierto, la lista de
   videos de cada pestaña y qué pestañas son de la cola de «de una en una» (se borran al cerrarlo); y las descargas
-  de la cola que está siguiendo, solo hasta que terminan.
+  de la cola que está siguiendo, solo hasta que Atarraya sabe que terminaron.
 - **Ver los pedidos de las páginas** (`webRequest`): solo mira las respuestas, sin bloquearlas ni cambiarlas, para
   saber en qué pestaña nació una descarga y qué videos, listas HLS o manifiestos DASH pidió el reproductor.
 - **Todos los sitios** (`<all_urls>` y el botón en las páginas): porque las descargas y los videos pueden venir de
-  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM. Cuando
-  otro programa (como Atarraya) abre una pestaña, la extensión le pregunta a Atarraya si esa página es de su cola;
-  los avisos de espera solo se leen en esas.
+  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM. Los
+  avisos de espera solo se leen en las pestañas que la misma extensión abrió para la cola de «de una en una»,
+  cuando Atarraya se lo pidió.
 
 ## Videos de las páginas
 
@@ -249,9 +259,9 @@ Lo que no baja:
 - Para que funcionen las descargas que piden haber iniciado sesión, la extensión le pasa a Atarraya, solo dentro
   de tu PC, las cookies del sitio de esa descarga (para un video, las del marco donde está). Atarraya no las guarda
   cuando la descarga termina y nunca las manda a otro sitio.
-- En las páginas que abre la cola de «de una en una», la extensión lee el texto que se ve solo para reconocer los
-  avisos de espera, y a Atarraya le pasa solo cuánto hay que esperar: nunca el texto de la página. En las demás
-  páginas no lee nada. Atarraya no anota en su registro las direcciones que le pregunta la extensión.
+- En las pestañas que la extensión abre para la cola de «de una en una», lee el texto que se ve solo para reconocer
+  los avisos de espera, y a Atarraya le pasa solo cuánto hay que esperar: nunca el texto de la página. En las demás
+  pestañas, también en las que abres tú, no lee nada. Atarraya no anota en su registro las direcciones que le pregunta la extensión.
 - La lista de videos de cada pestaña se queda dentro del navegador y se borra al cerrarlo. La extensión no guarda
   qué videos ves ni los manda a ningún lado. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
   una»; esa dirección no se guarda.

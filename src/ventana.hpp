@@ -100,7 +100,10 @@ private:
                            bool abrir, wxWindow* padre, hnd::jicaro::Tanda* tanda = nullptr);
     void CrearBarraSitios(wxWindow* padre);
     void ActualizarBarraSitios();
-    void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
+    // La abre en el navegador: por la extensión, si está conectada (solo en esas pestañas lee los avisos de espera);
+    // si no, o si no contesta enseguida, como antes (en la copia de prueba, solo la anota)
+    void AbrirParte(int i, bool avisar);
+    void RevisarPorAbrir();                // las que la extensión no abrió a tiempo: como antes
     void Avanzar();                        // terminó o se saltó una: abre la siguiente, o cierra la cola si no queda nada
     // La baja Atarraya, con una conexión. Con «toma», el navegador sigue bajando la suya mientras Atarraya prueba: si
     // Atarraya no puede (una página, un 403 o 410, un enlace de un solo uso), la deja en el navegador.
@@ -188,6 +191,15 @@ private:
     hnd::SitiosNavegador m_sitiosNavegador; // sitios donde la descarga final solo funciona en el navegador
     // Descargas del navegador que no son de una parte (la extensión las sigue igual): ahí sigue el navegador
     std::set<std::string> m_tomasSinParte;
+    // Páginas que se le pidió abrir a la extensión y todavía no contestó que las abrió (por número de orden)
+    struct PaginaPorAbrir
+    {
+        int parte = -1;
+        std::string url;
+        uint64_t desde = 0;   // GetTickCount64
+    };
+    std::map<int64_t, PaginaPorAbrir> m_porAbrir;
+    int64_t m_ultimaOrden = 0;
     bool m_colaSinGuardar = false;          // ya se avisó que la cola no se pudo guardar
     wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
     wxPanel* m_barraSitios = nullptr;
