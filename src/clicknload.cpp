@@ -514,10 +514,12 @@ namespace
         std::string r;
         if (!p.metodo.empty())
         {
-            // La ruta solo si es corta, como las de Click'n'Load («/flash/add», «/jdcheck.js»): otra podría traer datos
-            std::string m = Limpio(p.metodo, 16, ""), ruta = Limpio(p.ruta, 40, "/._-");
-            size_t barras = std::count(ruta.begin(), ruta.end(), '/');
-            if (ruta.empty() || ruta[0] != '/' || (barras > 1 && !(barras == 2 && ruta.rfind("/flash/", 0) == 0))) ruta.clear();
+            // Solo las rutas que usa Click'n'Load: cualquier otra, aunque sea corta, podría traer un identificador o una clave
+            static const char* const conocidas[] = { "/flash", "/flash/add", "/flash/addcrypted", "/flash/addcrypted2", "/jdcheck.js",
+                                                      "/favicon.ico" };
+            std::string m = Limpio(p.metodo, 16, ""), ruta;
+            for (const char* c : conocidas)
+                if (p.ruta == c) ruta = c;
             r = (m.empty() ? std::string("?") : m) + " " + (ruta.empty() ? std::string("(otra dirección)") : ruta);
             if (!p.forma.empty()) r += ", " + p.forma;
             r += ", ";

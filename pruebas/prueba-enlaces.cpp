@@ -2163,7 +2163,7 @@ namespace
                 bien += codigo(pedir(p2, "GET /flash/add?urls=https%3A%2F%2Fejemplo.org%2Ftope-" + std::to_string(i) + ".zip HTTP/1.1\r\n" + h2 + "\r\n")) == 200;
             r = pedir(p2, "GET /flash/add?urls=https%3A%2F%2Fejemplo.org%2Ftope-30.zip HTTP/1.1\r\n" + h2 + "\r\n");
             Comprobar(bien == 30 && codigo(r) == 429, "CnL servidor: 30 pedidos por minuto; el siguiente da 429");
-            for (int i = 0; i < 25; i++) pedir(p2, "GET /tope-del-registro HTTP/1.1\r\n" + h2 + "\r\n");
+            for (int i = 0; i < 25; i++) pedir(p2, "DELETE /jdcheck.js HTTP/1.1\r\n" + h2 + "\r\n");
             otro.Detener();
         }
 
@@ -2191,11 +2191,12 @@ namespace
         Comprobar(hay("rechazado: un contenedor DLC"), "CnL registro: DLC");
         Comprobar(hay("rechazado: falta el campo jk; llegó 1 campo: crypted"), "CnL registro: falta «jk»");
         Comprobar(hay("rechazado: demasiados campos (más de 64)"), "CnL registro: demasiados campos");
-        Comprobar(hay("rechazado: dirección que no existe. Pedido: GET /otra") && hay("Pedido: GET (otra dirección), desde"),
-                  "CnL registro: dirección que no existe (de una dirección larga, solo que era otra)");
+        Comprobar(hay("rechazado: dirección que no existe. Pedido: GET (otra dirección), desde") && !hay("GET /otra")
+                      && !hay("secreto-13"),
+                  "CnL registro: dirección que no existe, sin anotar su ruta (aunque sea corta podría traer una clave)");
         Comprobar(hay("rechazado: método no admitido. Pedido: PUT /flash/add"), "CnL registro: método no admitido");
         Comprobar(hay("rechazado: demasiados pedidos (más de 30 por minuto)"), "CnL registro: demasiados pedidos");
-        Comprobar(veces("GET /tope-del-registro") == 19 && veces("llegan demasiados rechazos") == 1,
+        Comprobar(veces("DELETE /jdcheck.js") == 19 && veces("llegan demasiados rechazos") == 1,
                   "CnL registro: como mucho 20 rechazos por minuto (una página no puede llenarlo)");
         Comprobar(!hay("secreto") && !hay("privado") && !hay("hola") && !hay("https://") && !hay("tope-1") && !hay("Paquete"),
                   "CnL registro: nunca los enlaces ni lo que trae el formulario");
