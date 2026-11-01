@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Atarraya",
   "description": "Pasa a Atarraya tus descargas, videos y enlaces magnet: varias conexiones, torrents y descargas que se reanudan. Gratis.",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "icons": {
     "16": "iconos/icono-16.png",
     "32": "iconos/icono-32.png",
@@ -18,7 +18,7 @@
     }
   },
   "background": {
-    "scripts": ["origen.js", "medios.js", "background.js"]
+    "scripts": ["origen.js", "medios.js", "cola-navegador.js", "background.js"]
   },
   "content_scripts": [
     {
@@ -56,6 +56,42 @@
       "js": ["medios.js", "videos.js"],
       "all_frames": true,
       "match_about_blank": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "exclude_matches": [
+        "*://*.youtube.com/*",
+        "*://youtu.be/*",
+        "*://*.youtube-nocookie.com/*",
+        "*://*.youtubekids.com/*",
+        "*://*.googlevideo.com/*",
+        "*://youtube.googleapis.com/*",
+        "*://*.netflix.com/*",
+        "*://*.disneyplus.com/*",
+        "*://*.primevideo.com/*",
+        "*://*.amazon.com/gp/video/*",
+        "*://*.max.com/*",
+        "*://*.hbomax.com/*",
+        "*://*.hulu.com/*",
+        "*://tv.apple.com/*",
+        "*://music.apple.com/*",
+        "*://*.paramountplus.com/*",
+        "*://*.peacocktv.com/*",
+        "*://*.crunchyroll.com/*",
+        "*://*.starplus.com/*",
+        "*://*.vix.com/*",
+        "*://*.clarovideo.com/*",
+        "*://*.spotify.com/*",
+        "*://*.deezer.com/*",
+        "*://*.tidal.com/*",
+        "*://*.dazn.com/*",
+        "*://*.mubi.com/*",
+        "*://globoplay.globo.com/*",
+        "*://*.blim.com/*"
+      ],
+      "js": ["esperas.js", "cola.js"],
+      "all_frames": false,
       "run_at": "document_idle"
     }
   ],

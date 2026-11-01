@@ -463,7 +463,8 @@ private:
 
 VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrents, hnd::Recolector& recolector, hnd::Ajustes& ajustes)
     : wxFrame(nullptr, wxID_ANY, L"Atarraya"), m_motor(motor), m_torrents(torrents), m_recolector(recolector), m_ajustes(ajustes),
-      m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this), m_sitios(hnd::CarpetaDatos() + L"\\de-una-en-una.json")
+      m_cnl(std::make_unique<hnd::ServidorCnL>()), m_reloj(this), m_sitios(hnd::CarpetaDatos() + L"\\de-una-en-una.json"),
+      m_sitiosNavegador(hnd::CarpetaDatos() + L"\\sitios-navegador.json")
 {
     wxIconBundle iconos(wxString(L"AAAA_APP"), (WXHINSTANCE)GetModuleHandleW(nullptr));
     SetIcons(iconos);
@@ -602,6 +603,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola). Si había terminado pero
     // las que no bajaron no llegaron al recolector, se intenta otra vez.
     m_sitios.Cargar();
+    m_sitiosNavegador.Cargar();
     if (m_sitios.Terminada()) Avanzar();
     ActualizarBarraSitios();
 
@@ -736,6 +738,17 @@ void VentanaPrincipal::Refrescar()
     m_torrents.conPermisos = true;
     m_motor.permitidas.clear();
     m_torrents.permitidos.clear();
+    // Las que prueban seguir una descarga del navegador arrancan ya: reemplazan una que ya está bajando ahí (si
+    // esperaran turno, el navegador la terminaría sola)
+    for (auto& [toma, t] : m_tomas)
+    {
+        if (t.estado != Toma::Probando) continue;
+        auto it = std::find_if(cola.begin(), cola.end(), [&](const auto& c) { return c.second == t.descarga; });
+        if (it == cola.end()) continue;
+        cola.erase(it);
+        m_motor.permitidas.push_back(t.descarga);
+        nuevasHttp++;
+    }
     for (auto& [cuando, id] : cola)
     {
         if (libres <= 0) break;
@@ -774,6 +787,12 @@ void VentanaPrincipal::Refrescar()
     m_torrents.Tick();
     m_recolector.Tick();
     RevisarPartes();
+    RevisarTomas();
+    RevisarEsperas();
+    // Las cuentas regresivas de la cola cambian cada segundo
+    if (m_sitios.HayEnEspera() || m_sitios.Cuantas(EstadoParte::Navegador) > 0
+        || std::any_of(m_sitios.Partes().begin(), m_sitios.Partes().end(), [](const Parte& p) { return p.hasta > 0; }))
+        ActualizarBarraSitios();
 
     // El botón del recolector dice cuántos enlaces esperan
     size_t enRecolector = m_recolector.Cantidad();
@@ -1123,7 +1142,10 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         }
         if (e.estado == Comprobacion::Pagina)
         {
-            paginas.push_back(&e);
+            // Una página que llegó por Click'n'Load es la de un sitio de descargas (aunque Atarraya no lo conozca):
+            // también va de una en una
+            if (e.origen == "clicknload") sitios.push_back(&e);
+            else paginas.push_back(&e);
             continue;
         }
         std::wstring destino = carpeta;
@@ -1408,6 +1430,26 @@ void VentanaPrincipal::Pedido(const std::string& texto)
                     campo("agente"), campo("tipoMime"), t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1);
         return;
     }
+    auto numero = [&](const char* nombre, int64_t siNo) {
+        auto it = j.find(nombre);
+        return it != j.end() && it->is_number_integer() ? it->get<int64_t>() : siNo;
+    };
+    if (tipo == "navegador")
+    {
+        // Una descarga que baja el navegador y sigue la extensión (de una parte de «de una en una»)
+        std::wstring nombre = Ancho(campo("nombre"));
+        if (!nombre.empty()) nombre = LimpiarNombre(nombre);
+        PedidoNavegador(campo("toma"), campo("estado"), urlPedido, campo("referer"),
+                        campo("paginaCola").empty() ? campo("pagina") : campo("paginaCola"), nombre, numero("bajado", 0),
+                        numero("total", -1), campo("ruta"));
+        return;
+    }
+    if (tipo == "espera")
+    {
+        // La página de una parte pide esperar (lo leyó la extensión en la página que abrió Atarraya)
+        PedidoEspera(campo("paginaCola"), campo("clase"), numero("segundos", -1));
+        return;
+    }
     if (tipo != "descargar") return;
 
     std::string url = urlPedido;
@@ -1435,8 +1477,33 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     int64_t tamano = t != j.end() && t->is_number_integer() ? t->get<int64_t>() : -1;
 
     // ¿Es la descarga de una página abierta «de una en una»? Si es seguro, se toma sin preguntar (la persona ya eligió
-    // la carpeta); si viene del sitio pero hay duda, se le pregunta. Si no, sigue como cualquier descarga.
-    auto parte = m_sitios.Emparejar(d.url, d.referer, campo("pagina"), nombre);
+    // la carpeta); si viene del sitio pero hay duda, se le pregunta. Si no, sigue como cualquier descarga. «paginaCola»
+    // es la página que abrió Atarraya en la pestaña donde nació la descarga (la extensión la recuerda aunque la pestaña
+    // haya cambiado de página después del captcha).
+    std::string paginaCola = campo("paginaCola");
+    std::string toma = campo("toma");
+    auto parte = m_sitios.Emparejar(d.url, d.referer, paginaCola.empty() ? campo("pagina") : paginaCola, nombre);
+    if (!toma.empty())
+    {
+        // La extensión dejó la descarga en el navegador mientras Atarraya prueba seguirla. Solo si es una parte, sin
+        // duda: si no, que siga el navegador (así no se baja dos veces ni se pierde el captcha).
+        if (parte.parte < 0 || !parte.segura || m_tomas.count(toma))
+        {
+            if (!m_tomas.count(toma)) m_tomas[toma] = { parte.parte, 0, AhoraUnix(), Toma::Navegador };
+            return;
+        }
+        if (m_sitiosNavegador.Necesita(m_sitios.Partes()[parte.parte].url))
+        {
+            m_tomas[toma] = { parte.parte, 0, AhoraUnix(), Toma::Navegador };
+            m_sitios.EnNavegador(parte.parte, toma);
+            GuardarCola();
+            Registrar("de una en una: parte " + std::to_string(parte.parte + 1) + ": la baja el navegador (" + SoloSitio(d.url) + ")");
+            ActualizarBarraSitios();
+            return;
+        }
+        TomarParte(parte.parte, d, toma);
+        return;
+    }
     if (parte.parte >= 0 && (parte.segura || PreguntarSiEsParte(parte.parte, d.url, nombre)))
     {
         TomarParte(parte.parte, d);
@@ -1841,6 +1908,20 @@ void VentanaPrincipal::Avisar(const wxString& titulo, const wxString& texto, boo
 
 void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
 {
+    // Una descarga con la que Atarraya probaba seguir la del navegador: si no pudo, la parte sigue en el navegador
+    // (no es un error de la parte ni se avisa como tal)
+    for (auto& [toma, t] : m_tomas)
+    {
+        if (t.descarga != f.datos.id || t.estado != Toma::Probando) continue;
+        if (f.datos.estado != Estado::Completada)
+        {
+            std::string id = toma;
+            TomaANavegador(id, true);
+            return;
+        }
+        t.estado = Toma::Tomada;
+        break;
+    }
     wxString nombre = NombreVisible(f.datos);
     // De una en una: si era una parte, se marca ya (así se sabe si su paquete quedó completo). La siguiente se abre al
     // final.
@@ -2059,7 +2140,14 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
 
     m_bOtraVez->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         int i = m_sitios.Actual();
-        if (i >= 0 && m_sitios.Partes()[i].estado == EstadoParte::Abierta) AbrirParte(i, false);
+        if (i < 0) return;
+        auto e = m_sitios.Partes()[i].estado;
+        if (e != EstadoParte::Abierta && e != EstadoParte::Espera) return;
+        // También una que espera: la persona decide abrirla ya
+        m_sitios.AbrirOtraVez(i);
+        GuardarCola();
+        AbrirParte(i, false);
+        ActualizarBarraSitios();
     });
     m_bSiguiente->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         int i = m_sitios.AbrirSiguiente();
@@ -2070,7 +2158,7 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
     });
     m_bSaltar->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
         int i = m_sitios.Actual();
-        if (i < 0 || m_sitios.Partes()[i].estado != EstadoParte::Abierta) return;
+        if (i < 0 || (m_sitios.Partes()[i].estado != EstadoParte::Abierta && m_sitios.Partes()[i].estado != EstadoParte::Espera)) return;
         m_sitios.Saltar(i);
         GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + " saltada");
@@ -2109,10 +2197,44 @@ void VentanaPrincipal::ActualizarBarraSitios()
     {
         int i = m_sitios.Actual();
         size_t total = partes.size();
-        if (i >= 0 && partes[i].estado == EstadoParte::Abierta)
+        int64_t ahora = AhoraUnix();
+        // «9:41» o «1:02:03»
+        auto reloj = [](int64_t s) {
+            s = std::max<int64_t>(0, s);
+            return s >= 3600 ? wxString::Format(L"%lld:%02lld:%02lld", s / 3600, (s / 60) % 60, s % 60)
+                             : wxString::Format(L"%lld:%02lld", s / 60, s % 60);
+        };
+        wxString sitio = i >= 0 ? wxString::FromUTF8(enlaces::Sitio(partes[i].url)) : wxString();
+        if (i >= 0 && partes[i].estado == EstadoParte::Abierta && partes[i].hasta > ahora && !partes[i].limite)
+        {
+            texto = wxString::Format(L"Parte %d de %zu en tu navegador (%s): la página pide esperar %s. Después resuelve el captcha y "
+                                     L"pulsa descargar; Atarraya te avisa.",
+                                     i + 1, total, sitio, reloj(partes[i].hasta - ahora));
+            otraVez = saltar = true;
+        }
+        else if (i >= 0 && partes[i].estado == EstadoParte::Abierta)
         {
             texto = wxString::Format(L"Parte %d de %zu en tu navegador (%s): resuelve el captcha y pulsa descargar. Atarraya la toma sola.",
-                                     i + 1, total, wxString::FromUTF8(enlaces::Sitio(partes[i].url)));
+                                     i + 1, total, sitio);
+            otraVez = saltar = true;
+        }
+        else if (i >= 0 && partes[i].estado == EstadoParte::Navegador)
+        {
+            const auto& p = partes[i];
+            texto = wxString::Format(L"Parte %d de %zu bajando en tu navegador", i + 1, total);
+            if (p.total > 0)
+                texto += wxString::Format(L" (%d %%, %s de %s)", (int)(p.bajado * 100 / p.total), wxString(TextoTamano(p.bajado)),
+                                          wxString(TextoTamano(p.total)));
+            else if (p.bajado > 0) texto += L" (" + wxString(TextoTamano(p.bajado)) + L")";
+            texto += L": el sitio no deja que la baje otro programa. Atarraya la anota cuando termine.";
+        }
+        else if (i >= 0 && partes[i].estado == EstadoParte::Espera)
+        {
+            const auto& p = partes[i];
+            texto = wxString::Format(L"Parte %d de %zu (%s): el sitio pide esperar entre descargas. Atarraya abre la página otra vez en %s",
+                                     i + 1, total, sitio, reloj(p.hasta - ahora));
+            texto += p.intentos > 0 ? wxString::Format(L" (intento %d de %d) y te avisa.", p.intentos + 1, MaxIntentosEspera)
+                                    : wxString(L" y te avisa.");
             otraVez = saltar = true;
         }
         else if (i >= 0)
@@ -2199,7 +2321,8 @@ void VentanaPrincipal::Avanzar()
         ActualizarBarraSitios();
         return;
     }
-    if (!m_sitios.HayAbierta())
+    // Mientras una espera (el sitio pidió esperar entre descargas), no se abre otra: la siguiente pediría lo mismo
+    if (!m_sitios.HayAbierta() && !m_sitios.HayEnEspera())
     {
         int i = m_sitios.AbrirSiguiente();
         if (i >= 0)
@@ -2211,7 +2334,7 @@ void VentanaPrincipal::Avanzar()
     ActualizarBarraSitios();
 }
 
-void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
+void VentanaPrincipal::TomarParte(int i, DatosDescarga d, const std::string& toma)
 {
     const auto& p = m_sitios.Partes()[i];
     d.carpeta = p.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : p.carpeta;
@@ -2224,11 +2347,75 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d)
     m_sitios.Tomar(i, id);
     GuardarCola();
     size_t total = m_sitios.Partes().size();
-    Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " tomada (" + SoloSitio(d.url) + ")");
-    Avisar(wxString::Format(L"Parte %d de %zu: la baja Atarraya", i + 1, total),
-           m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.");
+    if (!toma.empty())
+    {
+        // El navegador sigue bajando la suya hasta que se sepa si Atarraya puede (lo pregunta la extensión)
+        m_tomas[toma] = { i, id, AhoraUnix(), Toma::Probando };
+        Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + ": Atarraya prueba seguirla ("
+                  + SoloSitio(d.url) + ")");
+    }
+    else
+    {
+        Registrar("de una en una: parte " + std::to_string(i + 1) + " de " + std::to_string(total) + " tomada (" + SoloSitio(d.url) + ")");
+        Avisar(wxString::Format(L"Parte %d de %zu: la baja Atarraya", i + 1, total),
+               m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.");
+    }
     ActualizarBarraSitios();
     Refrescar();
+}
+
+void VentanaPrincipal::TomaANavegador(const std::string& toma, bool recordarSitio)
+{
+    auto it = m_tomas.find(toma);
+    if (it == m_tomas.end()) return;
+    auto& t = it->second;
+    t.estado = Toma::Navegador;
+    // La descarga de Atarraya se quita (no llegó nada del archivo); la del navegador sigue y la extensión la sigue
+    if (t.descarga) m_motor.Quitar(t.descarga);
+    const auto& partes = m_sitios.Partes();
+    if (t.parte < 0 || (size_t)t.parte >= partes.size() || partes[t.parte].descarga != t.descarga
+        || partes[t.parte].estado != EstadoParte::Tomada)
+        return;
+    std::string pagina = partes[t.parte].url;
+    m_sitios.EnNavegador(t.parte, toma);
+    GuardarCola();
+    if (recordarSitio) m_sitiosNavegador.Anotar(pagina, AhoraUnix());
+    Registrar("de una en una: parte " + std::to_string(t.parte + 1) + ": Atarraya no pudo seguir la descarga del navegador"
+              + (recordarSitio ? "; la próxima vez de " + SoloSitio(pagina) + " la deja en el navegador" : std::string())
+              + ". La baja el navegador y la extensión avisa cuando termine.");
+    ActualizarBarraSitios();
+    Refrescar();
+}
+
+void VentanaPrincipal::RevisarTomas()
+{
+    int64_t ahora = AhoraUnix();
+    std::vector<std::pair<std::string, bool>> alNavegador;
+    for (auto it = m_tomas.begin(); it != m_tomas.end();)
+    {
+        auto& t = it->second;
+        // Las que ya se decidieron se olvidan después de un rato (la extensión pregunta mientras espera)
+        if (t.estado != Toma::Probando)
+        {
+            it = ahora - t.inicio > 15 * 60 ? m_tomas.erase(it) : std::next(it);
+            continue;
+        }
+        hnd::Foto f;
+        bool hay = m_motor.Buscar(t.descarga, f);
+        Toma nueva = hay ? DecidirToma(f.datos.estado, f.hecho, ahora - t.inicio) : Toma::Navegador;
+        if (nueva == Toma::Tomada)
+        {
+            t.estado = Toma::Tomada;
+            size_t total = m_sitios.Partes().size();
+            Registrar("de una en una: parte " + std::to_string(t.parte + 1) + " tomada: Atarraya siguió la descarga del navegador");
+            Avisar(wxString::Format(L"Parte %d de %zu: la baja Atarraya", t.parte + 1, total),
+                   m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.");
+        }
+        // El sitio no la deja seguir (página, 403, 410, enlace usado): se recuerda el sitio. Si solo tardó, no.
+        else if (nueva == Toma::Navegador) alNavegador.push_back({ it->first, hay && f.datos.estado == Estado::Error });
+        ++it;
+    }
+    for (auto& [toma, recordar] : alNavegador) TomaANavegador(toma, recordar);
 }
 
 bool VentanaPrincipal::PreguntarSiEsParte(int i, const std::string& url, const std::wstring& nombre)
@@ -2364,6 +2551,236 @@ void VentanaPrincipal::RevisarPartes()
         GuardarCola();
         Avanzar();
     }
+}
+
+void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::string& estado, const std::string& url,
+                                       const std::string& referer, const std::string& pagina, const std::wstring& nombre,
+                                       int64_t bajado, int64_t total, const std::string& ruta)
+{
+    if (toma.empty()) return;
+    int i = m_sitios.BuscarToma(toma);
+    if (i < 0)
+    {
+        // Una que la extensión dejó en el navegador desde el principio (un sitio donde Atarraya no puede seguirla):
+        // es de la cola solo si se sabe, sin duda, de qué parte es
+        if (estado != "bajando" && estado != "completa") return;
+        auto e = m_sitios.Emparejar(url, referer, pagina, nombre);
+        if (e.parte < 0 || !e.segura || m_sitios.Partes()[e.parte].estado == EstadoParte::Tomada) return;
+        i = e.parte;
+        m_sitios.EnNavegador(i, toma);
+        m_tomas[toma] = { i, 0, AhoraUnix(), Toma::Navegador };
+        GuardarCola();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": la baja el navegador (" + SoloSitio(url) + ")");
+    }
+    size_t cuantas = m_sitios.Partes().size();
+    if (estado == "bajando")
+    {
+        m_sitios.Progreso(i, bajado, total);
+        ActualizarBarraSitios();
+        return;
+    }
+    if (estado == "completa")
+    {
+        TerminarParteDelNavegador(i, ruta, url);
+        return;
+    }
+    if (estado == "fallo" || estado == "cancelada")
+    {
+        m_sitios.TerminarEnNavegador(i, false, 0);
+        GuardarCola();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": el navegador no la terminó (" + estado + ")");
+        Avisar(wxString::Format(L"Parte %d de %zu: no terminó", i + 1, cuantas),
+               L"El navegador no terminó de bajarla. Al final vuelve al recolector, para intentarla otra vez.", true);
+        Avanzar();
+        Refrescar();
+    }
+}
+
+void VentanaPrincipal::TerminarParteDelNavegador(int i, const std::string& ruta, const std::string& url)
+{
+    const Parte p = m_sitios.Partes()[i];
+    size_t cuantas = m_sitios.Partes().size();
+    std::wstring origen = Ancho(ruta);
+    auto fallar = [&](const std::string& por) {
+        m_sitios.TerminarEnNavegador(i, false, 0);
+        GuardarCola();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": " + por);
+        Avisar(wxString::Format(L"Parte %d de %zu", i + 1, cuantas),
+               L"El navegador dijo que terminó, pero no encuentro el archivo. Al final vuelve al recolector.", true);
+        Avanzar();
+        Refrescar();
+    };
+    // Una ruta completa a un archivo que existe (no una carpeta ni un enlace a otra cosa)
+    DWORD atributos = GetFileAttributesW(origen.c_str());
+    if (!jicaro::RutaSegura(origen) || atributos == INVALID_FILE_ATTRIBUTES || (atributos & FILE_ATTRIBUTE_DIRECTORY)
+        || (atributos & FILE_ATTRIBUTE_REPARSE_POINT))
+    {
+        fallar("el navegador terminó, pero su archivo no está");
+        return;
+    }
+    // A la carpeta de las otras partes del paquete, para que Jícaro las encuentre juntas. Nunca pisa otro archivo: si
+    // ya hay uno con ese nombre, o es otro disco (moverlo sería copiar gigas), se queda donde lo dejó el navegador.
+    std::wstring carpeta = p.carpeta.empty() ? m_ajustes.CarpetaEfectiva() : p.carpeta;
+    SHCreateDirectoryExW(nullptr, carpeta.c_str(), nullptr);
+    auto barra = origen.find_last_of(L"\\/");
+    std::wstring archivo = origen.substr(barra + 1);
+    std::wstring final = origen;
+    std::wstring destino = carpeta + L"\\" + archivo;
+    if (Minusculas(destino) != Minusculas(origen) && !ExisteArchivo(destino) && !ExisteCarpeta(destino))
+    {
+        for (int intento = 0; intento < 5; intento++)
+        {
+            // Sin MOVEFILE_COPY_ALLOWED: solo dentro del mismo disco. Si el antivirus todavía lo revisa, se espera un poco.
+            if (MoveFileExW(origen.c_str(), destino.c_str(), MOVEFILE_WRITE_THROUGH))
+            {
+                final = destino;
+                break;
+            }
+            if (GetLastError() != ERROR_SHARING_VIOLATION && GetLastError() != ERROR_ACCESS_DENIED) break;
+            Sleep(200);
+        }
+    }
+    if (final != destino) Registrar("de una en una: parte " + std::to_string(i + 1) + ": el archivo se queda donde lo dejó el navegador");
+    int64_t tamano = TamanoArchivo(final);
+    if (tamano <= 0)
+    {
+        fallar("el navegador terminó, pero su archivo está vacío");
+        return;
+    }
+    DatosDescarga d;
+    d.url = sistema::EsDireccion(Ancho(url)) ? url : p.url;
+    d.referer = p.url;
+    auto b = final.find_last_of(L"\\/");
+    d.carpeta = final.substr(0, b);
+    d.nombre = final.substr(b + 1);
+    d.nombreFijo = true;
+    d.tamano = tamano;
+    d.paquete = p.paquete;
+    d.grupo = p.grupo;
+    uint64_t id = m_motor.AgregarTerminada(d);
+    m_sitios.TerminarEnNavegador(i, true, id);
+    GuardarCola();
+    GuardarIdentidad(id, final);
+    Registrar("de una en una: parte " + std::to_string(i + 1) + " lista: la bajó el navegador (" + SoloSitio(d.url) + ")");
+    if (m_ajustes.avisarAlTerminar) Avisar(L"Descarga terminada", wxString(d.nombre) + L"\nLa bajó el navegador; ya está en su paquete.");
+    hnd::Foto f;
+    if (m_motor.Buscar(id, f)) EncolarJicaro(PrepararJicaro(f.datos));
+    Avanzar();
+    Refrescar();
+}
+
+void VentanaPrincipal::PedidoEspera(const std::string& paginaCola, const std::string& clase, int64_t segundos)
+{
+    int i = m_sitios.ParteDePagina(paginaCola);
+    if (i < 0) return;
+    bool limite = clase == "limite";
+    if (!limite && clase != "pagina") return;
+    if (segundos > 7 * 24 * 3600) segundos = 7 * 24 * 3600;
+    const auto& p = m_sitios.Partes()[i];
+    bool yaEsperaba = p.estado == EstadoParte::Espera;
+    size_t cuantas = m_sitios.Partes().size();
+    std::string cuanto = segundos < 0 ? std::string("sin decir cuánto") : std::to_string(segundos) + " s";
+    if (!m_sitios.Esperar(i, limite, segundos, AhoraUnix()))
+    {
+        GuardarCola();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": el sitio sigue pidiendo esperar después de "
+                  + std::to_string(MaxIntentosEspera) + " intentos; queda para después");
+        Avisar(wxString::Format(L"Parte %d de %zu: queda para después", i + 1, cuantas),
+               L"El sitio sigue pidiendo esperar. Al final vuelve al recolector, para intentarla otra vez más tarde.", true);
+        Avanzar();
+        return;
+    }
+    GuardarCola();
+    if (limite)
+    {
+        if (!yaEsperaba)
+        {
+            Registrar("de una en una: parte " + std::to_string(i + 1) + ": el sitio pide esperar entre descargas (" + cuanto + ")");
+            wxDateTime cuando((time_t)m_sitios.Partes()[i].hasta);
+            Avisar(wxString::Format(L"Parte %d de %zu: el sitio pide esperar", i + 1, cuantas),
+                   L"Atarraya abre la página otra vez a las " + cuando.Format(L"%H:%M") + L" y te avisa. No hace falta que hagas nada.");
+        }
+    }
+    else Registrar("de una en una: parte " + std::to_string(i + 1) + ": la página tiene una cuenta regresiva (" + cuanto + ")");
+    ActualizarBarraSitios();
+}
+
+void VentanaPrincipal::RevisarEsperas()
+{
+    int64_t ahora = AhoraUnix();
+    size_t cuantas = m_sitios.Partes().size();
+    auto vencidas = m_sitios.Vencidas(ahora);
+    auto cuentas = m_sitios.CuentasTerminadas(ahora);
+    if (vencidas.empty() && cuentas.empty()) return;
+    GuardarCola();
+    for (int i : vencidas)
+    {
+        // Terminó la espera que pidió el sitio (más un margen): se abre otra vez su página y se avisa con sonido
+        AbrirParte(i, false);
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": terminó la espera; se abre otra vez (intento "
+                  + std::to_string(m_sitios.Partes()[i].intentos) + ")");
+        sistema::Sonar();
+        Avisar(L"Toca resolver un captcha", wxString::Format(L"Parte %d de %zu: Atarraya abrió otra vez la página en tu navegador.", i + 1, cuantas));
+    }
+    for (int i : cuentas)
+    {
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": terminó la cuenta regresiva de la página");
+        sistema::Sonar();
+        Avisar(L"Toca resolver un captcha", wxString::Format(L"Parte %d de %zu: terminó la espera de la página.", i + 1, cuantas));
+    }
+    ActualizarBarraSitios();
+}
+
+std::string VentanaPrincipal::Consulta(const std::string& texto)
+{
+    nlohmann::json j;
+    try
+    {
+        j = nlohmann::json::parse(texto);
+    }
+    catch (...)
+    {
+        return "{}";
+    }
+    if (!j.is_object()) return "{}";
+    auto campo = [&](const char* nombre) {
+        auto it = j.find(nombre);
+        return it != j.end() && it->is_string() ? it->get<std::string>() : std::string();
+    };
+    std::string tipo = campo("tipo");
+    const auto& partes = m_sitios.Partes();
+    nlohmann::json r = nlohmann::json::object();
+    if (tipo == "cola")
+    {
+        // ¿Atarraya abrió esta página para una parte? Solo en esas la extensión lee los avisos de espera.
+        int i = m_sitios.ParteDePagina(campo("url"));
+        r["parte"] = i;
+        if (i >= 0)
+        {
+            r["url"] = partes[i].url;
+            r["total"] = partes.size();
+        }
+    }
+    else if (tipo == "emparejar")
+    {
+        // ¿Es de una parte? La extensión solo deja la descarga en el navegador mientras Atarraya prueba si es seguro
+        std::string paginaCola = campo("paginaCola");
+        std::wstring nombre = Ancho(campo("nombre"));
+        auto e = m_sitios.Emparejar(campo("url"), campo("referer"), paginaCola.empty() ? campo("pagina") : paginaCola, nombre);
+        r["parte"] = e.parte;
+        r["segura"] = e.segura;
+        r["navegador"] = e.parte >= 0 && m_sitiosNavegador.Necesita(partes[e.parte].url);
+    }
+    else if (tipo == "toma")
+    {
+        auto it = m_tomas.find(campo("toma"));
+        r["estado"] = it == m_tomas.end() ? "desconocida"
+                      : it->second.estado == Toma::Tomada ? "tomada"
+                      : it->second.estado == Toma::Navegador ? "navegador"
+                                                             : "probando";
+    }
+    else r["error"] = "consulta desconocida";
+    return r.dump();
 }
 
 // --- Jícaro ---------------------------------------------------------------------------------------------------------

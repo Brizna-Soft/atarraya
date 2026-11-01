@@ -38,6 +38,11 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
   0.3.1 entiende más formas de mandarlos: formularios de cualquier tipo (también «multipart»), los campos `urls`,
   `url`, `links` o `link`, enlaces separados por saltos de línea, espacios o comas, y `GET /flash/add?urls=...`. Si
   un sitio te muestra la respuesta en la pestaña, la ves en español; si algo no llega, el registro dice por qué.
+- **Sitios de descargas gratis, de una en una.** Las partes de un paquete (Rapidgator, ddownload, katfile,
+  nitroflare, 1fichier...) se abren en tu navegador de a una: tú resuelves el captcha y Atarraya hace lo demás.
+  Desde la 0.4.0 no pierde la descarga aunque el sitio no deje que otro programa la baje (la sigue en el
+  navegador), y si el sitio pide esperar («Blocked: wait 10 minutes»), cuenta el tiempo, abre la página otra vez y
+  te avisa. Ver [Sitios de descargas y captchas](#sitios-de-descargas-y-captchas).
 - **Descomprime con Jícaro.** Si tienes [Jícaro](https://brizna-soft.github.io/programas/jicaro/), el descompresor
   gratis de Brizna Soft, cuando terminan de bajar todas las partes de un paquete Atarraya lo descomprime solo, en una
   carpeta con su nombre. Ver [Descomprimir con Jícaro](#descomprimir-con-jícaro).
@@ -60,8 +65,9 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 
 ## Sitios de descargas y captchas
 
-Atarraya no se salta las esperas, los límites ni los captchas de los sitios de descargas (Rapidgator, 1fichier,
-Mega y otros), ni los resuelve solo: **los captchas siempre los resuelves tú en tu navegador.** Tampoco usa
+Atarraya no se salta ni acorta las esperas, los límites ni los captchas de los sitios de descargas (Rapidgator,
+1fichier, ddownload, katfile, nitroflare, Mega y otros), ni los resuelve solo: **los captchas siempre los resuelves
+tú en tu navegador.** No hace clics en la página, no cambia tu IP ni usa proxys para saltarse un límite, y no usa
 cuentas premium. No abre contenedores DLC.
 
 **De una en una.** Cuando en el recolector marcas páginas de esos sitios (por ejemplo, las 18 partes de una
@@ -81,9 +87,31 @@ página: solo la abre y recibe lo que el navegador le pasa. Baja cada parte con 
 navegador. Necesita la extensión conectada (ver abajo); si no lo está, te avisa.
 
 Lo mismo pasa si pegas uno de esos enlaces en **Agregar enlace** o lo eliges en **De una página**: se abre en tu
-navegador de una en una, en vez de bajar la página. Y si algún sitio responde con una página en vez del archivo
+navegador de una en una, en vez de bajar la página. También van de una en una las páginas que llegan por
+Click'n'Load, aunque Atarraya no conozca el sitio. Y si algún sitio responde con una página en vez del archivo
 (por ejemplo, porque pide un captcha o porque el enlace venció), Atarraya no la guarda como si fuera el archivo:
 te avisa «El sitio respondió con una página, no con el archivo» y te ofrece **Abrir en el navegador**.
+
+**Desde la 0.4.0, Atarraya nunca pierde tu captcha.** Cuando pulsas descargar en una página de la cola, el
+navegador empieza a bajar y Atarraya prueba seguir esa descarga con una conexión (con las cookies y la página de
+origen). Si el sitio lo deja, la del navegador se cancela y la baja Atarraya. Si no lo deja (responde con una
+página, con un error 403 o 410, o el enlace es de un solo uso), la termina el navegador y la extensión la sigue
+hasta el final: cuando termina, Atarraya pasa el archivo a la carpeta del paquete, lo anota en la lista y abre la
+página siguiente. Atarraya recuerda esos sitios: la próxima vez deja la descarga en el navegador desde el principio.
+También funciona cuando la descarga sale de un formulario (los sitios que bajan después de pulsar un botón).
+
+**Esperas.** En las páginas que abrió de su cola (y solo en esas), la extensión lee el texto que se ve y reconoce
+los avisos de espera: «You have to wait 9 minutes till next download», «Blocked: wait 10 minutes», «Download limit
+reached», «Debes esperar 5 minutos», «Vous devez attendre 15 minutes», relojes de cuenta regresiva... Atarraya te
+muestra la cuenta regresiva arriba de la lista y:
+
+- si el sitio pide esperar entre descargas, cuando se cumple el tiempo (más un margen) abre la página otra vez y te
+  avisa con un sonido y «Toca resolver un captcha». Si la página todavía pide esperar, vuelve a intentar más tarde,
+  hasta 6 veces; después la deja para el final (vuelve al recolector);
+- si es la cuenta regresiva de la página, te avisa cuando termina.
+
+Cuando terminan todas las partes de un paquete, también las que bajó el navegador, Jícaro las descomprime como
+siempre (ver abajo). La extensión no pide permisos nuevos.
 
 ## Descomprimir con Jícaro
 
@@ -129,25 +157,28 @@ Si Atarraya está cerrado, se abre solo junto al reloj. Si no está conectado, e
 **Al pasar a una versión nueva, recarga la extensión.** En `chrome://extensions` (en Edge, `edge://extensions`)
 busca Atarraya y pulsa el botón de recargar (la flecha en círculo). Si pusiste la versión nueva en otra carpeta,
 quita la extensión, vuelve a pulsar **Cargar descomprimida** con la carpeta `extension\chrome` nueva y, en
-Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.3.0 lo necesita: su extensión trae el botón
-**Descargar este video** y la lista de videos de cada pestaña.
+Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.4.0 lo necesita: su extensión sigue las descargas
+de los sitios de descargas y lee sus avisos de espera (la 0.3.0 trajo el botón **Descargar este video** y la lista
+de videos de cada pestaña).
 
 ### Los permisos de la extensión
 
 La extensión pide solo lo que usa, y nada de lo que ve sale de tu PC:
 
-- **Descargas** (`downloads`): para pasarle a Atarraya lo que bajas en el navegador.
+- **Descargas** (`downloads`): para pasarle a Atarraya lo que bajas en el navegador y, en «de una en una», para
+  seguir hasta el final una descarga que el sitio solo deja bajar al navegador (cuánto va y dónde quedó).
 - **Comunicación con programas** (`nativeMessaging`): para hablar con Atarraya, que está en tu misma PC. No habla
   con ningún servidor.
 - **Menú del clic derecho** (`contextMenus`): para **Descargar con Atarraya**.
 - **Cookies** (`cookies`): para que Atarraya pueda bajar lo que pide haber iniciado sesión. Solo lee las del sitio
   de esa descarga (para un video, las del marco donde está), y solo cuando empieza una descarga o pulsas un botón.
 - **Almacenamiento** (`storage`): para tus ajustes de la extensión y, mientras el navegador está abierto, la lista
-  de videos de cada pestaña (se borra al cerrarlo).
+  de videos de cada pestaña y las pestañas y descargas de la cola de «de una en una» (se borran al cerrarlo).
 - **Ver los pedidos de las páginas** (`webRequest`): solo mira las respuestas, sin bloquearlas ni cambiarlas, para
   saber en qué pestaña nació una descarga y qué videos, listas HLS o manifiestos DASH pidió el reproductor.
 - **Todos los sitios** (`<all_urls>` y el botón en las páginas): porque las descargas y los videos pueden venir de
-  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM.
+  cualquier sitio, también de un marco de otro sitio. El botón no se carga en YouTube ni en sitios con DRM. En cada
+  página, la extensión solo pregunta si es de la cola de Atarraya; los avisos de espera solo se leen en esas.
 
 ## Videos de las páginas
 
@@ -215,6 +246,9 @@ Lo que no baja:
 - Para que funcionen las descargas que piden haber iniciado sesión, la extensión le pasa a Atarraya, solo dentro
   de tu PC, las cookies del sitio de esa descarga (para un video, las del marco donde está). Atarraya no las guarda
   cuando la descarga termina y nunca las manda a otro sitio.
+- En las páginas que abre la cola de «de una en una», la extensión lee el texto que se ve solo para reconocer los
+  avisos de espera, y a Atarraya le pasa solo cuánto hay que esperar: nunca el texto de la página. En las demás
+  páginas no lee nada.
 - La lista de videos de cada pestaña se queda dentro del navegador y se borra al cerrarlo. La extensión no guarda
   qué videos ves ni los manda a ningún lado. También le dice en qué página pulsaste descargar, para reconocer las partes de «de una en
   una»; esa dirección no se guarda.

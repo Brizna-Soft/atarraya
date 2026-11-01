@@ -3,6 +3,11 @@
 // El navegador abre este programa y le habla por la entrada estándar: 4 bytes con el largo y luego un JSON
 // en UTF-8. El puente pasa cada pedido a Atarraya con WM_COPYDATA (lo abre si no está abierto) y responde
 // de la misma forma. No guarda nada, no se conecta a internet y solo acepta direcciones http, https, ftp o magnet.
+//
+// Las consultas de «de una en una» («cola»: ¿esta pestaña la abrió Atarraya?, «emparejar»: ¿esta descarga es de una
+// parte?, «toma»: ¿Atarraya pudo seguir esta descarga?) esperan la respuesta: Atarraya la manda enseguida con
+// WM_COPYDATA a una ventana invisible del puente. Las consultas y los avisos («navegador»: cómo va una descarga que
+// sigue la extensión, «espera»: la página pide esperar) nunca abren Atarraya.
 
 #include <windows.h>
 #include <fcntl.h>
@@ -20,7 +25,41 @@
 namespace
 {
     const wchar_t* ClaseMensajes = ATARRAYA_CLASE_MENSAJES;
-    const ULONG_PTR MarcaCopia = 0x41545231;   // «ATR1», igual que en Atarraya.exe
+    const ULONG_PTR MarcaCopia = 0x41545231;      // «ATR1», igual que en Atarraya.exe
+    const ULONG_PTR MarcaRespuesta = 0x41545232;  // «ATR2»: la respuesta de Atarraya a una consulta
+
+    std::string g_respuesta;
+    bool g_hayRespuesta = false;
+
+    LRESULT CALLBACK AlRecibirRespuesta(HWND h, UINT mensaje, WPARAM w, LPARAM l)
+    {
+        if (mensaje == WM_COPYDATA)
+        {
+            auto* d = reinterpret_cast<const COPYDATASTRUCT*>(l);
+            if (d && d->dwData == MarcaRespuesta && d->cbData > 0 && d->cbData < 1024 * 1024)
+            {
+                g_respuesta.assign(static_cast<const char*>(d->lpData), d->cbData);
+                g_hayRespuesta = true;
+                return TRUE;
+            }
+            return FALSE;
+        }
+        return DefWindowProcW(h, mensaje, w, l);
+    }
+
+    // La ventana invisible donde Atarraya deja la respuesta de una consulta
+    HWND VentanaRespuesta()
+    {
+        static HWND h = nullptr;
+        if (h) return h;
+        WNDCLASSEXW c = { sizeof(c) };
+        c.lpfnWndProc = AlRecibirRespuesta;
+        c.hInstance = GetModuleHandleW(nullptr);
+        c.lpszClassName = L"Atarraya.Puente.Respuesta";
+        RegisterClassExW(&c);
+        h = CreateWindowExW(0, c.lpszClassName, L"", 0, 0, 0, 0, 0, HWND_MESSAGE, nullptr, c.hInstance, nullptr);
+        return h;
+    }
 
     bool Leer(std::string& mensaje)
     {
@@ -76,6 +115,28 @@ namespace
         return SendMessageTimeoutW(h, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 15000, &respuesta) && respuesta == 1;
     }
 
+    // Una consulta: va con la ventana del puente y Atarraya contesta ahí antes de terminar de atenderla (mientras
+    // espera, este hilo recibe ese mensaje)
+    bool Consultar(HWND h, const std::string& datos, nlohmann::json& respuesta)
+    {
+        HWND propia = VentanaRespuesta();
+        if (!propia) return false;
+        g_hayRespuesta = false;
+        COPYDATASTRUCT cds = { MarcaCopia, (DWORD)datos.size(), (PVOID)datos.data() };
+        DWORD_PTR r = 0;
+        if (!SendMessageTimeoutW(h, WM_COPYDATA, (WPARAM)propia, (LPARAM)&cds, SMTO_ABORTIFHUNG, 15000, &r) || r != 1 || !g_hayRespuesta)
+            return false;
+        try
+        {
+            respuesta = nlohmann::json::parse(g_respuesta);
+        }
+        catch (...)
+        {
+            return false;
+        }
+        return respuesta.is_object();
+    }
+
     // Solo pasan los campos conocidos, como texto y con un largo máximo
     nlohmann::json SoloLoPermitido(const nlohmann::json& j)
     {
@@ -93,8 +154,20 @@ namespace
         texto("cookies", 256 * 1024);
         texto("formato", 16);    // videos: «archivo», «hls» o «dash»
         texto("titulo", 1024);   // videos: el título de la pestaña
-        auto tamano = j.find("tamano");
-        if (tamano != j.end() && tamano->is_number_integer()) r["tamano"] = tamano->get<int64_t>();
+        // De una en una
+        texto("paginaCola", 8192);   // la página que abrió Atarraya en esa pestaña
+        texto("toma", 128);          // la descarga del navegador que la extensión deja seguir o sigue
+        texto("estado", 32);         // «bajando», «completa», «fallo» o «cancelada»
+        texto("clase", 16);          // espera: «limite» (entre descargas) o «pagina» (la cuenta regresiva de la página)
+        texto("ruta", 32768);        // dónde dejó el archivo el navegador
+        auto numero = [&](const char* campo) {
+            auto it = j.find(campo);
+            if (it != j.end() && it->is_number_integer()) r[campo] = it->get<int64_t>();
+        };
+        numero("tamano");
+        numero("segundos");
+        numero("bajado");
+        numero("total");
         return r;
     }
 
@@ -154,6 +227,29 @@ int main()
                     respuesta = { { "ok", h != nullptr && Enviar(h, SoloLoPermitido(j).dump()) } };
                     if (!h) respuesta["error"] = "no se pudo abrir Atarraya";
                 }
+            }
+            else if (tipo == "cola" || tipo == "emparejar" || tipo == "toma")
+            {
+                // Consultas: si Atarraya no está abierto, no hay cola (no se abre por esto)
+                std::string url = j.value("url", "");
+                HWND h = BuscarPrograma();
+                nlohmann::json r;
+                if (tipo != "toma" && !DireccionWeb(url) && !(tipo == "emparejar" && DireccionValida(url)))
+                    respuesta = { { "ok", false }, { "error", "direccion no valida" } };
+                else if (h && Consultar(h, SoloLoPermitido(j).dump(), r))
+                {
+                    respuesta = r;
+                    respuesta["ok"] = true;
+                }
+                else respuesta = { { "ok", false }, { "abierto", h != nullptr } };
+            }
+            else if (tipo == "navegador" || tipo == "espera")
+            {
+                // Avisos de «de una en una»: solo si Atarraya está abierto
+                std::string url = j.value("url", "");
+                HWND h = BuscarPrograma();
+                if (!url.empty() && !DireccionValida(url)) respuesta = { { "ok", false }, { "error", "direccion no valida" } };
+                else respuesta = { { "ok", h != nullptr && Enviar(h, SoloLoPermitido(j).dump()) } };
             }
             else
             {

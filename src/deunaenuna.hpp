@@ -4,19 +4,26 @@
 // navegador de a una. La persona resuelve el captcha y pulsa descargar; la extensión le pasa la descarga a Atarraya,
 // que la toma, y cuando termina se abre la página siguiente.
 //
-// Atarraya no toca la página: no hace clics, no resuelve captchas, no se salta esperas ni usa cuentas premium. Solo
-// abre la página y recibe lo que el navegador le pasa.
+// Si el sitio no deja que otro programa siga la descarga (responde con una página, con 403 o 410, o el enlace es de un
+// solo uso), la baja el navegador y la extensión la sigue hasta el final: así no se pierde el captcha que resolvió la
+// persona. Si la página pide esperar («You have to wait 10 minutes», «Blocked»...), Atarraya muestra la cuenta regresiva
+// y, cuando se cumple, abre la página otra vez y avisa.
+//
+// Atarraya no toca la página: no hace clics, no resuelve captchas, no se salta ni acorta esperas, no cambia de IP ni
+// usa proxys para eso, ni usa cuentas premium. Solo abre la página y recibe lo que el navegador le pasa.
 //
 // No usa wxWidgets: la ventana principal la usa y la muestra en una barra.
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
 namespace hnd
 {
     class Recolector;
+    enum class Estado;
 
     enum class EstadoParte
     {
@@ -26,7 +33,15 @@ namespace hnd
         Lista,       // terminó de bajar
         Fallo,       // su descarga se detuvo con un error
         Saltada,     // la persona la saltó o quitó su descarga de la lista
+        Espera,      // el sitio pidió esperar (límite entre descargas): se abre otra vez sola cuando se cumple
+        Navegador,   // la está bajando el navegador y la extensión la sigue
     };
+
+    // Las esperas: cuántas veces se abre otra vez una página que sigue pidiendo esperar, el margen que se suma a lo que
+    // pide el sitio y cuánto se espera cuando el sitio no dice cuánto («Blocked»)
+    constexpr int MaxIntentosEspera = 6;
+    constexpr int64_t EsperaSinTiempo = 10 * 60;
+    int64_t MargenDeEspera(int64_t segundos);   // 30 s, o el 5 % si es más; como mucho 5 minutos
 
     struct Parte
     {
@@ -37,7 +52,16 @@ namespace hnd
         std::string grupo;        // el de las demás partes de su paquete que llegaron juntas (para Jícaro)
         std::wstring carpeta;     // dónde se guarda lo que baje
         EstadoParte estado = EstadoParte::Esperando;
-        uint64_t descarga = 0;    // la descarga de Atarraya, cuando se tomó
+        uint64_t descarga = 0;    // la descarga de Atarraya, cuando se tomó (o la que anota lo que bajó el navegador)
+        // Esperas. En «Espera», cuándo se abre otra vez la página. En una «Abierta», el fin de la cuenta regresiva de la
+        // página (solo se avisa: la página ya está abierta). 0 = ninguna.
+        int64_t hasta = 0;
+        bool limite = false;      // la espera es un límite del sitio (se abre otra vez), no la cuenta de la página
+        int intentos = 0;         // veces que se abrió otra vez por una espera
+        bool avisada = false;     // ya se avisó que terminó la cuenta de la página
+        // Bajando en el navegador: la descarga que sigue la extensión y cómo va (lo que va no se guarda)
+        std::string toma;
+        int64_t bajado = 0, total = -1;
     };
 
     // Qué es una descarga que pasó el navegador
@@ -75,6 +99,26 @@ namespace hnd
         int Terminar(uint64_t descarga, bool ok);
         // La persona la saltó, o quitó su descarga de la lista
         void Saltar(int i);
+
+        // La parte cuya página es esta (la que abrió Atarraya), si está abierta o esperando; -1 si no hay
+        int ParteDePagina(const std::string& url) const;
+        // La página de la parte pide esperar. Con «limite» (el sitio no deja bajar hasta entonces) la parte pasa a
+        // «Espera» y se abre otra vez sola cuando se cumple el tiempo más un margen; si no (la cuenta regresiva de la
+        // página), sigue abierta y solo se avisa al final. «segundos» < 0: el sitio no dijo cuánto. Devuelve false si
+        // ya se abrió otra vez demasiadas veces: entonces la parte queda con error (vuelve al recolector al final).
+        bool Esperar(int i, bool limite, int64_t segundos, int64_t ahora);
+        // Las que terminaron de esperar: vuelven a «Abierta» (un intento más) para abrir su página otra vez
+        std::vector<int> Vencidas(int64_t ahora);
+        // La persona la abre ya («Abrir otra vez»), aunque falte para que termine la espera
+        void AbrirOtraVez(int i);
+        // Las cuentas regresivas de páginas abiertas que terminaron y todavía no se avisaron (quedan avisadas)
+        std::vector<int> CuentasTerminadas(int64_t ahora);
+        // Bajando en el navegador, que la extensión sigue con «toma»
+        void EnNavegador(int i, const std::string& toma);
+        int BuscarToma(const std::string& toma) const;
+        void Progreso(int i, int64_t bajado, int64_t total);
+        // Lo que bajó el navegador terminó: lista (con la descarga que la anota en la lista de Atarraya) o con error
+        void TerminarEnNavegador(int i, bool ok, uint64_t descarga);
         // Las partes de un grupo pasan a otro (dos paquetes que resultaron ser uno). true si cambió alguna.
         bool CambiarGrupo(const std::string& viejo, const std::string& nuevo);
 
@@ -86,11 +130,13 @@ namespace hnd
         std::vector<Parte> Sobrantes() const;   // esperando, abiertas, saltadas o con error
         bool Vaciar();   // las que se están bajando siguen en la lista de descargas como cualquier otra
 
-        // La que se muestra: la primera abierta; si no hay, la primera que se está bajando. -1 si no hay ninguna.
+        // La que se muestra: la primera abierta; si no hay, la primera que baja el navegador, después la que baja
+        // Atarraya y por último la que espera. -1 si no hay ninguna.
         int Actual() const;
         bool HayAbierta() const;
+        bool HayEnEspera() const;
         bool QuedanPorAbrir() const;
-        bool Terminada() const;      // tenía partes y ya no queda nada por abrir ni por bajar
+        bool Terminada() const;      // tenía partes y ya no queda nada por abrir, por esperar ni por bajar
         size_t Cuantas(EstadoParte e) const;
         bool TieneDescarga(uint64_t descarga) const;   // ¿esa descarga es de una parte de la cola?
         const std::vector<Parte>& Partes() const { return m_partes; }
@@ -103,6 +149,31 @@ namespace hnd
     // Paso 1 de devolver: pone las partes en el recolector (como páginas de sitios de descargas, con su paquete y su
     // página de origen) y lo guarda. false si alguna no entró (por ejemplo, recolector lleno) o no se pudo guardar.
     bool GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector);
+
+    // Sitios donde la descarga final solo funciona en el navegador (Atarraya no pudo seguirla: el sitio respondió con
+    // una página, con 403 o 410, o el enlace era de un solo uso). La próxima vez la deja en el navegador desde el
+    // principio y la extensión la sigue: así no se pierde un captcha. Se guardan en un archivo, por sitio (ddl.to y
+    // ddownload.com cuentan como uno).
+    class SitiosNavegador
+    {
+    public:
+        explicit SitiosNavegador(std::wstring archivo);
+        void Cargar();
+        bool Guardar() const;
+        bool Necesita(const std::string& url) const;
+        void Anotar(const std::string& url, int64_t ahora);   // y guarda
+        size_t Cantidad() const { return m_sitios.size(); }
+
+    private:
+        std::wstring m_archivo;
+        std::map<std::string, int64_t> m_sitios;   // sitio → cuándo se anotó
+    };
+
+    // ¿Atarraya pudo seguir la descarga que empezó el navegador? Se mira la suya: si ya llegan bytes del archivo, la
+    // tomó; si el sitio respondió con una página, con un error (403, 410...) o el enlace ya no sirve, no; si en «plazo»
+    // segundos todavía no llegó nada, tampoco. Mientras tanto el navegador sigue con la suya, así que no se pierde nada.
+    enum class Toma { Probando, Tomada, Navegador };
+    Toma DecidirToma(Estado estado, int64_t hecho, int64_t segundos, int64_t plazo = 25);
 
     // Para emparejar: el nombre en minúsculas, sin «.html» al final (como en Rapidgator) y solo con letras y números
     std::wstring NombreComparable(const std::wstring& nombre);

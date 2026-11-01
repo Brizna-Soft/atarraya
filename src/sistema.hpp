@@ -14,6 +14,8 @@ namespace hnd::sistema
     // «paginas-abiertas.txt», sin abrir ningún navegador.
     void AbrirPaginaWeb(const std::string& url);
     void MostrarEnCarpeta(const std::wstring& ruta);
+    // El sonido de aviso de Windows (por ejemplo, «Toca resolver un captcha»). La copia de prueba no suena: lo anota.
+    void Sonar();
     // En la copia de prueba no usa la Papelera de la persona: mueve el archivo a «papelera» dentro de su carpeta de datos
     bool MandarAPapelera(const std::wstring& ruta);
     bool EsEjecutable(const std::wstring& nombre);

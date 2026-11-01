@@ -4,12 +4,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cwctype>
 #include <map>
 
 #include <nlohmann/json.hpp>
 
 #include "enlaces.hpp"
+#include "motor.hpp"
 #include "nombres.hpp"
 #include "recolector.hpp"
 #include "util.hpp"
@@ -30,6 +32,8 @@ namespace
         case E::Lista: return "lista";
         case E::Fallo: return "fallo";
         case E::Saltada: return "saltada";
+        case E::Espera: return "espera";
+        case E::Navegador: return "navegador";
         }
         return "esperando";
     }
@@ -41,6 +45,8 @@ namespace
         if (s == "lista") return E::Lista;
         if (s == "fallo") return E::Fallo;
         if (s == "saltada") return E::Saltada;
+        if (s == "espera") return E::Espera;
+        if (s == "navegador") return E::Navegador;
         return E::Esperando;
     }
 
@@ -195,6 +201,12 @@ void hnd::DeUnaEnUna::Cargar()
             p.carpeta = Ancho(j.value("carpeta", ""));
             p.estado = EstadoDeNombre(j.value("estado", ""));
             p.descarga = j.value("descarga", (uint64_t)0);
+            p.hasta = j.value("hasta", (int64_t)0);
+            p.limite = j.value("limite", false);
+            p.intentos = std::clamp(j.value("intentos", 0), 0, 1000);
+            p.avisada = j.value("avisada", false);
+            p.toma = j.value("toma", "");
+            if (p.toma.size() > 128) p.toma.clear();
             m_partes.push_back(std::move(p));
             if (m_partes.size() >= 5000) break;
         }
@@ -216,7 +228,8 @@ bool hnd::DeUnaEnUna::Guardar() const
     {
         l.push_back({ { "url", p.url }, { "referer", p.referer }, { "nombre", Utf8(p.nombre) }, { "paquete", Utf8(p.paquete) },
                       { "grupo", p.grupo }, { "carpeta", Utf8(p.carpeta) }, { "estado", NombreEstado(p.estado) },
-                      { "descarga", p.descarga } });
+                      { "descarga", p.descarga }, { "hasta", p.hasta }, { "limite", p.limite }, { "intentos", p.intentos },
+                      { "avisada", p.avisada }, { "toma", p.toma } });
     }
     json todo = { { "version", 1 }, { "partes", l } };
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
@@ -269,8 +282,11 @@ hnd::Emparejamiento hnd::DeUnaEnUna::Emparejar(const std::string& url, const std
     // Se sabe de qué página viene (la pestaña o un referer con página, no solo con el sitio) y es otra
     std::string origen = !pagina.empty() ? pagina : (EsPagina(referer) ? referer : std::string());
     auto deOtraPagina = [&](const Parte& p) { return !origen.empty() && !MismaPagina(origen, p.url); };
-    auto abierta = [](const Parte& p) { return p.estado == EstadoParte::Abierta; };
-    auto falta = [](const Parte& p) { return p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Esperando; };
+    // Una que espera también cuenta: puede que la persona bajó igual (o que el aviso era de antes)
+    auto abierta = [](const Parte& p) { return p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Espera; };
+    auto falta = [](const Parte& p) {
+        return p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Espera || p.estado == EstadoParte::Esperando;
+    };
 
     // 1. Tiene el nombre de una parte abierta, viene de su sitio y no de otra página (si viene de otra, se pregunta)
     for (size_t i = 0; i < m_partes.size(); i++)
@@ -302,8 +318,198 @@ hnd::Emparejamiento hnd::DeUnaEnUna::Emparejar(const std::string& url, const std
 void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
 {
     if (i < 0 || (size_t)i >= m_partes.size()) return;
-    m_partes[i].estado = EstadoParte::Tomada;
-    m_partes[i].descarga = descarga;
+    auto& p = m_partes[i];
+    p.estado = EstadoParte::Tomada;
+    p.descarga = descarga;
+    p.hasta = 0;
+    p.limite = false;
+}
+
+int64_t hnd::MargenDeEspera(int64_t segundos)
+{
+    return std::min<int64_t>(5 * 60, std::max<int64_t>(30, segundos / 20));
+}
+
+int hnd::DeUnaEnUna::ParteDePagina(const std::string& url) const
+{
+    if (url.empty()) return -1;
+    for (int exacta = 1; exacta >= 0; exacta--)
+    {
+        for (size_t i = 0; i < m_partes.size(); i++)
+        {
+            const auto& p = m_partes[i];
+            if (p.estado != EstadoParte::Abierta && p.estado != EstadoParte::Espera) continue;
+            if (exacta ? p.url == url : MismaPagina(p.url, url)) return (int)i;
+        }
+    }
+    return -1;
+}
+
+bool hnd::DeUnaEnUna::Esperar(int i, bool limite, int64_t segundos, int64_t ahora)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return true;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Abierta && p.estado != EstadoParte::Espera) return true;
+    if (!limite)
+    {
+        // La cuenta regresiva de la página: la página ya está abierta, solo se muestra y se avisa al final
+        if (p.estado != EstadoParte::Abierta || segundos <= 0) return true;
+        int64_t nuevo = ahora + segundos;
+        if (p.hasta == 0 || p.limite || std::llabs(nuevo - p.hasta) > 2) p.avisada = false;
+        p.hasta = nuevo;
+        p.limite = false;
+        return true;
+    }
+    // Un límite del sitio. Si ya se abrió otra vez demasiadas veces y sigue pidiendo esperar, se deja para después.
+    if (p.intentos >= MaxIntentosEspera)
+    {
+        p.estado = EstadoParte::Fallo;
+        p.hasta = 0;
+        p.limite = false;
+        return false;
+    }
+    if (segundos < 0) segundos = EsperaSinTiempo;
+    p.estado = EstadoParte::Espera;
+    p.limite = true;
+    p.avisada = false;
+    p.hasta = ahora + segundos + MargenDeEspera(segundos);
+    return true;
+}
+
+std::vector<int> hnd::DeUnaEnUna::Vencidas(int64_t ahora)
+{
+    std::vector<int> r;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        auto& p = m_partes[i];
+        if (p.estado != EstadoParte::Espera || p.hasta > ahora) continue;
+        p.estado = EstadoParte::Abierta;
+        p.intentos++;
+        p.hasta = 0;
+        p.limite = false;
+        p.avisada = false;
+        r.push_back((int)i);
+    }
+    return r;
+}
+
+void hnd::DeUnaEnUna::AbrirOtraVez(int i)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Espera && p.estado != EstadoParte::Abierta) return;
+    p.estado = EstadoParte::Abierta;
+    p.hasta = 0;
+    p.limite = false;
+    p.avisada = false;
+}
+
+std::vector<int> hnd::DeUnaEnUna::CuentasTerminadas(int64_t ahora)
+{
+    std::vector<int> r;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        auto& p = m_partes[i];
+        if (p.estado != EstadoParte::Abierta || p.limite || p.hasta == 0 || p.hasta > ahora || p.avisada) continue;
+        p.avisada = true;
+        r.push_back((int)i);
+    }
+    return r;
+}
+
+void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    auto& p = m_partes[i];
+    p.estado = EstadoParte::Navegador;
+    p.toma = toma;
+    p.descarga = 0;
+    p.hasta = 0;
+    p.limite = false;
+    p.bajado = 0;
+    p.total = -1;
+}
+
+int hnd::DeUnaEnUna::BuscarToma(const std::string& toma) const
+{
+    if (toma.empty()) return -1;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        // También una que se cortó en el navegador: la persona puede reanudarla ahí
+        const auto& p = m_partes[i];
+        if ((p.estado == EstadoParte::Navegador || p.estado == EstadoParte::Fallo) && p.toma == toma) return (int)i;
+    }
+    return -1;
+}
+
+void hnd::DeUnaEnUna::Progreso(int i, int64_t bajado, int64_t total)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    m_partes[i].bajado = std::max<int64_t>(0, bajado);
+    m_partes[i].total = total > 0 ? total : -1;
+}
+
+void hnd::DeUnaEnUna::TerminarEnNavegador(int i, bool ok, uint64_t descarga)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Navegador && !(p.estado == EstadoParte::Fallo && ok && !p.toma.empty())) return;
+    p.estado = ok ? EstadoParte::Lista : EstadoParte::Fallo;
+    p.descarga = descarga;
+}
+
+hnd::Toma hnd::DecidirToma(Estado estado, int64_t hecho, int64_t segundos, int64_t plazo)
+{
+    if (estado == Estado::Completada) return Toma::Tomada;
+    if (estado == Estado::Descargando && hecho > 0) return Toma::Tomada;
+    // Una página, un 403 o 410, un enlace que ya no sirve (o la persona la pausó): que siga el navegador
+    if (estado == Estado::Error || estado == Estado::Pausada) return Toma::Navegador;
+    if (segundos >= plazo) return Toma::Navegador;
+    return Toma::Probando;
+}
+
+hnd::SitiosNavegador::SitiosNavegador(std::wstring archivo) : m_archivo(std::move(archivo)) {}
+
+void hnd::SitiosNavegador::Cargar()
+{
+    m_sitios.clear();
+    std::string texto;
+    if (!LeerArchivo(m_archivo, texto)) return;
+    try
+    {
+        json todo = json::parse(texto);
+        for (auto& [sitio, cuando] : todo.at("sitios").items())
+        {
+            if (sitio.empty() || sitio.size() > 253 || !cuando.is_number_integer()) continue;
+            m_sitios[sitio] = cuando.get<int64_t>();
+            if (m_sitios.size() >= 1000) break;
+        }
+    }
+    catch (...)
+    {
+        m_sitios.clear();
+    }
+}
+
+bool hnd::SitiosNavegador::Guardar() const
+{
+    json s = json::object();
+    for (const auto& [sitio, cuando] : m_sitios) s[sitio] = cuando;
+    return EscribirSeguro(m_archivo, json{ { "version", 1 }, { "sitios", s } }.dump(1));
+}
+
+bool hnd::SitiosNavegador::Necesita(const std::string& url) const
+{
+    std::string b = Base(enlaces::Sitio(url));
+    return !b.empty() && m_sitios.count(b) > 0;
+}
+
+void hnd::SitiosNavegador::Anotar(const std::string& url, int64_t ahora)
+{
+    std::string b = Base(enlaces::Sitio(url));
+    if (b.empty() || m_sitios.count(b)) return;
+    m_sitios[b] = ahora;
+    Guardar();
 }
 
 int hnd::DeUnaEnUna::Terminar(uint64_t descarga, bool ok)
@@ -326,8 +532,13 @@ void hnd::DeUnaEnUna::Saltar(int i)
 {
     if (i < 0 || (size_t)i >= m_partes.size()) return;
     auto& p = m_partes[i];
-    if (p.estado == EstadoParte::Esperando || p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Tomada)
+    if (p.estado == EstadoParte::Esperando || p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Tomada
+        || p.estado == EstadoParte::Espera || p.estado == EstadoParte::Navegador)
+    {
         p.estado = EstadoParte::Saltada;
+        p.hasta = 0;
+        p.limite = false;
+    }
 }
 
 bool hnd::DeUnaEnUna::CambiarGrupo(const std::string& viejo, const std::string& nuevo)
@@ -349,7 +560,7 @@ std::vector<hnd::Parte> hnd::DeUnaEnUna::Sobrantes() const
     for (const auto& p : m_partes)
     {
         if (p.estado == EstadoParte::Esperando || p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Saltada
-            || p.estado == EstadoParte::Fallo)
+            || p.estado == EstadoParte::Fallo || p.estado == EstadoParte::Espera)
             vuelven.push_back(p);
     }
     return vuelven;
@@ -363,7 +574,7 @@ bool hnd::DeUnaEnUna::Vaciar()
 
 int hnd::DeUnaEnUna::Actual() const
 {
-    for (EstadoParte buscado : { EstadoParte::Abierta, EstadoParte::Tomada })
+    for (EstadoParte buscado : { EstadoParte::Abierta, EstadoParte::Navegador, EstadoParte::Tomada, EstadoParte::Espera })
     {
         for (size_t i = 0; i < m_partes.size(); i++)
         {
@@ -378,6 +589,11 @@ bool hnd::DeUnaEnUna::HayAbierta() const
     return Cuantas(EstadoParte::Abierta) > 0;
 }
 
+bool hnd::DeUnaEnUna::HayEnEspera() const
+{
+    return Cuantas(EstadoParte::Espera) > 0;
+}
+
 bool hnd::DeUnaEnUna::QuedanPorAbrir() const
 {
     return Cuantas(EstadoParte::Esperando) > 0;
@@ -386,7 +602,7 @@ bool hnd::DeUnaEnUna::QuedanPorAbrir() const
 bool hnd::DeUnaEnUna::Terminada() const
 {
     return !m_partes.empty() && Cuantas(EstadoParte::Esperando) == 0 && Cuantas(EstadoParte::Abierta) == 0
-        && Cuantas(EstadoParte::Tomada) == 0;
+        && Cuantas(EstadoParte::Tomada) == 0 && Cuantas(EstadoParte::Espera) == 0 && Cuantas(EstadoParte::Navegador) == 0;
 }
 
 bool hnd::DeUnaEnUna::TieneDescarga(uint64_t descarga) const

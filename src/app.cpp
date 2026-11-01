@@ -31,7 +31,8 @@
 namespace
 {
     const wchar_t* ClaseMensajes = ATARRAYA_CLASE_MENSAJES;
-    const ULONG_PTR MarcaCopia = 0x41545231;   // «ATR1», igual que en el puente
+    const ULONG_PTR MarcaCopia = 0x41545231;       // «ATR1», igual que en el puente
+    const ULONG_PTR MarcaRespuesta = 0x41545232;   // «ATR2»: la respuesta a una consulta del puente
 #ifdef ATARRAYA_PRUEBAS
     const wchar_t* NombreUnico = L"Atarraya-prueba-";   // la copia de prueba cuenta aparte de la de verdad
     const char* SufijoRegistro = " (copia de prueba)";
@@ -71,6 +72,17 @@ namespace
             if (datos && datos->dwData == MarcaCopia && datos->cbData > 0 && datos->cbData < 8 * 1024 * 1024)
             {
                 std::string texto(static_cast<const char*>(datos->lpData), datos->cbData);
+                // Una consulta del puente (trae su ventana): se contesta ya, sin cambiar nada, a esa ventana
+                HWND puente = reinterpret_cast<HWND>(w);
+                if (puente && IsWindow(puente))
+                {
+                    auto& app = wxGetApp();
+                    std::string r = app.ventana ? app.ventana->Consulta(texto) : std::string("{}");
+                    COPYDATASTRUCT cds = { MarcaRespuesta, (DWORD)r.size(), (PVOID)r.data() };
+                    DWORD_PTR x = 0;
+                    SendMessageTimeoutW(puente, WM_COPYDATA, 0, (LPARAM)&cds, SMTO_ABORTIFHUNG, 5000, &x);
+                    return TRUE;
+                }
                 hnd::Registrar("mensaje recibido (" + std::to_string(datos->cbData) + " bytes)");
                 wxTheApp->CallAfter([texto]() {
                     auto& app = wxGetApp();

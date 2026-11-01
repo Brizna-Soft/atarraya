@@ -11,6 +11,8 @@ const M = enNode
   ? require("../extension/comun/medios.js")
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
       MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION };
+const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
+const C = enNode ? require("../extension/comun/cola-navegador.js") : { PestanasDeLaCola, sitioBase, avisoDeSeguimiento };
 
 let fallas = 0;
 function decir(texto) {
@@ -256,7 +258,7 @@ if (enNode) {
   const fondo = leer("../extension/comun/background.js");
   comprobar(!/tabs\.query|active\s*:\s*true|lastFocusedWindow|currentWindow/.test(fondo),
     "extensión: background.js no usa la pestaña activa");
-  comprobar(!/blocking/.test(fondo) && /onHeadersReceived/.test(fondo) && /importScripts\("origen\.js", "medios\.js"\)/.test(fondo),
+  comprobar(!/blocking/.test(fondo) && /onHeadersReceived/.test(fondo) && /importScripts\("origen\.js", "medios\.js", "cola-navegador\.js"\)/.test(fondo),
     "extensión: background.js solo mira los pedidos (no bloquea ni cambia nada) y carga medios.js");
   const videos = leer("../extension/comun/videos.js");
   comprobar(/isTrusted/.test(videos) && /cadenaBloqueada/.test(videos) && !/innerHTML/.test(videos) && /attachShadow\(\{ mode: "closed" \}\)/.test(videos),
@@ -274,14 +276,133 @@ if (enNode) {
     comprobar(cs.all_frames === true && cs.match_about_blank === true && JSON.stringify(cs.js) === JSON.stringify(["medios.js", "videos.js"])
       && ["*://*.youtube.com/*", "*://youtu.be/*", "*://*.youtube-nocookie.com/*", "*://*.googlevideo.com/*", "*://*.netflix.com/*"].every((x) => fuera.includes(x)),
       "extensión (" + nav + "): el botón va en todos los marcos, pero no en YouTube ni en sitios con DRM");
-    comprobar(man.version === "0.3.1" && JSON.stringify(man.permissions) === JSON.stringify(["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"])
+    comprobar(man.version === "0.4.0" && JSON.stringify(man.permissions) === JSON.stringify(["downloads", "nativeMessaging", "contextMenus", "cookies", "storage", "webRequest"])
       && JSON.stringify(man.host_permissions) === JSON.stringify(["<all_urls>"]),
-      "extensión (" + nav + "): versión 0.3.1 y ningún permiso nuevo");
+      "extensión (" + nav + "): versión 0.4.0 y ningún permiso nuevo");
   }
   const ff = JSON.parse(leer("../extension/firefox/manifest.json"));
-  comprobar(JSON.stringify(ff.background.scripts) === JSON.stringify(["origen.js", "medios.js", "background.js"]),
-    "extensión (firefox): carga origen.js y medios.js antes que background.js");
+  comprobar(JSON.stringify(ff.background.scripts) === JSON.stringify(["origen.js", "medios.js", "cola-navegador.js", "background.js"]),
+    "extensión (firefox): carga origen.js, medios.js y cola-navegador.js antes que background.js");
+  comprobar(/importScripts\("origen\.js", "medios\.js", "cola-navegador\.js"\)/.test(fondo),
+    "extensión (chrome): background.js carga cola-navegador.js");
+
+  // La cola: los avisos de espera solo se leen en la página de arriba de las pestañas de la cola, sin tocar la página
+  for (const nav of ["chrome", "firefox"]) {
+    const man = JSON.parse(leer("../extension/" + nav + "/manifest.json"));
+    const cs = (man.content_scripts || [])[1] || {};
+    const fuera = cs.exclude_matches || [];
+    comprobar(JSON.stringify(cs.js) === JSON.stringify(["esperas.js", "cola.js"]) && cs.all_frames === false
+      && ["*://*.youtube.com/*", "*://*.netflix.com/*"].every((x) => fuera.includes(x)),
+      "extensión (" + nav + "): los avisos de espera se leen solo en la página de arriba (y nunca en YouTube)");
+  }
+  const colaJs = leer("../extension/comun/cola.js");
+  const esperasJs = leer("../extension/comun/esperas.js");
+  comprobar(/tipo: "soyDeLaCola"/.test(colaJs) && /if \(r && r\.cola\) empezar\(\)/.test(colaJs),
+    "extensión: cola.js no hace nada en una página que no es de la cola");
+  comprobar(!/\.click\(|dispatchEvent|\.submit\(|innerHTML|\.value\s*=|focus\(/.test(colaJs + esperasJs) && !/document\./.test(esperasJs),
+    "extensión: cola.js y esperas.js solo leen el texto: no hacen clics, no escriben ni mandan formularios");
+  comprobar(/downloads\.cancel\(item\.id\)/.test(fondo) && /estado === "tomada"/.test(fondo)
+    && fondo.indexOf('estado === "tomada"') < fondo.indexOf("downloads.cancel(item.id)"),
+    "extensión: la descarga de una parte se cancela en el navegador solo cuando Atarraya ya la tomó");
 }
+
+// --- Avisos de espera de los sitios de descargas (esperas.js) ----------------------------------------------------------
+comprobar(E.segundosDe("You have to wait 9 minutes, 41 seconds till next download") === 581
+  && E.segundosDe("1 hour 5 min") === 3900 && E.segundosDe("2h 03m") === 7380 && E.segundosDe("120 sec") === 120
+  && E.segundosDe("Next download in 09:41") === 581 && E.segundosDe("espera 1:02:03") === 3723 && E.segundosDe("30s") === 30
+  && E.segundosDe("1 hora y 5 minutos") === 3900 && E.segundosDe("15 minutes") === 900 && E.segundosDe("sin tiempo") === -1,
+  "esperas: duraciones escritas de muchas formas (9 minutes, 41 seconds; 2h 03m; 09:41; 1:02:03; 1 hora y 5 minutos)");
+comprobar(E.segundosDe("Archivo de 100 MB en 5 partes, espera 30 segundos") === 30,
+  "esperas: «100 MB» o «5 partes» no son una duración");
+const ve = (t) => E.reconocerEspera(t) || { clase: "ninguna", segundos: null };
+const casos = [
+  // ddownload y katfile (XFileSharing)
+  ["Free download\nYou have to wait 9 minutes, 41 seconds till next download", "limite", 581],
+  ["Create Download Link\nWait 30 seconds", "pagina", 30],
+  // aviso «Blocked» entre partes
+  ["Blocked: wait 10 minutes", "limite", 600],
+  ["Blocked", "limite", -1],
+  // Rapidgator
+  ["You have reached your hourly downloads limit. Please wait 01:23:45 or buy premium", "limite", 5025],
+  ["Please wait 30 seconds", "pagina", 30],
+  // nitroflare
+  ["You have to wait 120 minutes to download your next file", "limite", 7200],
+  ["Your free download limit has been reached", "limite", -1],
+  // 1fichier
+  ["Warning! You must wait 15 minutes to download again or subscribe to a premium offer", "limite", 900],
+  ["Vous devez attendre 15 minutes pour télécharger à nouveau", "limite", 900],
+  // turbobit / genéricos
+  ["You have reached the limit of downloads from your IP address, please wait 59:59", "limite", 3599],
+  ["Download limit exceeded. Try again in 1 hour", "limite", 3600],
+  ["Next download available in\n04:30", "limite", 270],
+  ["Your download link will be available in 25 seconds", "pagina", 25],
+  ["25 seconds left", "pagina", 25],
+  // español
+  ["Has alcanzado el límite de descargas. Espera 10 minutos", "limite", 600],
+  ["Debes esperar 45 segundos", "pagina", 45],
+  ["Bloqueado: vuelve a intentarlo en 20 minutos", "limite", 1200],
+  ["La descarga estará disponible en 15 segundos", "pagina", 15],
+];
+for (const [texto, clase, segundos] of casos) {
+  const r = ve(texto);
+  comprobar(r.clase === clase && r.segundos === segundos,
+    "esperas: «" + texto.replace(/\n/g, " / ") + "» → " + clase + " " + segundos + (r.clase === clase && r.segundos === segundos ? "" : " (salió " + r.clase + " " + r.segundos + ")"));
+}
+const normales = [
+  "Premium: no waiting time, no limits, parallel downloads.",
+  "Waiting time between downloads | 60 minutes | none",
+  "Download peli.part1.rar (2.2 GB)\nSlow download | High speed download",
+  "Términos y condiciones: el límite de descargas para usuarios gratis es de 1 GB por día",
+  "Updated 14:30 · 120 comments",
+  "Please wait while we check your browser...",
+];
+comprobar(normales.every((t) => E.reconocerEspera(t) === null),
+  "esperas: una página normal (tablas de premium, condiciones, «please wait» sin tiempo) no es un aviso de espera");
+comprobar(ve("Free users have to wait 30 seconds.\nBlocked: wait 10 minutes").clase === "limite" && ve("Free users have to wait 30 seconds.\nBlocked: wait 10 minutes").segundos === 600,
+  "esperas: si hay un límite y una cuenta, gana el límite");
+
+// --- Las pestañas de la cola y lo que se sigue en el navegador (cola-navegador.js) --------------------------------------
+const pc = new C.PestanasDeLaCola(120000, 3600000, 3);
+pc.candidata(5, 1000);
+comprobar(pc.puedePreguntar(5, 2000) && pc.puedePreguntar(5, 3000) && pc.puedePreguntar(5, 4000) && !pc.puedePreguntar(5, 5000),
+  "cola: por una pestaña nueva se pregunta como mucho 3 veces");
+pc.candidata(6, 1000);
+comprobar(!pc.puedePreguntar(6, 1000 + 121000) && !pc.puedePreguntar(7, 2000),
+  "cola: pasados 2 minutos (o si no la abrió otro programa) ya no se pregunta");
+pc.candidata(8, 1000);
+pc.marcar(8, "https://ddownload.com/abc123def/peli.part2.rar", 2000);
+comprobar(pc.parte(8, 3000) === "https://ddownload.com/abc123def/peli.part2.rar" && !pc.candidatas.has(8) && pc.parte(9, 3000) === "",
+  "cola: una pestaña de la cola recuerda la página que abrió Atarraya");
+const otra = new C.PestanasDeLaCola();
+otra.cargar(JSON.parse(JSON.stringify(pc.exportar())));
+comprobar(otra.parte(8, 3000) === pc.parte(8, 3000), "cola: se recuerda aunque el «service worker» se apague (storage.session)");
+comprobar(pc.parte(8, 2000 + 3600001) === "", "cola: una pestaña de la cola se olvida después de unas horas");
+pc.marcar(10, "javascript:alert(1)", 1000);
+comprobar(pc.parte(10, 1000) === "", "cola: solo páginas http o https");
+comprobar(C.sitioBase("https://s12.ddownload.com/d/x") === "ddownload.com" && C.sitioBase("https://www.ejemplo.co.uk/a") === "ejemplo.co.uk"
+  && C.sitioBase("http://127.0.0.1:47613/p") === "127.0.0.1" && C.sitioBase("no es una dirección") === "",
+  "cola: el sitio de una dirección (sin los servidores de adelante)");
+
+const sg = { ultimoAviso: 0, ultimoBytes: -1, ultimoEstado: "" };
+const enCurso = { state: "in_progress", bytesReceived: 1000, totalBytes: 5000, filename: "" };
+const a1 = C.avisoDeSeguimiento(enCurso, sg, 10000);
+comprobar(a1 && a1.estado === "bajando" && a1.bajado === 1000 && a1.total === 5000 && !a1.terminar,
+  "seguir: la primera vez dice cómo va");
+Object.assign(sg, { ultimoAviso: 10000, ultimoBytes: 1000, ultimoEstado: "bajando" });
+comprobar(C.avisoDeSeguimiento({ ...enCurso, bytesReceived: 2000 }, sg, 12000) === null
+  && C.avisoDeSeguimiento(enCurso, sg, 20000) === null && C.avisoDeSeguimiento({ ...enCurso, bytesReceived: 3000, paused: true }, sg, 20000) === null,
+  "seguir: no repite el aviso antes de 5 segundos, ni si no avanzó, ni en pausa");
+const a2 = C.avisoDeSeguimiento({ ...enCurso, bytesReceived: 3000 }, sg, 16000);
+comprobar(a2 && a2.estado === "bajando" && a2.bajado === 3000, "seguir: cada 5 segundos, cómo va");
+const a3 = C.avisoDeSeguimiento({ state: "complete", bytesReceived: 5000, totalBytes: 5000, filename: "C:\\Users\\x\\Downloads\\peli.part2.rar" }, sg, 17000);
+comprobar(a3 && a3.estado === "completa" && a3.ruta === "C:\\Users\\x\\Downloads\\peli.part2.rar" && a3.terminar,
+  "seguir: al terminar, dónde quedó el archivo");
+const a4 = C.avisoDeSeguimiento({ state: "interrupted", error: "NETWORK_FAILED", canResume: true, bytesReceived: 3000, totalBytes: 5000 }, sg, 18000);
+const a5 = C.avisoDeSeguimiento({ state: "interrupted", error: "USER_CANCELED", canResume: false, bytesReceived: 3000, totalBytes: 5000 }, sg, 18000);
+comprobar(a4 && a4.estado === "fallo" && !a4.terminar && a5 && a5.estado === "cancelada" && a5.terminar,
+  "seguir: si se corta y se puede reanudar, se sigue mirando; si la persona la cancela, no");
+comprobar(C.avisoDeSeguimiento({ state: "interrupted", error: "NETWORK_FAILED", canResume: true }, { ...sg, ultimoEstado: "fallo" }, 19000) === null,
+  "seguir: el corte se avisa una sola vez");
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
 if (enNode) process.exitCode = fallas ? 1 : 0;

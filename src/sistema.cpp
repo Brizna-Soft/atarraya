@@ -38,6 +38,15 @@ void hnd::sistema::AbrirPaginaWeb(const std::string& url)
 #endif
 }
 
+void hnd::sistema::Sonar()
+{
+#ifdef ATARRAYA_PRUEBAS
+    Registrar("sonido de aviso");   // la copia de prueba corre en un escritorio aparte: no suena en la PC de la persona
+#else
+    MessageBeep(MB_ICONASTERISK);
+#endif
+}
+
 void hnd::sistema::MostrarEnCarpeta(const std::wstring& ruta)
 {
     PIDLIST_ABSOLUTE pidl = ILCreateFromPathW(ruta.c_str());

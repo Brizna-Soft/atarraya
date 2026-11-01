@@ -1931,6 +1931,174 @@ namespace
         fs::remove_all(carpeta, ec);
     }
 
+    // 0.4.0: las esperas que piden los sitios, las partes que baja el navegador (y la extensión sigue), los sitios donde
+    // solo funciona el navegador y cuándo Atarraya pudo seguir la descarga del navegador
+    void EsperasYNavegadorPruebas()
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring base = std::wstring(temporal) + L"atarraya-prueba-esperas-" + std::to_wstring(GetCurrentProcessId());
+        auto parte = [](const std::string& url, const char* grupo) {
+            Parte p;
+            p.url = url;
+            p.nombre = NombreDeUrl(url);
+            p.paquete = L"Peli";
+            p.grupo = grupo;
+            p.carpeta = L"C:\\Descargas\\Peli";
+            return p;
+        };
+        const std::string p1 = "https://ddownload.com/aaa111bbb/peli.part1.rar", p2 = "https://ddownload.com/ccc222ddd/peli.part2.rar",
+                          p3 = "https://ddownload.com/eee333fff/peli.part3.rar";
+        const int64_t t0 = 1000000;
+
+        Comprobar(MargenDeEspera(60) == 30 && MargenDeEspera(1200) == 60 && MargenDeEspera(100000) == 300,
+                  "esperas: el margen que se suma a lo que pide el sitio (30 s, el 5 % o como mucho 5 minutos)");
+
+        DeUnaEnUna cola(base + L"-cola.json");
+        cola.Agregar({ parte(p1, "g1"), parte(p2, "g1"), parte(p3, "g1") });
+        Comprobar(cola.ParteDePagina(p1) == -1, "esperas: una parte que todavía no se abrió no es una página de la cola");
+        cola.AbrirSiguiente();
+        Comprobar(cola.ParteDePagina(p1) == 0 && cola.ParteDePagina("https://ddownload.com/aaa111bbb") == 0
+                      && cola.ParteDePagina("https://ddownload.com/") == -1 && cola.ParteDePagina("https://otro.org/aaa111bbb/peli.part1.rar") == -1,
+                  "esperas: la página que abrió Atarraya (también sin el nombre al final); otra página u otro sitio, no");
+
+        // La cuenta regresiva de la página: la página sigue abierta; solo se avisa al final, una vez
+        Comprobar(cola.Esperar(0, false, 30, t0) && cola.Partes()[0].estado == EstadoParte::Abierta && cola.Partes()[0].hasta == t0 + 30,
+                  "esperas: la cuenta de la página deja la parte abierta y se muestra");
+        Comprobar(cola.CuentasTerminadas(t0 + 29).empty() && cola.CuentasTerminadas(t0 + 30) == std::vector<int>{ 0 }
+                      && cola.CuentasTerminadas(t0 + 31).empty() && cola.Vencidas(t0 + 1000).empty(),
+                  "esperas: al terminar la cuenta de la página se avisa una vez y no se abre otra vez la página");
+
+        // Un límite del sitio: espera con margen; al cumplirse, vuelve a abrirse con un intento más
+        Comprobar(cola.Esperar(0, true, 600, t0) && cola.Partes()[0].estado == EstadoParte::Espera
+                      && cola.Partes()[0].hasta == t0 + 600 + MargenDeEspera(600) && cola.HayEnEspera() && !cola.HayAbierta() && cola.Actual() == 0,
+                  "esperas: «Blocked: wait 10 minutes» pone la parte a esperar 10 minutos más el margen");
+        Comprobar(cola.ParteDePagina(p1) == 0 && !cola.Terminada() && cola.Sobrantes().size() == 3,
+                  "esperas: la que espera sigue en la cola (y si se para, vuelve al recolector)");
+        auto e = cola.Emparejar("https://s7.ddownload.com/d/t/descarga", "", p1, L"");
+        Comprobar(e.parte == 0 && e.segura, "esperas: si la persona baja igual desde esa página, la descarga es de la que espera");
+        Comprobar(cola.Vencidas(t0 + 600).empty() && cola.Vencidas(t0 + 600 + MargenDeEspera(600)) == std::vector<int>{ 0 }
+                      && cola.Partes()[0].estado == EstadoParte::Abierta && cola.Partes()[0].intentos == 1 && cola.Partes()[0].hasta == 0,
+                  "esperas: se cumple el tiempo más el margen: la parte se abre otra vez (un intento más)");
+        Comprobar(cola.Esperar(0, true, -1, t0) && cola.Partes()[0].hasta == t0 + EsperaSinTiempo + MargenDeEspera(EsperaSinTiempo),
+                  "esperas: «Blocked» sin decir cuánto: se prueba otra vez en 10 minutos");
+        cola.Guardar();
+        DeUnaEnUna otra(base + L"-cola.json");
+        otra.Cargar();
+        Comprobar(otra.Partes().size() == 3 && otra.Partes()[0].estado == EstadoParte::Espera && otra.Partes()[0].hasta == cola.Partes()[0].hasta
+                      && otra.Partes()[0].intentos == 1 && otra.Partes()[0].limite,
+                  "esperas: al volver a abrir Atarraya, la espera sigue donde iba");
+        int64_t t = t0;
+        bool siguio = true;
+        for (int k = 0; k < 20 && siguio; k++)
+        {
+            t += 100000;
+            cola.Vencidas(t);
+            siguio = cola.Esperar(0, true, 600, t);
+        }
+        Comprobar(!siguio && cola.Partes()[0].estado == EstadoParte::Fallo && cola.Partes()[0].intentos == MaxIntentosEspera
+                      && !cola.HayEnEspera(),
+                  "esperas: si después de 6 intentos el sitio sigue pidiendo esperar, la parte queda para después (vuelve al recolector)");
+
+        // «Abrir otra vez» abre ya una que espera; «Saltar esta» también la salta
+        int j = cola.AbrirSiguiente();
+        cola.Esperar(j, true, 600, t0);
+        cola.AbrirOtraVez(j);
+        Comprobar(j == 1 && cola.Partes()[j].estado == EstadoParte::Abierta && cola.Partes()[j].hasta == 0 && !cola.Partes()[j].limite,
+                  "esperas: «Abrir otra vez» abre ya la página de una que espera");
+
+        // La baja el navegador: la extensión la sigue y avisa cómo va; al terminar queda lista con la descarga que la anota
+        cola.Tomar(j, 55);
+        cola.EnNavegador(j, "n7-abc");
+        Comprobar(cola.Partes()[j].estado == EstadoParte::Navegador && cola.BuscarToma("n7-abc") == j && cola.BuscarToma("otra") == -1
+                      && cola.BuscarToma("") == -1 && cola.Actual() == j && !cola.Terminada() && cola.Partes()[j].descarga == 0,
+                  "navegador: la parte que baja el navegador sigue en la cola, con su toma");
+        cola.Progreso(j, 1000, 5000);
+        Comprobar(cola.Partes()[j].bajado == 1000 && cola.Partes()[j].total == 5000, "navegador: cómo va la descarga del navegador");
+        e = cola.Emparejar("https://s7.ddownload.com/d/t/descarga", "", p2, L"");
+        Comprobar(e.parte != j, "navegador: mientras la baja el navegador, otra descarga no se toma como esa parte");
+        cola.Guardar();
+        DeUnaEnUna alVolver(base + L"-cola.json");
+        alVolver.Cargar();
+        Comprobar(alVolver.BuscarToma("n7-abc") == j && alVolver.Partes()[j].estado == EstadoParte::Navegador,
+                  "navegador: al volver a abrir Atarraya, se sigue esperando lo que baja el navegador");
+        cola.TerminarEnNavegador(j, true, 77);
+        Comprobar(cola.Partes()[j].estado == EstadoParte::Lista && cola.Partes()[j].descarga == 77 && cola.BuscarToma("n7-abc") == -1,
+                  "navegador: al terminar, la parte queda lista con la descarga que la anota en la lista");
+        int k3 = cola.AbrirSiguiente();
+        cola.EnNavegador(k3, "n8-def");
+        cola.TerminarEnNavegador(k3, false, 0);
+        Comprobar(cola.Partes()[k3].estado == EstadoParte::Fallo && cola.Terminada() && cola.Sobrantes().size() == 2,
+                  "navegador: si el navegador no la termina, la parte vuelve al recolector al final");
+        Comprobar(cola.BuscarToma("n8-def") == k3, "navegador: una que se cortó se sigue reconociendo (la persona puede reanudarla)");
+        cola.TerminarEnNavegador(k3, true, 88);
+        Comprobar(cola.Partes()[k3].estado == EstadoParte::Lista && cola.Partes()[k3].descarga == 88,
+                  "navegador: si la persona la reanuda en el navegador y termina, queda lista");
+
+        // Los sitios donde solo funciona el navegador: por sitio (ddl.to y ddownload.com son uno) y se guardan
+        SitiosNavegador s(base + L"-sitios.json");
+        Comprobar(!s.Necesita("https://ddownload.com/abc"), "navegador: al principio ningún sitio necesita el navegador");
+        s.Anotar("https://ddl.to/abc123", 1000);
+        Comprobar(s.Necesita("https://ddownload.com/x") && s.Necesita("https://s12.ddownload.com/d/y") && !s.Necesita("https://rapidgator.net/file/1")
+                      && !s.Necesita(""),
+                  "navegador: un sitio anotado cuenta con sus servidores y sus otros dominios; otros sitios no");
+        SitiosNavegador s2(base + L"-sitios.json");
+        s2.Cargar();
+        Comprobar(s2.Necesita("https://ddl.to/zzz") && s2.Cantidad() == 1, "navegador: los sitios anotados se recuerdan al volver a abrir Atarraya");
+
+        // ¿Atarraya pudo seguir la descarga del navegador?
+        Comprobar(DecidirToma(Estado::Descargando, 4096, 2) == Toma::Tomada && DecidirToma(Estado::Completada, 0, 2) == Toma::Tomada,
+                  "toma: si ya llegan bytes del archivo (o terminó), Atarraya la tomó y el navegador cancela la suya");
+        Comprobar(DecidirToma(Estado::Error, 0, 2) == Toma::Navegador && DecidirToma(Estado::Pausada, 0, 2) == Toma::Navegador,
+                  "toma: una página, un 403 o 410 o un enlace usado (error): sigue el navegador");
+        Comprobar(DecidirToma(Estado::Iniciando, 0, 5) == Toma::Probando && DecidirToma(Estado::EnCola, 0, 5) == Toma::Probando
+                      && DecidirToma(Estado::Descargando, 0, 5) == Toma::Probando && DecidirToma(Estado::Iniciando, 0, 25) == Toma::Navegador,
+                  "toma: mientras no llega nada se espera un poco; si tarda más de 25 s, sigue el navegador");
+
+        // Lo que bajó el navegador entra a la lista como terminado y cuenta en su paquete para Jícaro
+        std::wstring archivoMotor = base + L"-descargas.json";
+        {
+            Motor m(archivoMotor);
+            DatosDescarga d;
+            d.url = "https://s7.ddownload.com/d/t/peli.part1.rar";
+            d.carpeta = L"C:\\Descargas\\Peli";
+            d.nombre = L"peli.part1.rar";
+            d.tamano = 1000;
+            d.grupo = "g9";
+            d.paquete = L"Peli";
+            d.cookies = "secreta";
+            uint64_t id1 = m.AgregarTerminada(d);
+            d.nombre = L"peli.part2.rar";
+            d.url = "https://s7.ddownload.com/d/t/peli.part2.rar";
+            uint64_t id2 = m.AgregarTerminada(d);
+            Foto f;
+            Comprobar(m.Buscar(id1, f) && f.datos.estado == Estado::Completada && f.hecho == 1000 && f.datos.conexiones == 1
+                          && f.datos.grupo == "g9" && f.datos.cookies.empty() && id2 == id1 + 1,
+                      "navegador: lo que bajó el navegador entra a la lista como terminado, sin cookies");
+            DeUnaEnUna q(base + L"-cola2.json");
+            q.Agregar({ parte("https://ddownload.com/x1x1x1x1/peli.part1.rar", "g9"), parte("https://ddownload.com/y2y2y2y2/peli.part2.rar", "g9") });
+            q.Tomar(q.AbrirSiguiente(), id1);
+            q.Terminar(id1, true);
+            int n = q.AbrirSiguiente();
+            q.EnNavegador(n, "n9-x");
+            Comprobar(jicaro::ArchivosDelPaquete("g9", m.Fotos(), q.Partes()).empty(),
+                      "navegador: Jícaro espera mientras el navegador baja una parte del paquete");
+            q.TerminarEnNavegador(n, true, id2);
+            Comprobar(jicaro::ArchivosDelPaquete("g9", m.Fotos(), q.Partes()).size() == 2,
+                      "navegador: cuando el navegador termina, el paquete está completo para Jícaro");
+            m.Guardar();
+            Motor m2(archivoMotor);
+            m2.Cargar();
+            Comprobar(m2.Buscar(id2, f) && f.datos.estado == Estado::Completada && f.datos.nombre == L"peli.part2.rar",
+                      "navegador: sigue en la lista al volver a abrir Atarraya");
+        }
+        for (const auto& f : { base + L"-cola.json", base + L"-cola2.json", base + L"-sitios.json", archivoMotor })
+        {
+            DeleteFileW(f.c_str());
+            DeleteFileW((f + L".tmp").c_str());
+        }
+    }
+
     // Click'n'Load: las tres formas en que un navegador manda un formulario, los nombres del campo de los enlaces, el GET,
     // los topes y lo que queda en el registro (el motivo de cada rechazo; nunca los enlaces ni lo que trae el formulario)
     void ClickNLoadPruebas()
@@ -2237,6 +2405,7 @@ int wmain(int argc, wchar_t** argv)
     JicaroPruebas();
     FlujosPruebas();
     ClickNLoadPruebas();
+    EsperasYNavegadorPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

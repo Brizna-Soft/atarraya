@@ -50,9 +50,20 @@ Atarraya $version - descargas, videos, torrents y enlaces magnet, gratis, de Bri
    "urls", "url", "links" o "link", y enlaces separados por saltos de línea, espacios o comas). Si un sitio no
    puede pasarlos, Atarraya te dice por qué y lo anota en su registro: solo el motivo y el nombre del sitio,
    nunca los enlaces.
+9. Nuevo en la 0.4.0: los sitios de descargas gratis, de una en una, sin perder tu captcha.
+   - Cuando pulsas descargar en una página de la cola, Atarraya prueba seguir la descarga. Si el sitio no lo
+     deja (una página, un error 403 o 410, un enlace de un solo uso), la termina el navegador y la extensión
+     la sigue: al terminar, Atarraya pasa el archivo a la carpeta del paquete y abre la página siguiente.
+     También cuando la descarga sale de un formulario.
+   - Si el sitio pide esperar ("You have to wait 10 minutes", "Blocked", "Download limit"...), Atarraya muestra
+     la cuenta regresiva y, cuando se cumple, abre la página otra vez y te avisa con un sonido: "Toca resolver un
+     captcha". Si todavía pide esperar, lo vuelve a intentar más tarde (hasta 6 veces).
+   - Los captchas siempre los resuelves tú. Atarraya no hace clics en la página, no se salta ni acorta esperas,
+     no cambia tu IP ni usa cuentas premium.
+   Recarga la extensión para tener esto (ver abajo).
 
-Si ya tenías la extensión de una versión anterior, recárgala (la 0.3.0 la necesita para el botón de los
-videos): en chrome://extensions (o edge://extensions)
+Si ya tenías la extensión de una versión anterior, recárgala (la 0.4.0 la necesita para seguir las descargas y
+leer las esperas de los sitios): en chrome://extensions (o edge://extensions)
 busca Atarraya y pulsa el botón de recargar. Si pusiste esta versión en otra carpeta, carga otra vez la
 carpeta extension\chrome nueva y, en Atarraya, pulsa de nuevo "Navegadores" y "Conectar".
 

@@ -1110,6 +1110,25 @@ namespace hnd
         return x->d.id;
     }
 
+    uint64_t Motor::AgregarTerminada(DatosDescarga d)
+    {
+        auto x = std::make_shared<Descarga>();
+        std::lock_guard g(m_lista);
+        d.id = m_siguienteId++;
+        d.agregada = d.terminada = AhoraUnix();
+        d.estado = Estado::Completada;
+        d.error.clear();
+        d.cookies.clear();
+        d.conexiones = 1;
+        d.segmentos.clear();
+        if (d.tamano > 0) d.segmentos.push_back({ 0, d.tamano - 1, d.tamano, false });
+        x->d = std::move(d);
+        x->avisada = true;   // no pasó por Tick: quien la agrega hace lo que haga falta al terminar
+        m_descargas.push_back(x);
+        m_sucio = true;
+        return x->d.id;
+    }
+
     void Motor::Arrancar(const std::shared_ptr<Descarga>& x)
     {
         if (x->hilo.joinable()) x->hilo.join();

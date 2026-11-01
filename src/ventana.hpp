@@ -41,6 +41,8 @@ public:
 
     void Mostrar();                          // la trae al frente (también desde el ícono junto al reloj)
     void Pedido(const std::string& json);   // del navegador o de otra copia del programa
+    // Una consulta de la extensión («cola», «emparejar», «toma»): se contesta enseguida, en JSON, sin cambiar nada
+    std::string Consulta(const std::string& json);
     // Un video que pasó la extensión: un archivo (MP4, WebM...) va como cualquier descarga; HLS o DASH, a «Bajar video»
     void PedidoVideo(const std::string& formato, const std::string& url, const std::wstring& titulo, const std::string& referer,
                      const std::string& pagina, const std::string& cookies, const std::string& agente, const std::string& tipoMime,
@@ -100,7 +102,18 @@ private:
     void ActualizarBarraSitios();
     void AbrirParte(int i, bool avisar);   // la abre en el navegador (en la copia de prueba, solo la anota)
     void Avanzar();                        // terminó o se saltó una: abre la siguiente, o cierra la cola si no queda nada
-    void TomarParte(int i, hnd::DatosDescarga d);
+    // La baja Atarraya, con una conexión. Con «toma», el navegador sigue bajando la suya mientras Atarraya prueba: si
+    // Atarraya no puede (una página, un 403 o 410, un enlace de un solo uso), la deja en el navegador.
+    void TomarParte(int i, hnd::DatosDescarga d, const std::string& toma = "");
+    void TomaANavegador(const std::string& toma, bool recordarSitio);
+    void RevisarTomas();                   // ¿Atarraya pudo seguir las descargas que prueba?
+    void RevisarEsperas();                 // esperas que terminaron: se abre la página otra vez y se avisa
+    void PedidoNavegador(const std::string& toma, const std::string& estado, const std::string& url, const std::string& referer,
+                         const std::string& pagina, const std::wstring& nombre, int64_t bajado, int64_t total,
+                         const std::string& ruta);
+    void PedidoEspera(const std::string& paginaCola, const std::string& clase, int64_t segundos);
+    // Lo que bajó el navegador entra al paquete: a la carpeta de las otras partes y a la lista, como terminado
+    void TerminarParteDelNavegador(int i, const std::string& ruta, const std::string& url);
     bool PreguntarSiEsParte(int i, const std::string& url, const std::wstring& nombre);
     // Las que no bajaron vuelven al recolector sin perder ninguna (primero se guarda el recolector, después la cola).
     // false si el recolector no se pudo guardar: entonces la cola queda como estaba.
@@ -169,6 +182,15 @@ private:
     std::vector<uint64_t> m_avisadosElegir; // ya se avisó con un globo
 
     hnd::DeUnaEnUna m_sitios;
+    hnd::SitiosNavegador m_sitiosNavegador; // sitios donde la descarga final solo funciona en el navegador
+    struct TomaEnCurso
+    {
+        int parte = -1;
+        uint64_t descarga = 0;              // la de Atarraya
+        int64_t inicio = 0;
+        hnd::Toma estado = hnd::Toma::Probando;
+    };
+    std::map<std::string, TomaEnCurso> m_tomas;   // descargas del navegador que Atarraya prueba seguir
     bool m_colaSinGuardar = false;          // ya se avisó que la cola no se pudo guardar
     wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
     wxPanel* m_barraSitios = nullptr;

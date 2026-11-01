@@ -137,6 +137,9 @@ namespace hnd
         void Guardar();
 
         uint64_t Agregar(DatosDescarga d, bool empezar);
+        // Un archivo que ya bajó el navegador (la extensión siguió su descarga): entra a la lista como terminado, con
+        // su carpeta, su nombre y su tamaño, sin conectarse a nada. Así cuenta en su paquete (para Jícaro).
+        uint64_t AgregarTerminada(DatosDescarga d);
         void Reanudar(uint64_t id);
         void Pausar(uint64_t id);
         void Quitar(uint64_t id);                 // la saca de la lista; no borra archivos
