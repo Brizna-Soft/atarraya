@@ -2035,6 +2035,22 @@ namespace
         Comprobar(cola.Partes()[k3].estado == EstadoParte::Lista && cola.Partes()[k3].descarga == 88,
                   "navegador: si la persona la reanuda en el navegador y termina, queda lista");
 
+        // Las páginas de un sitio de descargas que Atarraya no conoce también van de una en una
+        EnlaceRecolectado pagArchivo;
+        pagArchivo.estado = Comprobacion::Pagina;
+        pagArchivo.url = "https://hoster-desconocido.org/abc123/peli.part1.rar";
+        pagArchivo.origen = "lista";
+        EnlaceRecolectado articulo = pagArchivo, articuloHtml = pagArchivo, deCnl = pagArchivo, archivo = pagArchivo;
+        articulo.url = "https://noticias.org/2026/10/articulo";
+        articuloHtml.url = "https://noticias.org/articulo.html";
+        deCnl.url = "https://hoster-desconocido.org/f/abc123";
+        deCnl.origen = "clicknload";
+        archivo.estado = Comprobacion::Archivo;
+        Comprobar(PaginaDeSitioDeDescargas(pagArchivo) && PaginaDeSitioDeDescargas(deCnl) && !PaginaDeSitioDeDescargas(articulo)
+                      && !PaginaDeSitioDeDescargas(articuloHtml) && !PaginaDeSitioDeDescargas(archivo),
+                  "cola: una página que se llama como un archivo («.../peli.part1.rar») o que llegó por Click'n'Load va de una en una; "
+                  "un artículo no");
+
         // Los sitios donde solo funciona el navegador: por sitio (ddl.to y ddownload.com son uno) y se guardan
         SitiosNavegador s(base + L"-sitios.json");
         Comprobar(!s.Necesita("https://ddownload.com/abc"), "navegador: al principio ningún sitio necesita el navegador");

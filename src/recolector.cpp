@@ -126,6 +126,24 @@ bool hnd::EsDireccionLocal(const std::string& url)
     return enlaces::DireccionLocal(url);
 }
 
+bool hnd::PaginaDeSitioDeDescargas(const EnlaceRecolectado& e)
+{
+    if (e.estado != Comprobacion::Pagina) return false;
+    if (e.origen == "clicknload") return true;
+    switch (enlaces::TipoDeNombre(NombreDeUrl(e.url)))
+    {
+    case enlaces::Tipo::Comprimido:
+    case enlaces::Tipo::Video:
+    case enlaces::Tipo::Audio:
+    case enlaces::Tipo::Programa:
+    case enlaces::Tipo::Disco:
+    case enlaces::Tipo::Documento:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool hnd::EnlaceParaRecolectar(const std::string& url)
 {
     if (enlaces::EsMagnet(url)) return true;

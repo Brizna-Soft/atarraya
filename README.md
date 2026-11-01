@@ -88,7 +88,8 @@ navegador. Necesita la extensión conectada (ver abajo); si no lo está, te avis
 
 Lo mismo pasa si pegas uno de esos enlaces en **Agregar enlace** o lo eliges en **De una página**: se abre en tu
 navegador de una en una, en vez de bajar la página. También van de una en una las páginas que llegan por
-Click'n'Load, aunque Atarraya no conozca el sitio. Y si algún sitio responde con una página en vez del archivo
+Click'n'Load y las que se llaman como un archivo (`.../peli.part1.rar`), aunque Atarraya no conozca el sitio. Y si
+algún sitio responde con una página en vez del archivo
 (por ejemplo, porque pide un captcha o porque el enlace venció), Atarraya no la guarda como si fuera el archivo:
 te avisa «El sitio respondió con una página, no con el archivo» y te ofrece **Abrir en el navegador**.
 

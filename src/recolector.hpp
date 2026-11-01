@@ -100,6 +100,9 @@ namespace hnd
     // Para el portapapeles: solo se recolectan enlaces a archivos, magnet y páginas de sitios de descargas
     bool EnlaceParaRecolectar(const std::string& url);
     bool EsSitioDeDescargas(const std::string& url);
+    // Una página web del recolector que en realidad es la de un sitio de descargas, aunque Atarraya no lo conozca: llegó
+    // por Click'n'Load, o su dirección termina con el nombre de un archivo («.../peli.part1.rar»). Va de una en una.
+    bool PaginaDeSitioDeDescargas(const EnlaceRecolectado& e);
     // «Agregar enlace» o «De una página»: un enlace de un sitio de descargas no se baja (daría su página, no el
     // archivo); se abre en el navegador de una en una, como en el recolector. Lo que pasa el navegador sí se baja:
     // ese ya es el archivo.

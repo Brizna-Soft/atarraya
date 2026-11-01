@@ -1161,9 +1161,9 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         }
         if (e.estado == Comprobacion::Pagina)
         {
-            // Una página que llegó por Click'n'Load es la de un sitio de descargas (aunque Atarraya no lo conozca):
-            // también va de una en una
-            if (e.origen == "clicknload") sitios.push_back(&e);
+            // Una página que llegó por Click'n'Load, o cuya dirección termina con el nombre de un archivo, es la de un
+            // sitio de descargas (aunque Atarraya no lo conozca): también va de una en una
+            if (PaginaDeSitioDeDescargas(e)) sitios.push_back(&e);
             else paginas.push_back(&e);
             continue;
         }
