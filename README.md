@@ -115,7 +115,8 @@ Si la extensión no está conectada, Atarraya abre la página en tu navegador co
 avisos de espera.
 
 **Nunca bajan dos veces la misma parte.** Mientras Atarraya prueba seguir la descarga del navegador, lo anota en la
-cola: si se cierra a la mitad, al volver a abrirlo queda la del navegador y quita la suya. Si el navegador termina
+cola: si se cierra a la mitad, al volver a abrirlo queda la del navegador y quita la suya. Si no se puede confirmar
+que el navegador dejó de bajarla, Atarraya pausa la suya, te avisa y no sigue hasta saberlo. Si el navegador termina
 una parte con Atarraya cerrado, la extensión guarda el aviso y se lo pasa cuando vuelve a abrirse: la parte se pasa a
 la carpeta del paquete y sigue hasta Jícaro. Antes de mover lo que bajó el navegador, Atarraya revisa que sea el
 mismo archivo, sin enlaces en ninguna carpeta, y lo mueve sin pisar nada.

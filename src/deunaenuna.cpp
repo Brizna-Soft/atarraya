@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cwctype>
 #include <map>
@@ -237,6 +238,7 @@ void hnd::DeUnaEnUna::Cargar()
                 p.identidadNavegador.modificado = id->value("modificado", (int64_t)0);
             }
             p.finalNavegador = j.value("finalNavegador", false);
+            p.sinConfirmar = j.value("sinConfirmar", false) && p.estado == EstadoParte::Tomada;
             m_partes.push_back(std::move(p));
             if (m_partes.size() >= 5000) break;
         }
@@ -264,7 +266,7 @@ bool hnd::DeUnaEnUna::Guardar() const
                       { "identidadNavegador", json{ { "volumen", p.identidadNavegador.volumen }, { "indice", p.identidadNavegador.indice },
                                                     { "tamano", p.identidadNavegador.tamano },
                                                     { "modificado", p.identidadNavegador.modificado } } },
-                      { "finalNavegador", p.finalNavegador } });
+                      { "finalNavegador", p.finalNavegador }, { "sinConfirmar", p.sinConfirmar } });
     }
     json todo = { { "version", 1 }, { "partes", l } };
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
@@ -360,6 +362,7 @@ void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
     p.limite = false;
     p.toma.clear();
     p.estadoToma = EstadoToma::Ninguna;
+    p.sinConfirmar = false;
 }
 
 void hnd::DeUnaEnUna::Probar(int i, uint64_t descarga, const std::string& toma, int64_t ahora)
@@ -409,6 +412,24 @@ uint64_t hnd::DeUnaEnUna::NavegadorSiguio(int i)
     return quitar;
 }
 
+uint64_t hnd::DeUnaEnUna::MarcarSinConfirmar(int i)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return 0;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Tomada || p.estadoToma != EstadoToma::Tomada || p.sinConfirmar) return 0;
+    p.sinConfirmar = true;
+    return p.descarga;
+}
+
+uint64_t hnd::DeUnaEnUna::Confirmar(int i)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return 0;
+    auto& p = m_partes[i];
+    if (!p.sinConfirmar) return 0;
+    p.sinConfirmar = false;
+    return p.estado == EstadoParte::Tomada ? p.descarga : 0;
+}
+
 int hnd::DeUnaEnUna::ParteDeToma(const std::string& toma) const
 {
     if (toma.empty()) return -1;
@@ -432,6 +453,7 @@ hnd::DeUnaEnUna::RespuestaToma hnd::DeUnaEnUna::EstadoDeToma(const std::string& 
     // Todavía importa lo que diga el navegador: la baja él (y no llegó su aviso final), o la baja Atarraya (si el
     // navegador siguió con la suya, queda la del navegador). Si ya terminó, falló o se saltó, ya no.
     r.espera = (p.estado == EstadoParte::Navegador && !p.finalNavegador) || p.estado == EstadoParte::Tomada;
+    r.sinConfirmar = p.sinConfirmar && p.estado == EstadoParte::Tomada;
     return r;
 }
 
@@ -570,6 +592,7 @@ void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
     p.rutaNavegador.clear();
     p.identidadNavegador = {};
     p.finalNavegador = false;
+    p.sinConfirmar = false;
 }
 
 int hnd::DeUnaEnUna::BuscarToma(const std::string& toma) const
@@ -695,6 +718,10 @@ namespace
     };
 }
 
+#ifdef ATARRAYA_PRUEBAS
+std::function<void()> hnd::pruebas::AntesDeMover;
+#endif
+
 bool hnd::LeerArchivoDelNavegador(const std::wstring& ruta, IdentidadArchivo& identidad, std::string& motivo)
 {
     identidad = {};
@@ -768,9 +795,11 @@ hnd::Movida hnd::MoverArchivoDelNavegador(const std::wstring& ruta, const Identi
         motivo = "el archivo cambió desde que el navegador avisó que terminó";
         return Movida::NoCoincide;
     }
-    // La carpeta del paquete: la de verdad (no un enlace a otra) y en el mismo disco
-    Cerrar c{ CreateFileW(dir.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
-                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr) };
+    // La carpeta del paquete: la de verdad (no un enlace a otra) y en el mismo disco. Queda abierta sin compartir el
+    // permiso de borrar hasta que termina el movimiento: mientras tanto nadie la puede renombrar, borrar ni cambiar por
+    // un enlace, y el archivo se mueve adentro de esa misma carpeta abierta (no por su ruta).
+    Cerrar c{ CreateFileW(dir.c_str(), FILE_READ_ATTRIBUTES | FILE_TRAVERSE | SYNCHRONIZE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                          OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr) };
     BY_HANDLE_FILE_INFORMATION ic = {};
     if (c.h == INVALID_HANDLE_VALUE || !GetFileInformationByHandle(c.h, &ic) || !(ic.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
     {
@@ -783,7 +812,7 @@ hnd::Movida hnd::MoverArchivoDelNavegador(const std::wstring& ruta, const Identi
         return Movida::ConEnlaces;
     }
     std::wstring nombre = completa.substr(completa.find_last_of(L'\\') + 1);
-    if (nombre.empty() || nombre == L"." || nombre == L"..")
+    if (nombre.empty() || nombre == L"." || nombre == L".." || nombre.find_first_of(L"\\/:") != std::wstring::npos)
     {
         motivo = "el archivo no tiene un nombre que sirva";
         return Movida::NoSePudo;
@@ -796,22 +825,45 @@ hnd::Movida hnd::MoverArchivoDelNavegador(const std::wstring& ruta, const Identi
         motivo = "la carpeta del paquete está en otro disco";
         return Movida::OtroDisco;
     }
-    // Por el mismo archivo abierto (el que se revisó), sin reemplazar nada
-    std::vector<BYTE> buf(sizeof(FILE_RENAME_INFO) + (destino.size() + 1) * sizeof(wchar_t), 0);
+#ifdef ATARRAYA_PRUEBAS
+    if (pruebas::AntesDeMover) pruebas::AntesDeMover();   // las pruebas intentan cambiar la carpeta justo aquí
+#endif
+    // Por el mismo archivo abierto (el que se revisó), sin reemplazar nada, con solo su nombre dentro de la carpeta
+    // abierta: ninguna ruta se vuelve a buscar. SetFileInformationByHandle no acepta una carpeta abierta como raíz, así
+    // que va directo a NtSetInformationFile (FileRenameInformation), que sí.
+    std::vector<BYTE> buf(sizeof(FILE_RENAME_INFO) + (nombre.size() + 1) * sizeof(wchar_t), 0);
     auto* info = reinterpret_cast<FILE_RENAME_INFO*>(buf.data());
     info->ReplaceIfExists = FALSE;
-    info->RootDirectory = nullptr;
-    info->FileNameLength = (DWORD)(destino.size() * sizeof(wchar_t));
-    memcpy(info->FileName, destino.c_str(), info->FileNameLength);
-    if (!SetFileInformationByHandle(h.h, FileRenameInfo, info, (DWORD)buf.size()))
+    info->RootDirectory = c.h;
+    info->FileNameLength = (DWORD)(nombre.size() * sizeof(wchar_t));
+    memcpy(info->FileName, nombre.c_str(), info->FileNameLength);
+    using NtSetInformationFileFn = LONG(NTAPI*)(HANDLE, void*, void*, ULONG, int);
+    struct EstadoEs
     {
-        DWORD e = GetLastError();
-        if (e == ERROR_ALREADY_EXISTS || e == ERROR_FILE_EXISTS)
+        union { LONG estado; void* puntero; };
+        ULONG_PTR informacion;
+    } es = {};
+    auto renombrar = reinterpret_cast<NtSetInformationFileFn>(
+        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile")));
+    LONG st = renombrar ? renombrar(h.h, &es, info, (ULONG)buf.size(), 10 /* FileRenameInformation */) : (LONG)0xC0000002;
+    if (st < 0)
+    {
+        if ((unsigned long)st == 0xC0000035UL)   // STATUS_OBJECT_NAME_COLLISION
         {
             motivo = "ya hay un archivo con ese nombre en la carpeta del paquete";
             return Movida::YaExiste;
         }
-        motivo = "Windows no lo dejó mover (código " + std::to_string(e) + ")";
+        char codigo[16];
+        snprintf(codigo, sizeof(codigo), "0x%08lX", (unsigned long)st);
+        motivo = std::string("Windows no lo dejó mover (código ") + codigo + ")";
+        return Movida::NoSePudo;
+    }
+    // Quedó donde se pidió: el mismo archivo, dentro de la misma carpeta
+    std::wstring final = RutaReal(h.h);
+    if (!MismaRuta(final, destino))
+    {
+        motivo = "después de moverlo no quedó en la carpeta del paquete";
+        destino = final;
         return Movida::NoSePudo;
     }
     return Movida::Movida;
@@ -881,6 +933,7 @@ int hnd::DeUnaEnUna::Terminar(uint64_t descarga, bool ok)
         if (p.descarga == descarga && (p.estado == EstadoParte::Tomada || p.estado == EstadoParte::Fallo))
         {
             p.estado = ok ? EstadoParte::Lista : EstadoParte::Fallo;
+            p.sinConfirmar = false;
             return (int)i;
         }
     }
@@ -895,6 +948,7 @@ void hnd::DeUnaEnUna::Saltar(int i)
         || p.estado == EstadoParte::Espera || p.estado == EstadoParte::Navegador)
     {
         p.estado = EstadoParte::Saltada;
+        p.sinConfirmar = false;
         p.hasta = 0;
         p.limite = false;
     }

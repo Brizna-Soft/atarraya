@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -85,19 +86,31 @@ namespace hnd
         std::wstring rutaNavegador;
         IdentidadArchivo identidadNavegador;
         bool finalNavegador = false;
+        // La tomó Atarraya, pero la extensión no pudo cancelar la del navegador ni saber cómo quedó: pueden estar bajando
+        // las dos. La de Atarraya queda en pausa hasta que se sepa. Se guarda.
+        bool sinConfirmar = false;
     };
 
     // Pasar a la carpeta del paquete lo que bajó el navegador, sin mover nunca un archivo ajeno:
     //   - LeerArchivoDelNavegador: cuando el navegador avisa que terminó. Una ruta completa de esta PC, sin enlaces
     //     simbólicos ni puntos de unión en ninguna carpeta ni en el archivo, y un archivo común. Lee su identidad.
     //   - MoverArchivoDelNavegador: lo abre (mientras está abierto nadie más lo puede cambiar ni borrar), comprueba
-    //     otra vez que no hay enlaces, que su ruta real es esa y que sigue siendo el mismo archivo (identidad), y lo
-    //     pasa a «carpeta» con su nombre, por ese mismo archivo abierto, sin reemplazar nada. «carpeta» también tiene
-    //     que ser la de verdad, sin enlaces. Si es otro disco, no lo mueve (sería copiar gigas): devuelve OtroDisco.
+    //     otra vez que no hay enlaces, que su ruta real es esa y que sigue siendo el mismo archivo (identidad). Abre
+    //     también «carpeta» (tiene que ser la de verdad, sin enlaces) y la deja abierta sin que nadie la pueda renombrar
+    //     ni cambiar por un enlace. Lo pasa adentro de esa carpeta abierta, con su nombre, por ese mismo archivo
+    //     abierto y sin reemplazar nada. Si es otro disco, no lo mueve (sería copiar gigas): devuelve OtroDisco.
     enum class Movida { Movida, OtroDisco, NoCoincide, ConEnlaces, YaExiste, NoSePudo };
     bool LeerArchivoDelNavegador(const std::wstring& ruta, IdentidadArchivo& identidad, std::string& motivo);
     Movida MoverArchivoDelNavegador(const std::wstring& ruta, const IdentidadArchivo& identidad, const std::wstring& carpeta,
                                     std::wstring& destino, std::string& motivo);
+#ifdef ATARRAYA_PRUEBAS
+    namespace pruebas
+    {
+        // Solo en las pruebas: se llama justo antes de mover, con la carpeta y el archivo abiertos (para intentar
+        // cambiarlos en ese momento)
+        extern std::function<void()> AntesDeMover;
+    }
+#endif
 
     // Qué es una descarga que pasó el navegador
     struct Emparejamiento
@@ -164,14 +177,20 @@ namespace hnd
         // El navegador siguió bajando una que Atarraya ya había tomado (por ejemplo, no se pudo cancelar, o la extensión no
         // supo de Atarraya a tiempo): queda la del navegador. Devuelve la descarga de Atarraya que hay que quitar (0: ninguna).
         uint64_t NavegadorSiguio(int i);
+        // La extensión no pudo cancelar la del navegador ni saber cómo quedó: la parte queda «sin confirmar» y devuelve la
+        // descarga de Atarraya que hay que pausar hasta saberlo (0: no aplica). «Confirmar»: ya se sabe que la del
+        // navegador no sigue; devuelve la de Atarraya que hay que reanudar (0: no aplica).
+        uint64_t MarcarSinConfirmar(int i);
+        uint64_t Confirmar(int i);
         // Lo que se le contesta a la extensión sobre una «toma»: quién la baja («probando», «tomada», «navegador»;
-        // «terminada»: ya llegó y quedó anotado lo que bajó el navegador; «desconocida»: no es de ninguna parte) y si
+        // «terminada»: ya llegó y quedó anotado lo que bajó el navegador; «desconocida»: no es de ninguna parte), si
         // Atarraya todavía espera un aviso del navegador sobre ella (la extensión guarda su aviso final y lo repite
-        // hasta que ya no)
+        // hasta que ya no) y si la parte quedó «sin confirmar»
         struct RespuestaToma
         {
             std::string estado = "desconocida";
             bool espera = false;
+            bool sinConfirmar = false;
         };
         RespuestaToma EstadoDeToma(const std::string& toma) const;
         void Progreso(int i, int64_t bajado, int64_t total);

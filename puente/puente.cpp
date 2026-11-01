@@ -7,7 +7,8 @@
 // Las consultas de «de una en una» («emparejar»: ¿esta descarga es de una parte?, «toma»: ¿quién baja esta descarga?)
 // esperan la respuesta: Atarraya la manda enseguida con WM_COPYDATA a una ventana invisible del puente. Las consultas y
 // los avisos («navegador»: cómo va una descarga que sigue la extensión, «espera»: la página pide esperar, «soltar»: que
-// siga el navegador) nunca abren Atarraya.
+// siga el navegador, «sinConfirmar» y «confirmada»: si la del navegador sigue después de no poder cancelarla) nunca
+// abren Atarraya.
 //
 // El «puerto»: si lo primero que llega es «hola», la extensión deja este puente abierto mientras Atarraya está abierto
 // (si no lo está, contesta «adios» y termina). El puente crea una ventana invisible donde Atarraya le deja sus órdenes
@@ -396,7 +397,7 @@ int main()
                 }
                 else respuesta = { { "ok", false }, { "abierto", h != nullptr } };
             }
-            else if (tipo == "navegador" || tipo == "espera" || tipo == "soltar")
+            else if (tipo == "navegador" || tipo == "espera" || tipo == "soltar" || tipo == "sinConfirmar" || tipo == "confirmada")
             {
                 // Avisos de «de una en una»: solo si Atarraya está abierto
                 std::string url = j.value("url", "");

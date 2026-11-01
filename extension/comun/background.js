@@ -426,7 +426,7 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function seguirEnNavegador(item, datos, toma) {
+function seguirEnNavegador(item, datos, toma, sinConfirmar = false) {
   seguidas.set(item.id, {
     toma,
     pagina: datos.paginaCola || datos.pagina || "",
@@ -436,10 +436,42 @@ function seguirEnNavegador(item, datos, toma) {
     ultimoBytes: -1,
     ultimoEstado: "",
     desde: Date.now(),
+    sinConfirmar: sinConfirmar ? { desde: Date.now(), intento: 0, avisado: false } : undefined,
   });
   guardarCola();
   revisarSeguida(item.id);
   vigilarSeguidas();
+}
+
+// No se sabe si la del navegador sigue: se anota (storage.local, sin plazo) y se le avisa a Atarraya, que pausa la suya
+function anotarSinConfirmar(item, datos, toma) {
+  seguirEnNavegador(item, datos, toma, true);
+}
+
+// Se le avisa a Atarraya que la parte quedó «sin confirmar» (a lo sumo cada 30 segundos, hasta que lo anota)
+async function avisarSinConfirmar(id) {
+  const s = seguidas.get(id);
+  if (!s || !s.sinConfirmar || s.sinConfirmar.avisado || entregando.has(id) || !tocaFinal(s.sinConfirmar, Date.now(), false)) return;
+  entregando.add(id);
+  try {
+    s.sinConfirmar.intento = Date.now();
+    guardarCola();
+    let r = null;
+    try {
+      const e = await hablar({ tipo: "sinConfirmar", toma: s.toma });
+      if (e && e.ok) {
+        await esperar(1500);
+        r = await hablar({ tipo: "toma", toma: s.toma });
+      }
+    } catch (x) {}
+    // Atarraya ya la anotó (o la parte ya no espera nada: no hay nada que pausar)
+    if (r && r.ok && (r.sinConfirmar === true || r.espera === false) && s.sinConfirmar) {
+      s.sinConfirmar.avisado = true;
+      guardarCola();
+    }
+  } finally {
+    entregando.delete(id);
+  }
 }
 
 async function revisarSeguida(id) {
@@ -450,10 +482,34 @@ async function revisarSeguida(id) {
     entregarFinal(id);
     return;
   }
-  let item = null;
+  let item = null, consulto = true;
   try {
     [item] = await api.downloads.search({ id });
-  } catch (e) {}
+  } catch (e) {
+    consulto = false;
+  }
+  if (s.sinConfirmar) {
+    const d = resolverSinConfirmar(item, consulto);
+    if (d === "esperar") {
+      avisarSinConfirmar(id);   // todavía no se puede saber: Atarraya mantiene la suya en pausa
+      return;
+    }
+    if (d === "cancelada") {
+      // La del navegador ya no baja: sigue la de Atarraya (se le avisa como un aviso final, hasta que lo confirma)
+      if (item) {
+        try {
+          await api.downloads.erase({ id });
+        } catch (e) {}
+      }
+      anotarFinal(id, s, { tipo: "confirmada", toma: s.toma, estado: "cancelada" });
+      return;
+    }
+    // La sigue bajando el navegador (o ya la terminó): se sigue como las demás y Atarraya quita la suya con el primer aviso
+    delete s.sinConfirmar;
+    s.ultimoEstado = "";
+    guardarCola();
+  }
+  if (!consulto) return;   // no se pudo mirar ahora: otra vez en un rato
   if (!item) {
     // La persona la borró de la lista del navegador antes de que terminara: para Atarraya, no terminó
     anotarFinal(id, s, { tipo: "navegador", toma: s.toma, estado: "cancelada", url: s.url, referer: s.referer, paginaCola: s.pagina,
@@ -520,7 +576,7 @@ async function entregarFinal(id, ya = false) {
     } catch (x) {
       // Atarraya está cerrado (o no está el puente): queda guardado
     }
-    if (finalEntregado(r) === "listo" && seguidas.get(id) === s) {
+    if (finalEntregado(r, s.final) === "listo" && seguidas.get(id) === s) {
       seguidas.delete(id);
       guardarCola();
     }
@@ -529,10 +585,16 @@ async function entregarFinal(id, ya = false) {
   }
 }
 
-// Atarraya volvió a contestar: los avisos finales guardados van enseguida
+// Atarraya volvió a contestar: los avisos finales guardados (y las partes «sin confirmar» que todavía no sabe) van enseguida
 function alVolverAtarraya() {
   listoCola.then(() => {
-    for (const id of [...seguidas.keys()]) entregarFinal(id, true);
+    for (const [id, s] of [...seguidas]) {
+      if (s.final) entregarFinal(id, true);
+      else if (s.sinConfirmar && !s.sinConfirmar.avisado) {
+        s.sinConfirmar.intento = 0;
+        avisarSinConfirmar(id);
+      }
+    }
   });
 }
 
@@ -596,7 +658,7 @@ async function descargaDeLaCola(item, datos, r) {
     if (accion === "cancelar") {
       // Atarraya ya recibe el archivo: la del navegador sobra. Si no se pudo cancelar (por ejemplo, el navegador ya la
       // había terminado), sigue la del navegador y Atarraya quita la suya cuando la extensión le avisa
-      let cancelo = true;
+      let cancelo = true, consulto = true;
       try {
         await api.downloads.cancel(item.id);
       } catch (x) {
@@ -605,14 +667,23 @@ async function descargaDeLaCola(item, datos, r) {
       let ahora = null;
       try {
         [ahora] = await api.downloads.search({ id: item.id });
-      } catch (x) {}
-      const r = resultadoCancelar(ahora);
+      } catch (x) {
+        consulto = false;
+      }
+      const r = resultadoCancelar(ahora, cancelo, consulto);
       if (r === "cancelada") {
         try {
           await api.downloads.erase({ id: item.id });
         } catch (x) {
           // Ya no baja; solo queda en la lista del navegador
         }
+        return;
+      }
+      if (r === "sinConfirmar") {
+        // No se pudo cancelar ni saber cómo quedó: pueden estar bajando las dos. Atarraya pausa la suya y la parte no
+        // sigue hasta saberlo; la extensión lo sigue mirando (ver revisarSeguida)
+        console.warn("Atarraya: no se pudo cancelar ni revisar la descarga del navegador; queda sin confirmar");
+        anotarSinConfirmar(item, datos, toma);
         return;
       }
       console.warn("Atarraya: no se pudo cancelar la descarga del navegador (" + r + (cancelo ? "" : ", con error") + "); sigue esa");

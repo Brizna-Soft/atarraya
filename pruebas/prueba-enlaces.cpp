@@ -2094,6 +2094,33 @@ namespace
             Comprobar(q.Decidir(i, false) == 77 && q.Partes()[i].estado == EstadoParte::Navegador && q.Partes()[i].estadoToma == EstadoToma::Navegador,
                       "tomas: si Atarraya no puede (o se le pide soltarla), queda la del navegador y se quita la de Atarraya");
         }
+        {
+            // No se pudo cancelar la del navegador ni saber cómo quedó: la parte queda «sin confirmar» y la de Atarraya en
+            // pausa, también después de cerrar y abrir Atarraya, hasta saberlo
+            DeUnaEnUna q(archivo);
+            q.Vaciar();
+            q.Agregar({ parte("https://ddownload.com/h8h8h8h8/peli.part5.rar"), parte("https://ddownload.com/i9i9i9i9/peli.part6.rar") });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 91, "n4-sc", 1000);
+            Comprobar(q.MarcarSinConfirmar(i) == 0, "sin confirmar: solo una que ya tomó Atarraya");
+            q.Decidir(i, true);
+            uint64_t pausar = q.MarcarSinConfirmar(i);
+            auto e = q.EstadoDeToma("n4-sc");
+            Comprobar(pausar == 91 && q.Partes()[i].sinConfirmar && e.sinConfirmar && e.estado == "tomada" && q.MarcarSinConfirmar(i) == 0
+                          && q.Partes()[i].estado == EstadoParte::Tomada && !q.HayAbierta(),
+                      "sin confirmar: la parte queda «sin confirmar» y se pausa la de Atarraya (la cola no sigue con otra)");
+            q.Guardar();
+            DeUnaEnUna alVolver(archivo);
+            alVolver.Cargar();
+            Comprobar(alVolver.Partes()[i].sinConfirmar && alVolver.EstadoDeToma("n4-sc").sinConfirmar && alVolver.ResolverTomasAlAbrir().empty(),
+                      "sin confirmar: sigue así después de cerrar y abrir Atarraya");
+            uint64_t reanudar = alVolver.Confirmar(i);
+            Comprobar(reanudar == 91 && !alVolver.Partes()[i].sinConfirmar && !alVolver.EstadoDeToma("n4-sc").sinConfirmar && alVolver.Confirmar(i) == 0,
+                      "sin confirmar: cuando se sabe que la del navegador ya no baja, sigue la de Atarraya");
+            alVolver.MarcarSinConfirmar(i);
+            Comprobar(alVolver.NavegadorSiguio(i) == 91 && !alVolver.Partes()[i].sinConfirmar && alVolver.Partes()[i].estado == EstadoParte::Navegador,
+                      "sin confirmar: si la sigue bajando el navegador, queda esa y se quita la de Atarraya");
+        }
         DeleteFileW(archivo.c_str());
     }
 
@@ -2199,6 +2226,39 @@ namespace
             Comprobar(por == std::vector<int>{ i } && pv.identidadNavegador == id && pv.rutaNavegador == nav + L"\\peli.part7.rar" && pv.finalNavegador
                           && MoverArchivoDelNavegador(pv.rutaNavegador, pv.identidadNavegador, paquete, destino, motivo) == Movida::Movida,
                       "mover: si Atarraya se cerró después del aviso, al abrirlo sabe qué archivo era y lo termina de mover");
+        }
+        // Justo en el momento de mover, alguien intenta cambiar la carpeta del paquete por un enlace a otra (y cambiar el
+        // archivo): no puede, y el archivo queda en la carpeta del paquete de verdad
+        {
+            const std::wstring paquete2 = base + L"\\paquete2", aparte = base + L"\\aparte", trampa = base + L"\\trampa";
+            for (const auto& d : { paquete2, trampa }) fs::create_directories(d, ec);
+            escribir(nav + L"\\peli.part8.rar", "parte ocho");
+            LeerArchivoDelNavegador(nav + L"\\peli.part8.rar", id, motivo);
+            bool carpetaCambiada = true, unionHecha = true, archivoCambiado = true;
+            pruebas::AntesDeMover = [&]() {
+                carpetaCambiada = MoveFileExW(paquete2.c_str(), aparte.c_str(), 0) != FALSE;
+                unionHecha = carpetaCambiada && CrearUnion(paquete2, trampa);
+                archivoCambiado = MoveFileExW((nav + L"\\peli.part8.rar").c_str(), (nav + L"\\otro.rar").c_str(), 0) != FALSE;
+            };
+            Movida r = MoverArchivoDelNavegador(nav + L"\\peli.part8.rar", id, paquete2, destino, motivo);
+            pruebas::AntesDeMover = nullptr;
+            Comprobar(r == Movida::Movida && !carpetaCambiada && !unionHecha && !archivoCambiado && leer(paquete2 + L"\\peli.part8.rar") == "parte ocho"
+                          && !ExisteArchivo(trampa + L"\\peli.part8.rar") && !ExisteArchivo(aparte + L"\\peli.part8.rar"),
+                      "mover: mientras se mueve, nadie puede cambiar la carpeta del paquete por un enlace ni cambiar el archivo");
+            // Y se mueve adentro de la carpeta que se abrió, no por su ruta: aunque su carpeta de arriba cambie de nombre en
+            // ese momento, llega a la misma carpeta
+            const std::wstring arriba = base + L"\\arriba", arriba2 = base + L"\\arriba-movida";
+            fs::create_directories(arriba + L"\\paquete3", ec);
+            escribir(nav + L"\\peli.part9.rar", "parte nueve");
+            LeerArchivoDelNavegador(nav + L"\\peli.part9.rar", id, motivo);
+            bool arribaMovida = false;
+            pruebas::AntesDeMover = [&]() { arribaMovida = MoveFileExW(arriba.c_str(), arriba2.c_str(), 0) != FALSE; };
+            r = MoverArchivoDelNavegador(nav + L"\\peli.part9.rar", id, arriba + L"\\paquete3", destino, motivo);
+            pruebas::AntesDeMover = nullptr;
+            bool enLaMisma = leer((arribaMovida ? arriba2 : arriba) + L"\\paquete3\\peli.part9.rar") == "parte nueve";
+            Comprobar(enLaMisma && (r == Movida::Movida || (arribaMovida && r == Movida::NoSePudo)) && !ExisteArchivo(nav + L"\\peli.part9.rar"),
+                      "mover: el archivo va adentro de la carpeta abierta, aunque su carpeta de arriba cambie de nombre en ese momento");
+            RemoveDirectoryW(paquete2.c_str());   // si fuera un enlace, solo se quita el enlace
         }
         RemoveDirectoryW((base + L"\\union").c_str());
         RemoveDirectoryW((base + L"\\paquete-falso").c_str());

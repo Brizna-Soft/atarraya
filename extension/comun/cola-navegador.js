@@ -146,21 +146,31 @@ class TomaDelNavegador {
 }
 
 // Después de pedir que se cancele la del navegador, cómo quedó: «cancelada» (ya no baja), «terminada» (el navegador ya
-// la había terminado) o «sigue» (no se pudo cancelar). En los dos últimos casos sigue la del navegador y Atarraya quita
-// la suya.
-function resultadoCancelar(item) {
-  if (!item) return "cancelada";
-  if (item.state === "interrupted") return "cancelada";
+// la había terminado), «sigue» (no se pudo cancelar) o «sinConfirmar» (no se pudo cancelar ni saber cómo quedó: pueden
+// estar bajando las dos). Con «terminada» o «sigue» sigue la del navegador y Atarraya quita la suya; con «sinConfirmar»
+// Atarraya pausa la suya hasta saberlo. «cancelo»: cancelar no dio error (entonces ya no baja); «consulto»: mirarla no
+// dio error.
+function resultadoCancelar(item, cancelo = true, consulto = true) {
+  if (!consulto) return cancelo ? "cancelada" : "sinConfirmar";
+  if (!item || item.state === "interrupted") return "cancelada";
   if (item.state === "complete") return "terminada";
   return "sigue";
 }
 
-// El aviso final de una descarga que sigue la extensión (terminó, falló o se canceló) se guarda con ella en
-// storage.local hasta que Atarraya confirma que ya no espera nada de esa descarga. Si Atarraya está cerrado, se manda
-// otra vez cada 30 segundos mientras el navegador está abierto, al despertar la extensión y al volver a conectar.
+// Una parte «sin confirmar»: lo que se sabe ahora de la del navegador. «esperar» (todavía no se puede mirar),
+// «cancelada» (ya no baja: sigue la de Atarraya) o «sigue» (la baja el navegador o ya la terminó: Atarraya quita la suya)
+function resolverSinConfirmar(item, consulto) {
+  if (!consulto) return "esperar";
+  if (!item || item.state === "interrupted") return "cancelada";
+  return "sigue";
+}
+
+// El aviso final de una descarga que sigue la extensión (terminó, falló o se canceló; o, de una parte «sin confirmar»,
+// que la del navegador ya no baja) se guarda con ella en storage.local hasta que Atarraya lo confirma, sin plazo. Si
+// Atarraya está cerrado, se manda otra vez cada 30 segundos mientras el navegador está abierto, al despertar la
+// extensión y al volver a conectar.
 const REPETIR_FINAL = 30000;
-const VIDA_SEGUIDA = 3 * 24 * 3600000;   // una descarga que se sigue se olvida a los 3 días
-const VIDA_FINAL = 30 * 24 * 3600000;    // un aviso final que nunca se confirmó, al mes
+const VIDA_SEGUIDA = 3 * 24 * 3600000;   // una descarga que se sigue (sin aviso final ni nada por confirmar), 3 días
 
 // ¿Toca mandar (otra vez) el aviso final? «ya»: enseguida (al anotarlo, o porque se volvió a conectar con Atarraya)
 function tocaFinal(final, ahora, ya) {
@@ -169,25 +179,28 @@ function tocaFinal(final, ahora, ya) {
 }
 
 // Lo que contestó Atarraya a la consulta «toma» después del aviso final (null si no contestó): «listo» si ya no espera
-// nada de esa descarga (lo anotó, o no es de su cola); si no, «repetir»
-function finalEntregado(respuesta) {
-  return respuesta && respuesta.ok === true && respuesta.espera === false ? "listo" : "repetir";
+// nada de esa descarga (lo anotó, o no es de su cola) o, si el aviso era que la del navegador ya no baja, si la parte
+// ya no está «sin confirmar»; si no, «repetir»
+function finalEntregado(respuesta, final) {
+  if (!respuesta || respuesta.ok !== true) return "repetir";
+  if (final && final.tipo === "confirmada") return respuesta.sinConfirmar === false ? "listo" : "repetir";
+  return respuesta.espera === false ? "listo" : "repetir";
 }
 
-// Las descargas seguidas que se guardaron: las de los últimos días, y por un mes las que tienen un aviso final sin
-// confirmar (Atarraya puede estar cerrado varios días)
+// Las descargas seguidas que se guardaron: las de los últimos días, y sin plazo las que tienen un aviso final que
+// Atarraya no confirmó o que quedaron «sin confirmar» (Atarraya puede estar cerrado mucho tiempo)
 function seguidasGuardadas(lista, ahora) {
   const r = [];
   for (const par of Array.isArray(lista) ? lista : []) {
     const [id, s] = Array.isArray(par) ? par : [];
     if (typeof id !== "number" || !s || typeof s !== "object" || typeof s.toma !== "string") continue;
-    const final = s.final && typeof s.final === "object";
-    if (ahora - (Number(final ? s.final.desde : s.desde) || 0) < (final ? VIDA_FINAL : VIDA_SEGUIDA)) r.push([id, s]);
+    const pendiente = (s.final && typeof s.final === "object") || (s.sinConfirmar && typeof s.sinConfirmar === "object");
+    if (pendiente || ahora - (Number(s.desde) || 0) < VIDA_SEGUIDA) r.push([id, s]);
   }
   return r;
 }
 
 if (typeof module !== "undefined") {
-  module.exports = { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal,
-                     finalEntregado, seguidasGuardadas };
+  module.exports = { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar,
+                     resolverSinConfirmar, tocaFinal, finalEntregado, seguidasGuardadas };
 }

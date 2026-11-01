@@ -14,8 +14,8 @@ const M = enNode
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
-  : { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, tocaFinal, finalEntregado,
-      seguidasGuardadas };
+  : { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, resolverSinConfirmar, tocaFinal,
+      finalEntregado, seguidasGuardadas };
 
 let fallas = 0;
 function decir(texto) {
@@ -322,14 +322,18 @@ if (enNode) {
     && enLaCola.indexOf('accion === "cancelar"') < enLaCola.indexOf("downloads.cancel(item.id)")
     && /new TomaDelNavegador\(/.test(enLaCola) && !/\.catch\(\(\) => \{\}\)/.test(enLaCola),
     "extensión: la descarga de una parte se cancela en el navegador solo cuando Atarraya ya la tomó (y sin tragarse los errores)");
-  comprobar(/resultadoCancelar\(/.test(enLaCola) && /tipo: "soltar"/.test(enLaCola)
-    && enLaCola.indexOf("resultadoCancelar(") < enLaCola.indexOf("downloads.erase({ id: item.id })"),
+  comprobar(/resultadoCancelar\(ahora, cancelo, consulto\)/.test(enLaCola) && /tipo: "soltar"/.test(enLaCola)
+    && enLaCola.indexOf("resultadoCancelar(") < enLaCola.indexOf("downloads.erase({ id: item.id })")
+    && /if \(r === "sinConfirmar"\) \{[\s\S]*?anotarSinConfirmar\(item, datos, toma\);\s*return;\s*\}/.test(enLaCola),
     "extensión: al vencer el plazo le pide a Atarraya que suelte la suya, y después de cancelar mira si de verdad se canceló");
   // El aviso final no se borra al mandarlo: solo cuando Atarraya confirma que ya no espera nada de esa descarga
-  const revisar = fondo.slice(fondo.indexOf("async function revisarSeguida"), fondo.indexOf("function alVolverAtarraya"));
-  comprobar((fondo.match(/seguidas\.delete\(/g) || []).length === 1 && revisar.indexOf("finalEntregado(r)") > 0
-    && revisar.indexOf("finalEntregado(r)") < revisar.indexOf("seguidas.delete(id)") && /if \(aviso\.terminar\) \{\s*anotarFinal\(/.test(revisar),
+  const revisar = fondo.slice(fondo.indexOf("function anotarSinConfirmar"), fondo.indexOf("function alVolverAtarraya"));
+  comprobar((fondo.match(/seguidas\.delete\(/g) || []).length === 1 && revisar.indexOf("finalEntregado(r, s.final)") > 0
+    && revisar.indexOf("finalEntregado(r, s.final)") < revisar.indexOf("seguidas.delete(id)") && /if \(aviso\.terminar\) \{\s*anotarFinal\(/.test(revisar),
     "extensión: el aviso final se guarda y la descarga se olvida solo cuando Atarraya lo confirma");
+  comprobar(/resolverSinConfirmar\(item, consulto\)/.test(revisar) && /anotarFinal\(id, s, \{ tipo: "confirmada"/.test(revisar)
+    && /hablar\(\{ tipo: "sinConfirmar", toma: s\.toma \}\)/.test(revisar) && /if \(!consulto\) return;/.test(revisar),
+    "extensión: una parte «sin confirmar» se sigue mirando hasta saber si la del navegador sigue (y no se da por borrada si no se pudo mirar)");
   comprobar(/seguidasGuardadas\(/.test(fondo) && /if \(r\.abierto\) alVolverAtarraya\(\)/.test(fondo)
     && /listoCola\.then\(\(\) => \{\s*for \(const id of \[\.\.\.seguidas\.keys\(\)\]\) entregarFinal\(id\);/.test(fondo),
     "extensión: los avisos finales guardados se mandan otra vez al despertar y cuando Atarraya vuelve a contestar");
@@ -468,7 +472,8 @@ const t4 = new C.TomaDelNavegador(1000, 45000, 15000);
 comprobar(t4.paso("", 46000) === "soltar" && t4.paso("", 60999) === "esperar" && t4.paso("", 61000) === "seguir",
   "toma: si Atarraya no contesta (está cerrado, no baja nada), sigue la del navegador; al abrirse, Atarraya quita la suya");
 comprobar(C.resultadoCancelar(null) === "cancelada" && C.resultadoCancelar({ state: "interrupted", error: "USER_CANCELED" }) === "cancelada"
-  && C.resultadoCancelar({ state: "complete" }) === "terminada" && C.resultadoCancelar({ state: "in_progress" }) === "sigue",
+  && C.resultadoCancelar({ state: "complete" }) === "terminada" && C.resultadoCancelar({ state: "in_progress" }) === "sigue"
+  && C.resultadoCancelar({ state: "in_progress" }, false, true) === "sigue" && C.resultadoCancelar(null, true, false) === "cancelada",
   "toma: después de cancelar se mira cómo quedó; si no se canceló, sigue la del navegador y Atarraya quita la suya");
 comprobar(new C.TomaDelNavegador(1000).paso("ajena", 2000) === "seguir", "toma: una descarga que no es de una parte sigue en el navegador");
 
@@ -483,11 +488,28 @@ comprobar(!C.tocaFinal(sf.final, 30999, false) && C.tocaFinal(sf.final, 31000, f
 const vuelven = C.seguidasGuardadas(JSON.parse(JSON.stringify([[7, sf], [8, { toma: "n8-vieja", desde: 1000 }], ["x", {}], [9, null]])), 1000 + 5 * DIA);
 comprobar(vuelven.length === 1 && vuelven[0][0] === 7 && vuelven[0][1].final.estado === "completa" && vuelven[0][1].final.ruta === sf.final.ruta,
   "aviso final: sigue guardado aunque pasen días (storage.local); una descarga sin aviso final se olvida a los 3 días");
-comprobar(C.seguidasGuardadas([[7, sf]], 1000 + 31 * DIA).length === 0 && C.seguidasGuardadas([[8, { toma: "n8", desde: 1000 }]], 1000 + DIA).length === 1,
-  "aviso final: uno que nunca se confirmó se olvida al mes");
+comprobar(C.seguidasGuardadas([[7, sf]], 1000 + 400 * DIA).length === 1 && C.seguidasGuardadas([[8, { toma: "n8", desde: 1000 }]], 1000 + DIA).length === 1
+  && C.seguidasGuardadas([[8, { toma: "n8", desde: 1000 }]], 1000 + 4 * DIA).length === 0,
+  "aviso final: se guarda hasta que Atarraya lo confirma, sin plazo (aunque pase más de un año)");
 comprobar(C.finalEntregado({ ok: true, estado: "navegador", espera: true }) === "repetir" && C.finalEntregado({ ok: true, estado: "terminada", espera: false }) === "listo"
   && C.finalEntregado({ ok: true, estado: "desconocida", espera: false }) === "listo" && C.finalEntregado({ ok: true, estado: "navegador" }) === "repetir",
   "aviso final: se borra solo cuando Atarraya contesta que ya no espera nada de esa descarga");
+
+// --- Cancelar sin poder confirmarlo: nunca se da por cancelada ------------------------------------------------------
+comprobar(C.resultadoCancelar(null, false, false) === "sinConfirmar" && C.resultadoCancelar({ state: "in_progress" }, false, false) === "sinConfirmar",
+  "sin confirmar: si falla cancelar y también falla mirar cómo quedó, la parte queda «sin confirmar» (no se da por cancelada)");
+comprobar(C.resolverSinConfirmar(null, false) === "esperar" && C.resolverSinConfirmar({ state: "in_progress" }, false) === "esperar"
+  && C.resolverSinConfirmar(null, true) === "cancelada" && C.resolverSinConfirmar({ state: "interrupted", error: "USER_CANCELED" }, true) === "cancelada"
+  && C.resolverSinConfirmar({ state: "in_progress" }, true) === "sigue" && C.resolverSinConfirmar({ state: "complete" }, true) === "sigue",
+  "sin confirmar: no sigue hasta saberlo; si ya no baja, sigue la de Atarraya; si la baja el navegador, Atarraya quita la suya");
+const sc = { toma: "n9-sc", desde: 1000, sinConfirmar: { desde: 1000, intento: 0, avisado: false } };
+comprobar(C.seguidasGuardadas(JSON.parse(JSON.stringify([[9, sc]])), 1000 + 400 * DIA).length === 1,
+  "sin confirmar: se guarda (sin plazo) hasta saberlo, aunque el navegador o Atarraya se cierren");
+const confirmada = { tipo: "confirmada", toma: "n9-sc", estado: "cancelada" };
+comprobar(C.finalEntregado({ ok: true, espera: true, sinConfirmar: true }, confirmada) === "repetir"
+  && C.finalEntregado({ ok: true, espera: true, sinConfirmar: false }, confirmada) === "listo" && C.finalEntregado(null, confirmada) === "repetir"
+  && C.finalEntregado({ ok: true, espera: false }, confirmada) === "repetir",
+  "sin confirmar: el aviso de que ya no baja se repite hasta que Atarraya reanuda la suya");
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
 if (enNode) process.exitCode = fallas ? 1 : 0;

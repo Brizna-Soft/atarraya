@@ -1492,6 +1492,39 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         m_porAbrir.erase(a);
         return;
     }
+    if (tipo == "sinConfirmar")
+    {
+        // La extensión no pudo cancelar la del navegador ni saber cómo quedó: pueden estar bajando las dos. La de
+        // Atarraya se pausa y la parte no sigue hasta saberlo (la extensión lo sigue mirando).
+        int i = m_sitios.ParteDeToma(campo("toma"));
+        uint64_t pausar = m_sitios.MarcarSinConfirmar(i);
+        if (!pausar) return;
+        m_motor.Pausar(pausar);
+        GuardarCola();
+        size_t cuantas = m_sitios.Partes().size();
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": no se pudo confirmar si el navegador sigue bajándola; "
+                  "Atarraya pausó la suya hasta saberlo");
+        Avisar(wxString::Format(L"Parte %d de %zu: no se pudo confirmar", i + 1, cuantas),
+               L"No se pudo saber si tu navegador sigue bajando esta parte. Atarraya pausó la suya hasta saberlo, para no bajarla dos "
+               L"veces. Mira la lista de descargas de tu navegador.",
+               true);
+        ActualizarBarraSitios();
+        Refrescar();
+        return;
+    }
+    if (tipo == "confirmada")
+    {
+        // Ya se sabe: la del navegador no sigue. La de Atarraya sigue donde iba.
+        int i = m_sitios.ParteDeToma(campo("toma"));
+        if (i < 0 || campo("estado") != "cancelada") return;
+        uint64_t reanudar = m_sitios.Confirmar(i);
+        GuardarCola();
+        if (reanudar) m_motor.Reanudar(reanudar);
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": se confirmó que el navegador ya no la baja; sigue la de Atarraya");
+        ActualizarBarraSitios();
+        Refrescar();
+        return;
+    }
     if (tipo == "soltar")
     {
         // A la extensión se le acabó el plazo: que siga el navegador, si Atarraya todavía no la tomó. Decide Atarraya
@@ -2295,6 +2328,13 @@ void VentanaPrincipal::ActualizarBarraSitios()
                                     : wxString(L" y te avisa.");
             otraVez = saltar = true;
         }
+        else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar)
+        {
+            texto = wxString::Format(L"Parte %d de %zu: no se pudo confirmar si tu navegador la sigue bajando. Atarraya pausó la suya "
+                                     L"hasta saberlo; mira la lista de descargas de tu navegador.",
+                                     i + 1, total);
+            saltar = true;
+        }
         else if (i >= 0)
         {
             texto = wxString::Format(L"Parte %d de %zu bajando en Atarraya. ", i + 1, total);
@@ -2879,6 +2919,7 @@ std::string VentanaPrincipal::Consulta(const std::string& texto)
         if (m_sitios.ParteDeToma(toma) < 0 && m_tomasSinParte.count(toma)) e.estado = "ajena";
         r["estado"] = e.estado;
         r["espera"] = e.espera;
+        r["sinConfirmar"] = e.sinConfirmar;
     }
     else r["error"] = "consulta desconocida";
     return r.dump();
