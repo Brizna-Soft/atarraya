@@ -190,8 +190,20 @@ namespace hnd
         // navegador no sigue; devuelve la de Atarraya que hay que reanudar (0: no aplica).
         uint64_t MarcarSinConfirmar(int i);
         uint64_t Confirmar(int i);
-        // Cada vez que se revisa: «estado» y «pausando» son los de su descarga en la lista. Con «Listo», deja de revisarse.
-        AccionPausa RevisarPausa(int i, Estado estado, bool pausando);
+        // Cada vez que se revisa: «estado» y «pausando» son los de su descarga en la lista. «Listo»: ya no hay nada que
+        // hacer (no cambia nada: la marca «reanudar» la borra RevisarPausas, después de guardar la descarga reanudada).
+        AccionPausa RevisarPausa(int i, Estado estado, bool pausando) const;
+        // Una vuelta de las pausas (la ventana la hace en cada vuelta y al abrir Atarraya), con lo justo de la lista de
+        // descargas. El orden importa: la marca «reanudar» se borra recién después de guardar la lista de descargas con
+        // la descarga ya reanudada. Si Atarraya se cierra de golpe entre los dos pasos (o no se pudo guardar), la marca
+        // sigue y al abrirlo se revisa otra vez: la parte nunca queda pausada. Devuelve si hay que guardar la cola.
+        struct ListaParaPausas
+        {
+            std::function<bool(uint64_t descarga, Estado& estado, bool& pausando)> buscar;
+            std::function<void(uint64_t descarga)> pausar, reanudar;
+            std::function<bool()> guardar;   // la lista de descargas, ya; falso si no se pudo
+        };
+        bool RevisarPausas(const ListaParaPausas& lista, std::vector<int>* repausadas = nullptr);
         // Lo que se le contesta a la extensión sobre una «toma»: quién la baja («probando», «tomada», «navegador»;
         // «terminada»: ya llegó y quedó anotado lo que bajó el navegador; «desconocida»: no es de ninguna parte), si
         // Atarraya todavía espera un aviso del navegador sobre ella (la extensión guarda su aviso final y lo repite

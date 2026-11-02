@@ -2379,12 +2379,67 @@ namespace
                           && tras.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Reanudar && tras.Partes()[i].reanudar,
                       "sin confirmar: al confirmarse se reanuda; si la pausa todavía no terminó, se espera y se intenta otra vez");
             tras.Guardar();
+            // Una lista de descargas de mentira: cómo está la descarga ahora y cómo quedó guardada
+            struct Falsa
+            {
+                Estado ahora = Estado::Pausada, guardado = Estado::Pausada;
+                bool falla = false;
+                std::vector<std::string> pasos;
+            } f;
+            auto lista = [&f, i](DeUnaEnUna* cola) {
+                DeUnaEnUna::ListaParaPausas l;
+                l.buscar = [&f](uint64_t, Estado& e, bool& pausando) {
+                    e = f.ahora;
+                    pausando = false;
+                    return true;
+                };
+                l.pausar = [&f](uint64_t) {
+                    f.pasos.push_back("pausar");
+                    f.ahora = Estado::Pausada;
+                };
+                l.reanudar = [&f](uint64_t) {
+                    f.pasos.push_back("reanudar");
+                    f.ahora = Estado::EnCola;
+                };
+                l.guardar = [&f, cola, i]() {
+                    f.pasos.push_back(std::string("guardar con la marca ") + (cola->Partes()[i].reanudar ? "puesta" : "borrada"));
+                    if (f.falla) return false;
+                    f.guardado = f.ahora;
+                    return true;
+                };
+                return l;
+            };
             DeUnaEnUna otraVez(archivo);   // y se cerró otra vez antes de reanudarla
             otraVez.Cargar();
-            Comprobar(otraVez.Partes()[i].reanudar && otraVez.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Reanudar
-                          && otraVez.RevisarPausa(i, Estado::Descargando, false) == AccionPausa::Listo && !otraVez.Partes()[i].reanudar
-                          && otraVez.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Listo,
-                      "sin confirmar: al abrir Atarraya la reanuda; cuando ya sigue, no se toca más (la parte nunca queda detenida)");
+            bool c1 = otraVez.RevisarPausas(lista(&otraVez));   // la reanuda
+            bool c2 = otraVez.RevisarPausas(lista(&otraVez));   // ya sigue: guarda la lista y recién después borra la marca
+            Comprobar(otraVez.Partes()[i].reanudar == false && !c1 && c2 && f.guardado == Estado::EnCola
+                          && f.pasos == std::vector<std::string>{ "reanudar", "guardar con la marca puesta" },
+                      "sin confirmar: al abrir Atarraya la reanuda, y la marca se borra recién después de guardar la descarga reanudada");
+            // Se cierra de golpe justo entre los dos pasos: la lista ya quedó guardada con la descarga reanudada, pero la cola
+            // todavía tiene la marca. Al abrir, la descarga ya sigue: solo se borra la marca (nada queda pausado).
+            DeUnaEnUna entreLosDos(archivo);
+            entreLosDos.Cargar();
+            f.ahora = f.guardado;
+            f.pasos.clear();
+            bool c3 = entreLosDos.RevisarPausas(lista(&entreLosDos));
+            Comprobar(entreLosDos.Partes()[i].reanudar == false && c3 && f.ahora == Estado::EnCola
+                          && f.pasos == std::vector<std::string>{ "guardar con la marca puesta" },
+                      "sin confirmar: un cierre de golpe justo entre guardar la descarga y borrar la marca no deja la parte pausada");
+            // Si la lista no se pudo guardar, la marca sigue; y si se cerró antes de guardarla, al abrir se reanuda otra vez
+            DeUnaEnUna sinGuardar(archivo);
+            sinGuardar.Cargar();
+            f.falla = true;
+            sinGuardar.RevisarPausas(lista(&sinGuardar));
+            bool sigueLaMarca = sinGuardar.Partes()[i].reanudar;
+            f.falla = false;
+            f.ahora = Estado::Pausada;   // así quedó guardada: el cierre fue antes de guardar la reanudada
+            f.pasos.clear();
+            DeUnaEnUna antesDeGuardar(archivo);
+            antesDeGuardar.Cargar();
+            antesDeGuardar.RevisarPausas(lista(&antesDeGuardar));
+            Comprobar(sigueLaMarca && antesDeGuardar.Partes()[i].reanudar && f.pasos == std::vector<std::string>{ "reanudar" },
+                      "sin confirmar: si la lista no se guardó, la marca sigue y al abrir Atarraya la descarga se reanuda otra vez");
         }
         DeleteFileW(archivo.c_str());
     }

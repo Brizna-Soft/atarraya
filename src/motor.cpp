@@ -1497,7 +1497,7 @@ namespace hnd
         Guardar();
     }
 
-    void Motor::Guardar()
+    bool Motor::Guardar()
     {
         json lista = json::array();
         uint64_t siguiente;
@@ -1534,11 +1534,10 @@ namespace hnd
             }
         }
         json todo = { { "version", 1 }, { "siguienteId", siguiente }, { "descargas", lista } };
-        if (EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace)))
-        {
-            m_sucio = false;
-            m_ultimoGuardado = AhoraUnix();
-        }
+        if (!EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace))) return false;
+        m_sucio = false;
+        m_ultimoGuardado = AhoraUnix();
+        return true;
     }
 
     void Motor::Cargar()
