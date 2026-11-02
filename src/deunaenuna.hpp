@@ -182,11 +182,20 @@ namespace hnd
         // error que no llegaron al recolector siguen ahí hasta que lleguen.
         // En Atarraya va dentro del archivo de la lista de descargas («guardarJunto» guarda las dos, de una vez); sin
         // «guardarJunto» (las pruebas, o la cola de antes, que se pasa una vez) usa su propio archivo.
-        void Cargar();
+        // Cargar dice cómo salió: no había archivo, se leyó, o está pero no se pudo leer (la cola queda vacía y el
+        // archivo, tal cual: solo se hace una copia «.danado» si no se entiende lo que tiene).
+        enum class Carga { NoHay, Bien, NoSePudo };
+        Carga Cargar();
         bool Guardar() const;
         std::function<bool()> guardarJunto;
         nlohmann::json ComoJson() const;
-        void DesdeJson(const nlohmann::json& todo);
+        bool DesdeJson(const nlohmann::json& todo);   // false si no tiene la forma de una cola (queda vacía)
+        // Al abrir Atarraya: la cola sale de «anexo» (lo que trae el archivo de la lista de descargas) o, si no trae
+        // ninguna, del archivo de antes. «DeAntes»: salió del archivo de antes (hay que guardarla en el nuevo y recién
+        // después borrar el viejo). «NoSePudo»: hay una cola que no se pudo leer: no se toca nada (ni se escribe la
+        // nueva ni se borra la vieja) y se intenta otra vez al abrir; mientras tanto la cola queda vacía.
+        enum class Origen { Bien, DeAntes, NoSePudo };
+        Origen CargarAlAbrir(const std::string& anexo);
 
         // Al final de la cola, y la guarda. Si no se pudo guardar, la cola queda como estaba y devuelve false (así los
         // enlaces no salen del recolector). Una página que ya está en la cola no entra otra vez (por ejemplo, si

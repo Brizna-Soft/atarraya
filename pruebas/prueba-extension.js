@@ -15,7 +15,7 @@ const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto,
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
   : { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, resolverSinConfirmar, tocaFinal,
-      finalEntregado, seguidasGuardadas, nuevaInstancia, instanciaValida, tomaNueva, instanciaDeToma, informeDeSeguidas };
+      finalEntregado, seguidasGuardadas, nuevaInstancia, instanciaValida, tomaNueva, instanciaDeToma, informeDeSeguidas, despuesDeGuardar };
 
 let fallas = 0;
 function decir(texto) {
@@ -327,9 +327,14 @@ if (enNode) {
     && decidir.indexOf("resultadoCancelar(") < decidir.indexOf("downloads.erase({ id })")
     && /if \(r === "sinConfirmar"\) \{[\s\S]*?anotarSinConfirmar\(\{ id \}, datosDe\(s\), toma\);\s*return;\s*\}/.test(decidir),
     "extensión: al vencer el plazo le pide a Atarraya que suelte la suya, y después de cancelar mira si de verdad se canceló");
-  // Lo que se decide queda anotado antes de pasarle la descarga a Atarraya, y al despertar se sigue decidiendo
-  comprobar(enLaCola.indexOf("probando: { desde: Date.now() }") > 0 && enLaCola.indexOf("probando: { desde: Date.now() }") < enLaCola.indexOf("guardarCola()")
-    && enLaCola.indexOf("guardarCola()") < enLaCola.indexOf("ok = await enviar(pedido)") && /await decidirToma\(item\.id\)/.test(enLaCola)
+  // Lo que se decide queda anotado antes de pasarle la descarga a Atarraya (se espera la confirmación de storage.local), y
+  // al despertar se sigue decidiendo
+  comprobar(enLaCola.indexOf("probando: { desde: Date.now() }") > 0 && enLaCola.indexOf("probando: { desde: Date.now() }") < enLaCola.indexOf("despuesDeGuardar(")
+    && /despuesDeGuardar\(\s*guardarCola,\s*async \(\) => \{[\s\S]*?return await enviar\(pedido\);/.test(enLaCola)
+    && (enLaCola.match(/enviar\(/g) || []).length === 1 && /await decidirToma\(item\.id\)/.test(enLaCola)
+    && /return api\.storage\.local\.set\(\{ seguidas: \[\.\.\.seguidas\] \}\)\.then\(/.test(fondo)
+    && /if \(!\(await guardarCola\(\)\)\) return;\s*\/\/ sin anotarlo no se avisa/.test(fondo)
+    && /\/\/ Primero queda guardado el aviso final[^\n]*\n\s*if \(!\(await guardarCola\(\)\)\) return;/.test(fondo)
     && /if \(s\.probando\) decidirToma\(id\);\s*else entregarFinal\(id\);/.test(fondo) && /if \(s\.probando\) return;/.test(fondo)
     && /tomaNueva\(instancia, item\.id, Date\.now\(\)\)/.test(enLaCola),
     "extensión: quién baja una parte se anota antes de pasársela a Atarraya, y si el «service worker» se apaga, al despertar se sigue decidiendo");
@@ -561,5 +566,19 @@ const pr = { toma: tn, desde: 1000, probando: { desde: 1000 } };
 comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasGuardadas([[3, pr]], 1000 + 4 * DIA).length === 0,
   "conciliar: lo que se estaba decidiendo se recuerda (storage.local) para seguir decidiendo al despertar");
 
-decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
-if (enNode) process.exitCode = fallas ? 1 : 0;
+// --- Una descarga de la cola se pasa recién cuando quedó guardado quién la baja --------------------------------------
+(async () => {
+  const pasos = [];
+  const tarde = (v) => new Promise((r) => setTimeout(() => r(v), 20));
+  const r1 = await C.despuesDeGuardar(async () => { pasos.push("guardar"); const ok = await tarde(true); pasos.push("guardado"); return ok; },
+    () => { pasos.push("pasar"); return "pasada"; }, () => { pasos.push("no"); return "no"; });
+  const bienOrden = r1 === "pasada" && JSON.stringify(pasos) === JSON.stringify(["guardar", "guardado", "pasar"]);
+  const pasos2 = [];
+  const r2 = await C.despuesDeGuardar(() => tarde(false), () => { pasos2.push("pasar"); return "pasada"; }, () => { pasos2.push("no"); return "no"; });
+  const r3 = await C.despuesDeGuardar(() => { throw new Error("sin lugar"); }, () => "pasada", () => "no");
+  const r4 = await C.despuesDeGuardar(() => tarde("sí"), () => "pasada", () => "no");   // solo «true» cuenta
+  comprobar(bienOrden && r2 === "no" && JSON.stringify(pasos2) === JSON.stringify(["no"]) && r3 === "no" && r4 === "no",
+    "duplicados: la descarga se le pasa a Atarraya recién cuando storage.local confirmó que guardó la decisión; si no, no se pasa");
+  decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
+  if (enNode) process.exitCode = fallas ? 1 : 0;
+})();

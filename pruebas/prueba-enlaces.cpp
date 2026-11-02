@@ -2485,6 +2485,49 @@ namespace
             Comprobar(MoverArchivoDelNavegador(nav + L"\\peli.part17.rar", id, paq, otraVez, motivo) != Movida::Movida,
                       "conciliar: otro archivo con el mismo nombre en el paquete no cuenta como movido");
         }
+
+        // 15. Pasar la cola de antes al archivo de la lista: si la de antes no se puede leer, no se toca nada (ni se escribe
+        //     la nueva ni se borra la vieja) y se intenta otra vez al abrir. Nunca se pierden partes.
+        {
+            std::wstring vieja = base + L"\\de-una-en-una.json";
+            DeUnaEnUna sinNada(base + L"\\no-esta.json");
+            bool nada = sinNada.CargarAlAbrir("") == DeUnaEnUna::Origen::Bien && sinNada.Partes().empty();
+            {
+                DeUnaEnUna q(vieja);
+                q.Agregar({ parte(18), parte(19) });
+            }
+            std::string buena;
+            LeerArchivo(vieja, buena);
+            DeUnaEnUna deAntes(vieja);
+            bool paso = deAntes.CargarAlAbrir("") == DeUnaEnUna::Origen::DeAntes && deAntes.Partes().size() == 2;
+            // Con la cola ya en el archivo de la lista, la de antes no se mira
+            DeUnaEnUna conAnexo(vieja);
+            nlohmann::json anexo = { { "cola", deAntes.ComoJson() } };
+            bool delAnexo = conAnexo.CargarAlAbrir(anexo.dump()) == DeUnaEnUna::Origen::Bien && conAnexo.Partes().size() == 2;
+            Comprobar(nada && paso && delAnexo, "conciliar: la cola de antes se pasa una vez (y con la del archivo de la lista, esa manda)");
+            // Dañada: no se toca (queda igual, con una copia «.danado»)
+            std::string danada = buena.substr(0, buena.size() / 2);
+            EscribirSeguro(vieja, danada);
+            DeUnaEnUna mala(vieja);
+            std::string despues;
+            bool noSePudo = mala.CargarAlAbrir("") == DeUnaEnUna::Origen::NoSePudo && mala.Partes().empty() && LeerArchivo(vieja, despues)
+                && despues == danada && ExisteArchivo(vieja + L".danado");
+            // Abierta por otro programa (no se puede leer): tampoco se toca
+            EscribirSeguro(vieja, buena);
+            HANDLE h = CreateFileW(vieja.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+            DeUnaEnUna bloqueada(vieja);
+            bool sinLeer = bloqueada.CargarAlAbrir("") == DeUnaEnUna::Origen::NoSePudo && bloqueada.Partes().empty();
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+            // Y al abrir otra vez, ya se puede: está entera
+            DeUnaEnUna otraVez(vieja);
+            bool despuesSi = otraVez.CargarAlAbrir("") == DeUnaEnUna::Origen::DeAntes && otraVez.Partes().size() == 2;
+            // Una cola dañada en el archivo de la lista: tampoco se toca
+            DeUnaEnUna anexoMalo(vieja);
+            bool malAnexo = anexoMalo.CargarAlAbrir("{\"cola\":{\"partes\":5}}") == DeUnaEnUna::Origen::NoSePudo && anexoMalo.Partes().empty()
+                && anexoMalo.CargarAlAbrir("{\"cola\":") == DeUnaEnUna::Origen::NoSePudo;
+            Comprobar(noSePudo && h != INVALID_HANDLE_VALUE && sinLeer && despuesSi && malAnexo,
+                      "conciliar: si la cola de antes no se puede leer (dañada o abierta por otro), no se toca y se intenta otra vez al abrir");
+        }
         fs::remove_all(base, ec);
     }
 

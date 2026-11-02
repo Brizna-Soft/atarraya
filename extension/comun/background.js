@@ -79,9 +79,14 @@ listoCola.then(() => {
     else entregarFinal(id);
   }
 });
+// Guarda las pestañas de la cola (storage.session) y lo que se sigue (storage.local). Devuelve (promete) si lo de
+// storage.local quedó guardado: antes de pasarle una descarga a Atarraya, o un aviso, se espera esa confirmación.
 function guardarCola() {
   if (api.storage.session) api.storage.session.set({ cola: cola.exportar() }).catch(() => {});
-  api.storage.local.set({ seguidas: [...seguidas] }).catch(() => {});
+  return api.storage.local.set({ seguidas: [...seguidas] }).then(
+    () => true,
+    () => false
+  );
 }
 
 // --- El puerto: la conexión que la extensión deja abierta mientras Atarraya está abierto ------------------------------
@@ -440,7 +445,8 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
 
 const esperar = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function seguirEnNavegador(item, datos, toma, sinConfirmar = false) {
+// La baja el navegador y la extensión la sigue: primero queda guardado (y se espera la confirmación), después se avisa
+async function seguirEnNavegador(item, datos, toma, sinConfirmar = false) {
   seguidas.set(item.id, {
     toma,
     pagina: datos.paginaCola || datos.pagina || "",
@@ -452,7 +458,7 @@ function seguirEnNavegador(item, datos, toma, sinConfirmar = false) {
     desde: Date.now(),
     sinConfirmar: sinConfirmar ? { desde: Date.now(), intento: 0, avisado: false } : undefined,
   });
-  guardarCola();
+  await guardarCola();
   revisarSeguida(item.id);
   vigilarSeguidas();
 }
@@ -469,7 +475,7 @@ async function avisarSinConfirmar(id) {
   entregando.add(id);
   try {
     s.sinConfirmar.intento = Date.now();
-    guardarCola();
+    if (!(await guardarCola())) return;   // sin anotarlo no se avisa: va en la próxima vuelta
     let r = null;
     try {
       const e = await hablar({ tipo: "sinConfirmar", toma: s.toma });
@@ -576,7 +582,8 @@ async function entregarFinal(id, ya = false) {
   entregando.add(id);
   try {
     s.final.intento = Date.now();
-    guardarCola();
+    // Primero queda guardado el aviso final (y se espera la confirmación); si no, va en la próxima vuelta
+    if (!(await guardarCola())) return;
     const aviso = Object.assign({}, s.final);
     delete aviso.desde;
     delete aviso.intento;
@@ -675,14 +682,22 @@ async function descargaDeLaCola(item, datos, r) {
     desde: Date.now(),
     probando: { desde: Date.now() },
   });
-  guardarCola();
-  // Atarraya prueba seguirla con una conexión, con las cookies y la página de origen; la del navegador sigue mientras
-  let ok = false;
-  try {
-    const pedido = Object.assign({}, datos, { cookies: await cookiesPara(item.url, datos.url), toma });
-    delete pedido.porFormulario;
-    ok = await enviar(pedido);
-  } catch (e) {}
+  // Recién cuando quedó guardado se le pasa a Atarraya, que prueba seguirla con una conexión, con las cookies y la página
+  // de origen (la del navegador sigue mientras). Si no se pudo guardar, no se le pasa: la baja el navegador, que ya la
+  // está bajando, y nunca quedan dos.
+  const ok = await despuesDeGuardar(
+    guardarCola,
+    async () => {
+      try {
+        const pedido = Object.assign({}, datos, { cookies: await cookiesPara(item.url, datos.url), toma });
+        delete pedido.porFormulario;
+        return await enviar(pedido);
+      } catch (e) {
+        return false;
+      }
+    },
+    () => false
+  );
   if (!ok) {
     seguirEnNavegador(item, datos, toma);
     return;
