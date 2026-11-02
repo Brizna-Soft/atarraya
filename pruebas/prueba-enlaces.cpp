@@ -23,6 +23,7 @@
 #include <bcrypt.h>
 #include <winioctl.h>
 
+#include <deque>
 #include <fstream>
 #include <map>
 #include <memory>
@@ -912,12 +913,15 @@ namespace
             return nullptr;
         };
 
+        // Aquí cada comprimido en partes dice que su última parte es la última (ver JuegosEnPartesPruebas para cuando no)
+        auto siEs = [](const std::vector<std::wstring>&, wchar_t) { return Ultima::Es; };
+
         // Juegos de cada tipo en un mismo paquete
         std::vector<Foto> l = { descarga(L"A.part1.rar", true), descarga(L"A.part2.rar", true), descarga(L"B.rar", true),
                                 descarga(L"B.r00", true), descarga(L"B.r01", false), descarga(L"C.7z.001", true), descarga(L"C.7z.002", true),
                                 descarga(L"D.z01", true), descarga(L"D.zip", false), descarga(L"E.zip", true), descarga(L"F.7z", true),
                                 descarga(L"leeme.nfo", false), descarga(L"G.part1.rar", true, "otro") };
-        auto j = Juegos("g1", l, {});
+        auto j = Juegos("g1", l, {}, siEs);
         const Juego *a = juego(j, L"A"), *b = juego(j, L"B"), *cc = juego(j, L"C"), *dd = juego(j, L"D"), *e = juego(j, L"E"),
                     *f = juego(j, L"F");
         Comprobar(j.juegos.size() == 6 && a && b && cc && dd && e && f && !juego(j, L"G") && j.dudosas == 0,
@@ -930,7 +934,7 @@ namespace
         Comprobar(dd && !j.Completo(*dd) && dd->faltan == 1,
                   "juegos: un ZIP partido espera a su .zip (es el que se abre)");
         l[8].datos.estado = Estado::Completada;   // llegó D.zip
-        auto j2 = Juegos("g1", l, {});
+        auto j2 = Juegos("g1", l, {}, siEs);
         const Juego* d2 = juego(j2, L"D");
         Comprobar(d2 && j2.Completo(*d2) && d2->partes.size() == 2 && d2->partes[0].ruta == c + L"\\D.zip",
                   "juegos: con su .zip, el ZIP partido está completo y se abre por el .zip");
@@ -939,27 +943,30 @@ namespace
         {
             std::vector<Foto> bajadas = { descarga(L"peli.part1.rar", true), descarga(L"otra.part1.rar", true), descarga(L"otra.part2.rar", true) };
             std::vector<Parte> cola = { parte("https://ddownload.com/x1x1x1x1/peli.part2.rar"), parte("https://rapidgator.net/file/abc/peli.part3.rar.html") };
-            auto jc = Juegos("g1", bajadas, cola);
+            auto jc = Juegos("g1", bajadas, cola, siEs);
             const Juego *peli = juego(jc, L"peli"), *otra = juego(jc, L"otra");
             Comprobar(peli && !jc.Completo(*peli) && peli->faltan == 2 && otra && jc.Completo(*otra),
                       "juegos: las partes que faltan en la cola (también «.rar.html») hacen esperar a su juego, no a los demás");
             cola.push_back(parte("https://1fichier.com/?k3k3k3k3"));
-            auto jd = Juegos("g1", bajadas, cola);
+            auto jd = Juegos("g1", bajadas, cola, siEs);
             const Juego* otra2 = juego(jd, L"otra");
             Comprobar(jd.dudosas == 1 && otra2 && !jd.Completo(*otra2),
                       "juegos: mientras falte una de la que no se sabe el nombre, ningún juego está completo (podría ser suya)");
             cola.back() = parte("https://ddownload.com/n4n4n4n4/leeme.nfo");
-            auto je = Juegos("g1", bajadas, cola);
+            auto je = Juegos("g1", bajadas, cola, siEs);
             Comprobar(je.dudosas == 0 && juego(je, L"otra") && je.Completo(*juego(je, L"otra")),
                       "juegos: una que falta y no es un comprimido («.nfo») no hace esperar a nadie");
         }
         // Una sola vez: queda anotado con cada descarga del juego
         {
             std::vector<Foto> bajadas = { descarga(L"uno.part1.rar", true), descarga(L"uno.part2.rar", true) };
-            bajadas[1].datos.descomprimido = true;
-            auto jf = Juegos("g1", bajadas, {});
-            Comprobar(jf.juegos.size() == 1 && jf.juegos[0].descomprimido && Juegos("", bajadas, {}).juegos.empty(),
-                      "juegos: un juego que ya se le pasó a Jícaro no se descomprime otra vez solo");
+            bajadas[1].datos.jicaro = EstadoJicaro::Hecho;
+            auto jf = Juegos("g1", bajadas, {}, siEs);
+            bajadas[1].datos.jicaro = EstadoJicaro::EnCurso;
+            auto jg = Juegos("g1", bajadas, {}, siEs);
+            Comprobar(jf.juegos.size() == 1 && jf.juegos[0].jicaro == EstadoJicaro::Hecho && jg.juegos[0].jicaro == EstadoJicaro::EnCurso
+                          && Juegos("", bajadas, {}).juegos.empty(),
+                      "juegos: un juego que ya se le pasó a Jícaro (o que está en curso) no se descomprime otra vez solo");
         }
         // El .zip de uno partido no es un comprimido suelto
         {
@@ -971,9 +978,254 @@ namespace
         }
     }
 
+    // 0.4.1 (revisión): un juego en partes está completo solo con todas sus partes, sin huecos y sabiendo cuál es la
+    // última (si no se sabe, cuando termina todo el paquete); Jícaro nunca junta partes de otro paquete; lo que quedó «en
+    // curso» se retoma al abrir; y el reintento con la contraseña no usa lo que ya se movió
+    void JuegosEnPartesPruebas()
+    {
+        using namespace hnd::jicaro;
+        namespace fs = std::filesystem;
+        const std::wstring c = L"C:\\Descargas\\Lote";
+        uint64_t siguiente = 500;
+        auto descarga = [&](const std::wstring& carpeta, const wchar_t* nombre, bool bajada, const std::string& grupo = "g1") {
+            Foto f;
+            f.datos.id = siguiente++;
+            f.datos.carpeta = carpeta;
+            f.datos.nombre = nombre;
+            f.datos.grupo = grupo;
+            f.datos.estado = bajada ? Estado::Completada : Estado::Descargando;
+            return f;
+        };
+        auto juego = [](const JuegosDelPaquete& j, const wchar_t* nombre) -> const Juego* {
+            for (const auto& x : j.juegos)
+            {
+                if (x.nombre == nombre) return &x;
+            }
+            return nullptr;
+        };
+        auto con = [](Ultima u) { return [u](const std::vector<std::wstring>&, wchar_t) { return u; }; };
+
+        // Huecos: .part1 y .part3 sin .part2 (y nada más baja): no está completo, y como ya terminó el paquete, se avisa
+        {
+            std::vector<Foto> l = { descarga(c, L"A.part1.rar", true), descarga(c, L"A.part3.rar", true) };
+            auto j = Juegos("g1", l, {}, con(Ultima::Es));
+            const Juego* a = juego(j, L"A");
+            Comprobar(a && a->huecos && !j.Completo(*a) && j.terminado && a->incompleto,
+                      "juegos en partes: .part1 y .part3 sin .part2 no están completos (falta una en el medio) y se avisa");
+            std::vector<Foto> z = { descarga(c, L"D.zip", true), descarga(c, L"D.z01", true), descarga(c, L"D.z03", true) };
+            std::vector<Foto> v = { descarga(c, L"B.r00", true), descarga(c, L"B.r01", true) };
+            auto jz = Juegos("g1", z, {}, con(Ultima::Es));
+            auto jv = Juegos("g1", v, {}, con(Ultima::Es));
+            Comprobar(juego(jz, L"D") && juego(jz, L"D")->huecos && !jz.Completo(*juego(jz, L"D")) && juego(jv, L"B")
+                          && juego(jv, L"B")->huecos && !jv.Completo(*juego(jv, L"B")),
+                      "juegos en partes: un ZIP partido sin su .z02, o un RAR viejo sin su .rar, tampoco");
+            z.push_back(descarga(c, L"D.z02", true));
+            auto jz2 = Juegos("g1", z, {}, con(Ultima::Es));
+            const Juego* d = juego(jz2, L"D");
+            Comprobar(d && !d->huecos && jz2.Completo(*d) && d->partes.size() == 4 && d->partes[0].ruta == c + L"\\D.zip",
+                      "juegos en partes: el ZIP partido con su .zip y todas las .zNN sin huecos está completo (Jícaro lo abre)");
+        }
+        // Si no se sabe cuál es la última, espera a que termine todo el paquete
+        {
+            std::vector<Foto> l = { descarga(c, L"X.part1.rar", true), descarga(c, L"X.part2.rar", true), descarga(c, L"Y.zip", false) };
+            auto j1 = Juegos("g1", l, {}, con(Ultima::NoSe));
+            l[2].datos.estado = Estado::Completada;
+            auto j2 = Juegos("g1", l, {}, con(Ultima::NoSe));
+            auto j3 = Juegos("g1", l, {}, con(Ultima::NoEs));
+            Comprobar(juego(j1, L"X") && !j1.Completo(*juego(j1, L"X")) && !juego(j1, L"X")->incompleto && juego(j2, L"X")
+                          && j2.Completo(*juego(j2, L"X")) && juego(j3, L"X") && !j3.Completo(*juego(j3, L"X")) && juego(j3, L"X")->incompleto,
+                      "juegos en partes: si no se sabe cuál es la última, espera al resto del paquete; si se sabe que falta otra, no se abre");
+            auto j4 = Juegos("g1", { descarga(c, L"X.part1.rar", true), descarga(c, L"X.part2.rar", true), descarga(c, L"Y.zip", false) }, {},
+                             con(Ultima::Es));
+            Comprobar(juego(j4, L"X") && j4.Completo(*juego(j4, L"X")) && !j4.terminado,
+                      "juegos en partes: si se sabe que la última es la última, se abre ya, sin esperar al resto del paquete");
+        }
+
+        // Lo que dice el propio comprimido, leído del disco
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        const std::wstring dir = std::wstring(temporal) + L"atarraya-prueba-partes-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        fs::remove_all(dir, ec);
+        fs::create_directories(dir, ec);
+        auto escribir = [&](const wchar_t* nombre, const std::string& datos) {
+            std::ofstream o(dir + L"\\" + nombre, std::ios::binary);
+            o << datos;
+            return dir + L"\\" + nombre;
+        };
+        auto vint = [](uint64_t v) {
+            std::string s;
+            do
+            {
+                unsigned char b = v & 0x7F;
+                v >>= 7;
+                if (v) b |= 0x80;
+                s.push_back((char)b);
+            } while (v);
+            return s;
+        };
+        // Un bloque de RAR 5: CRC, tamaño, tipo, banderas, [tamaño de los datos], lo demás y sus datos
+        auto bloque5 = [&](uint64_t tipo, uint64_t banderas, const std::string& resto, uint64_t datos = 0) {
+            std::string h = vint(tipo) + vint(banderas) + ((banderas & 2) ? vint(datos) : std::string()) + resto;
+            return std::string(4, '\0') + vint(h.size()) + h + std::string((size_t)datos, 'd');
+        };
+        const std::string rar5(std::string("Rar!\x1A\x07\x01\x00", 8));
+        std::string sigue5 = rar5 + bloque5(1, 0, vint(0x0001)) + bloque5(2, 0x0002, std::string(12, 'f'), 300) + bloque5(5, 0, vint(0x0001));
+        std::string ultima5 = rar5 + bloque5(1, 0, vint(0x0003) + vint(1)) + bloque5(2, 0x0002, std::string(12, 'f'), 120) + bloque5(5, 0, vint(0));
+        std::string cifrada5 = rar5 + bloque5(4, 0, std::string(20, 'c')) + std::string(64, 'x');
+        // Un bloque de RAR 4: CRC, tipo, banderas, tamaño, [tamaño de los datos], lo demás y sus datos
+        auto bloque4 = [](unsigned tipo, unsigned banderas, const std::string& resto, uint32_t datos = 0) {
+            std::string h(2, '\0');
+            h.push_back((char)tipo);
+            h.push_back((char)(banderas & 0xFF));
+            h.push_back((char)(banderas >> 8));
+            size_t tam = 7 + ((banderas & 0x8000) ? 4 : 0) + resto.size();
+            h.push_back((char)(tam & 0xFF));
+            h.push_back((char)(tam >> 8));
+            if (banderas & 0x8000)
+            {
+                for (int i = 0; i < 4; i++) h.push_back((char)((datos >> (8 * i)) & 0xFF));
+            }
+            return h + resto + std::string(datos, 'd');
+        };
+        const std::string rar4(std::string("Rar!\x1A\x07\x00", 7));
+        std::string sigue4 = rar4 + bloque4(0x73, 0x0001, std::string(6, '\0')) + bloque4(0x74, 0x8000, std::string(21, '\0'), 200) + bloque4(0x7B, 0x0001, "");
+        std::string ultima4 = rar4 + bloque4(0x73, 0x0001, std::string(6, '\0')) + bloque4(0x74, 0x8000, std::string(21, '\0'), 90) + bloque4(0x7B, 0, "");
+        auto p1 = escribir(L"R.part1.rar", sigue5), p2 = escribir(L"R.part2.rar", ultima5), c5 = escribir(L"C5.part1.rar", cifrada5);
+        auto v0 = escribir(L"V.rar", sigue4), v1 = escribir(L"V.r00", ultima4);
+        auto basura = escribir(L"basura.part1.rar", std::string(100, 'z'));
+        Comprobar(LaUltima({ p1 }, L'n') == Ultima::NoEs && LaUltima({ p1, p2 }, L'n') == Ultima::Es && LaUltima({ c5 }, L'n') == Ultima::NoSe
+                      && LaUltima({ basura }, L'n') == Ultima::NoSe && LaUltima({ v0 }, L'v') == Ultima::NoEs && LaUltima({ v0, v1 }, L'v') == Ultima::Es,
+                  "juegos en partes: RAR 5 y RAR 4 dicen al final de cada parte si sigue otra (cifradas o raras: no se sabe)");
+        // 7z partido: la primera parte dice cuánto mide todo (con su suma de control)
+        auto crc = [](const std::string& s) {
+            uint32_t c2 = 0xFFFFFFFFu;
+            for (unsigned char ch : s)
+            {
+                c2 ^= ch;
+                for (int k = 0; k < 8; k++) c2 = (c2 & 1) ? 0xEDB88320u ^ (c2 >> 1) : c2 >> 1;
+            }
+            return c2 ^ 0xFFFFFFFFu;
+        };
+        auto le = [](uint64_t v, int n) {
+            std::string s;
+            for (int i = 0; i < n; i++) s.push_back((char)((v >> (8 * i)) & 0xFF));
+            return s;
+        };
+        std::string resto7 = le(200, 8) + le(50, 8) + le(0, 4);   // la cabecera del final: en el byte 232 y de 50 bytes
+        std::string inicio7 = std::string("7z\xBC\xAF\x27\x1C\x00\x04", 8) + le(crc(resto7), 4) + resto7;
+        auto s1 = escribir(L"S.7z.001", inicio7 + std::string(118, 'a')), s2 = escribir(L"S.7z.002", std::string(132, 'b'));
+        std::string malo7 = inicio7;
+        malo7[20] ^= 1;   // la suma de control ya no coincide
+        auto s9 = escribir(L"M.7z.001", malo7 + std::string(10, 'a'));
+        auto z1 = escribir(L"H.zip.001", std::string(50, 'q'));
+        Comprobar(LaUltima({ s1, s2 }, L'c') == Ultima::Es && LaUltima({ s1 }, L'c') == Ultima::NoEs && LaUltima({ s9 }, L'c') == Ultima::NoSe
+                      && LaUltima({ z1 }, L'c') == Ultima::NoSe,
+                  "juegos en partes: un 7z partido está entero cuando sus partes suman lo que dice la primera (un .zip.001 no lo dice)");
+        // ZIP partido: el índice del .zip dice cuántas .zNN hay
+        std::string eocd = std::string("PK\x05\x06", 4) + le(2, 2) + le(0, 2) + le(1, 2) + le(1, 2) + le(46, 4) + le(0, 4) + le(0, 2);
+        auto zz = escribir(L"Z.zip", std::string(80, 'x') + eocd), zz1 = escribir(L"Z.z01", "uno"), zz2 = escribir(L"Z.z02", "dos");
+        Comprobar(LaUltima({ zz, zz1, zz2 }, L'z') == Ultima::Es && LaUltima({ zz, zz1 }, L'z') == Ultima::NoEs,
+                  "juegos en partes: un ZIP partido está entero con todas las .zNN que dice su .zip");
+
+        // Jícaro nunca junta partes de otro paquete que quedaron en la misma carpeta
+        {
+            escribir(L"peli.part1.rar", "a");
+            escribir(L"peli.part2.rar", "b");
+            escribir(L"otra.part1.rar", "c");
+            std::vector<Foto> l = { descarga(dir, L"peli.part1.rar", true), descarga(dir, L"peli.part2.rar", true) };
+            auto j = Juegos("g1", l, {}, con(Ultima::Es));
+            const Juego* peli = juego(j, L"peli");
+            std::vector<std::wstring> propias = { dir + L"\\peli.part1.rar", dir + L"\\PELI.part2.rar" };
+            bool sinAjenas = peli && ParteAjena(*peli, propias).empty();
+            escribir(L"peli.part3.rar", "de otro paquete");
+            Comprobar(sinAjenas && peli && ParteAjena(*peli, propias) == L"peli.part3.rar",
+                      "juegos en partes: si en la carpeta hay una parte con el mismo nombre que no es del paquete, no se abre");
+        }
+
+        // «En curso» al abrir: una por paquete (o la suelta), solo las que terminaron de bajar
+        {
+            std::vector<Foto> l = { descarga(c, L"a.part1.rar", true), descarga(c, L"a.part2.rar", true), descarga(c, L"suelto.zip", true, ""),
+                                    descarga(c, L"hecho.zip", true, ""), descarga(c, L"b.part1.rar", true, "g2") };
+            l[0].datos.jicaro = l[1].datos.jicaro = EstadoJicaro::EnCurso;
+            l[2].datos.jicaro = EstadoJicaro::EnCurso;
+            l[3].datos.jicaro = EstadoJicaro::Hecho;
+            auto ids = PorRetomar(l);
+            Comprobar(ids.size() == 2 && ids[0] == l[0].datos.id && ids[1] == l[2].datos.id,
+                      "jícaro: al abrir se retoman los juegos que quedaron en curso (uno por paquete)");
+            Comprobar(EstadoDespues(Resultado::Listo) == EstadoJicaro::Hecho && EstadoDespues(Resultado::Parcial) == EstadoJicaro::Hecho
+                          && EstadoDespues(Resultado::Cancelado) == EstadoJicaro::Hecho && EstadoDespues(Resultado::Error) == EstadoJicaro::Pendiente
+                          && EstadoDespues(Resultado::ContrasenaIncorrecta) == EstadoJicaro::Pendiente
+                          && EstadoDespues(Resultado::JicaroViejo) == EstadoJicaro::Pendiente && EstadoDespues(Resultado::NoAbrio) == EstadoJicaro::Pendiente
+                          && EstadoDespues(Resultado::FaltanPartes) == EstadoJicaro::Pendiente,
+                      "jícaro: queda hecho solo cuando Jícaro terminó; si no, vuelve a pendiente");
+            // Se guarda con cada descarga, y una lista de antes («descomprimido») cuenta como hecho
+            std::wstring f = dir + L"\\descargas.json";
+            uint64_t id = 0;
+            {
+                Motor m(f);
+                DatosDescarga d;
+                d.url = "https://ejemplo.com/a.part1.rar";
+                d.carpeta = dir;
+                id = m.AgregarTerminada(d);
+                m.MarcarJicaro(id, EstadoJicaro::EnCurso);
+                m.Guardar();
+            }
+            Motor m2(f);
+            m2.Cargar();
+            Foto g;
+            bool enCurso = m2.Buscar(id, g) && g.datos.jicaro == EstadoJicaro::EnCurso;
+            std::string viejo = "{\"version\":1,\"siguienteId\":9,\"descargas\":[{\"id\":7,\"url\":\"https://e.com/v.rar\",\"estado\":\"completada\","
+                                "\"descomprimido\":true}]}";
+            EscribirSeguro(dir + L"\\vieja.json", viejo);
+            Motor m3(dir + L"\\vieja.json");
+            m3.Cargar();
+            Comprobar(enCurso && m3.Buscar(7, g) && g.datos.jicaro == EstadoJicaro::Hecho,
+                      "jícaro: «en curso» se guarda tal cual (para retomarlo al abrir)");
+        }
+
+        // El reintento con la contraseña: la clave de un aviso que se mueve y se borra al sacarlo
+        {
+            struct Aviso
+            {
+                std::string clave;
+                int r;
+            };
+            std::deque<Aviso> avisos = { { "grupo-con-un-nombre-largo-0001", 4 }, { "otro", 4 }, { "grupo-con-un-nombre-largo-0001", 7 },
+                                         { "grupo-con-un-nombre-largo-0001", 0 } };
+            auto salen = SacarLosQueEsperan(avisos, avisos.front().clave, [](const Aviso& a) -> const std::string& { return a.clave; },
+                                            [](const Aviso& a) { return a.r == 4 || a.r == 7; });
+            Comprobar(salen.size() == 2 && salen[0].r == 4 && salen[1].r == 7 && avisos.size() == 2 && avisos[0].clave == "otro"
+                          && avisos[1].r == 0,
+                      "jícaro: al escribir la contraseña desde un aviso, siguen todos los de ese paquete (la clave se copia antes de moverlos)");
+        }
+        fs::remove_all(dir, ec);
+    }
+
     // 0.4.1: las contraseñas de los paquetes (Click'n'Load, cifradas con DPAPI) y Jícaro con «--contrasena-stdin»
     void ContrasenasPruebas()
     {
+        // Sin JSON: en claro van con su largo, en un solo bloque, y se leen directo a cada una
+        {
+            using Lista = std::vector<std::string>;
+            Lista claves = { "con \"comillas\" y \\barras\\", "contraseña ñ €", "corta", std::string(300, 'k') };
+            std::string bloque = hnd::contrasenas::Empaquetar(claves);
+            Lista vuelta;
+            bool ok = hnd::contrasenas::Desempaquetar(bloque.data(), bloque.size(), 5, vuelta);
+            Lista dos;
+            bool maximo = hnd::contrasenas::Desempaquetar(bloque.data(), bloque.size(), 2, dos);
+            Lista nada;
+            std::string json = "[\"a\",\"b\"]", cortado = bloque.substr(0, bloque.size() - 3);
+            bool rechaza = !hnd::contrasenas::Desempaquetar(json.data(), json.size(), 5, nada) && nada.empty()
+                && !hnd::contrasenas::Desempaquetar(cortado.data(), cortado.size(), 5, nada) && nada.empty()
+                && !hnd::contrasenas::Desempaquetar(nullptr, 0, 5, nada);
+            Comprobar(ok && vuelta == claves && maximo && dos.size() == 2 && rechaza && bloque[0] == '\x01' && bloque.find('[') == std::string::npos
+                          && hnd::contrasenas::Descifrar(hnd::contrasenas::Cifrar(claves)) == claves,
+                      "contraseñas: en claro van con su largo (sin JSON ni sus copias); lo que no tiene esa forma no se lee");
+            hnd::contrasenas::Borrar(bloque);
+            hnd::contrasenas::Borrar(vuelta);
+            hnd::contrasenas::Borrar(dos);
+        }
         using hnd::contrasenas::DeTexto;
         using Lista = std::vector<std::string>;
         Comprobar(DeTexto("clave1\r\nclave2\nclave3\rclave4") == Lista{ "clave1", "clave2", "clave3", "clave4" },
@@ -3621,6 +3873,7 @@ int wmain(int argc, wchar_t** argv)
     AvisoFinalPruebas();
     PuertosPruebas();
     JuegosPruebas();
+    JuegosEnPartesPruebas();
     ContrasenasPruebas();
     ConciliarPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);

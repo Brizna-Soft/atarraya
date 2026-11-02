@@ -674,6 +674,8 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // sabe la extensión llega cuando se conecta (Pedido «seguidas»).
     m_abiertoDesde = AhoraUnix();
     AplicarConciliacion(m_sitios.ConciliarAlAbrir(EnLaListaDe()), false);
+    // Los juegos que quedaron «en curso» (Atarraya se cerró antes de que Jícaro terminara bien): otra vez a Jícaro
+    CallAfter([this]() { RetomarJicaro(); });
     // Lo que el navegador terminó y no se alcanzó a pasar a la carpeta del paquete (Atarraya se cerró en el medio)
     for (int i : m_sitios.PorMover()) CallAfter([this, i]() { MoverParteDelNavegador(i); });
     if (m_sitios.Terminada()) Avanzar();
@@ -3197,10 +3199,21 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         t.partes = std::move(plan.partes);
         t.destino = destino;
         t.clave = clave;
-        // Una sola vez por juego: queda anotado con cada parte (también si Atarraya se cierra: la lista se guarda con la
-        // marca antes de abrir Jícaro; ver AnotarJicaro)
-        for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga);
+        // «En curso» con cada parte, guardado antes de abrir Jícaro (ver AnotarJicaro): queda «hecho» solo cuando Jícaro
+        // termina bien; si Atarraya se cierra antes (mientras espera su turno o mientras Jícaro trabaja), al abrirlo se
+        // le pasa otra vez
+        for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::EnCurso);
         trabajos.push_back(std::move(t));
+    };
+    // Un juego que no se le pasa a Jícaro, con su aviso (una vez)
+    auto avisarSinAbrir = [&](const jicaro::Juego& j, jicaro::Resultado r, const std::string& clave) {
+        if (!m_jicaroVistos.insert("aviso " + std::to_string((int)r) + " " + d.grupo + " " + Utf8(j.clave)).second) return;
+        TrabajoJicaro t;
+        t.nombre = j.nombre;
+        t.clave = clave;
+        Registrar(std::string("jícaro: un juego de un paquete no se abrió (")
+                  + (r == jicaro::Resultado::PartesAjenas ? "en su carpeta hay partes de otro paquete" : "le falta una parte") + ")");
+        MostrarResultadoJicaro(std::move(t), r);
     };
 
     if (d.grupo.empty())
@@ -3208,7 +3221,8 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         // Suelta: solo un .rar, .zip o .7z entero. De unas partes sueltas no se sabe si ya llegaron todas (tampoco de
         // un «peli.rar» que es la primera parte del estilo viejo, ni del .zip de uno partido).
         std::wstring ruta = d.carpeta + L"\\" + d.nombre;
-        if (d.descomprimido || !jicaro::EsComprimidoSuelto(d.nombre) || jicaro::EsVolumenRar(ruta) || jicaro::EsZipPartido(ruta))
+        if (d.jicaro != EstadoJicaro::Pendiente || !jicaro::EsComprimidoSuelto(d.nombre) || jicaro::EsVolumenRar(ruta)
+            || jicaro::EsZipPartido(ruta))
             return trabajos;
         if (!m_jicaroVistos.insert("descarga " + std::to_string(d.id)).second) return trabajos;
         for (auto& plan : jicaro::Planear({ { d.id, ruta, d.identidad } }, d.paquete)) agregar(plan, ClaveDeContrasena(d));
@@ -3220,14 +3234,34 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         return trabajos;
     }
 
-    // De un paquete: cada juego apenas está completo, sin esperar al resto del paquete, y una sola vez. Con un solo
-    // juego y nombre propio, va a una carpeta con el nombre del paquete (como antes); con varios, cada uno a la suya.
-    auto juegos = jicaro::Juegos(d.grupo, m_motor.Fotos(), m_sitios.Partes());
+    // De un paquete: cada juego apenas está completo (todas sus partes, sin huecos y se sabe cuál es la última; si eso no
+    // se sabe, cuando termina todo el paquete), sin esperar al resto, y una sola vez. Con un solo juego y nombre propio,
+    // va a una carpeta con el nombre del paquete (como antes); con varios, cada uno a la suya.
+    auto fotos = m_motor.Fotos();
+    auto juegos = jicaro::Juegos(d.grupo, fotos, m_sitios.Partes());
+    std::vector<std::wstring> delPaquete;
+    for (const auto& f : fotos)
+    {
+        if (!f.torrent && f.datos.grupo == d.grupo && !f.datos.nombre.empty()) delPaquete.push_back(f.datos.carpeta + L"\\" + f.datos.nombre);
+    }
     bool unaCarpeta = juegos.juegos.size() == 1 && !d.paquete.empty() && jicaro::NombreDeCarpeta(d.paquete, L"") == d.paquete;
     size_t listos = 0;
     for (const auto& j : juegos.juegos)
     {
-        if (!juegos.Completo(j) || j.descomprimido) continue;
+        if (j.jicaro != EstadoJicaro::Pendiente) continue;
+        if (j.incompleto)
+        {
+            avisarSinAbrir(j, jicaro::Resultado::Incompleto, d.grupo);
+            continue;
+        }
+        if (!juegos.Completo(j)) continue;
+        // Jícaro busca las partes por su nombre en la carpeta: si hay alguna con el mismo nombre que no es del paquete,
+        // podría juntarla. Entonces no se abre (y se avisa).
+        if (!jicaro::ParteAjena(j, delPaquete).empty())
+        {
+            avisarSinAbrir(j, jicaro::Resultado::PartesAjenas, d.grupo);
+            continue;
+        }
         if (!m_jicaroVistos.insert("juego " + d.grupo + " " + Utf8(j.clave)).second) continue;
         for (auto& plan : jicaro::Planear(j.partes, unaCarpeta ? d.paquete : std::wstring())) agregar(plan, d.grupo);
         listos++;
@@ -3244,10 +3278,41 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
 
 void VentanaPrincipal::AnotarJicaro()
 {
-    // Cada vez que cambia la marca «descomprimido» de unas partes, la lista se guarda enseguida (no al rato): antes de
-    // abrir Jícaro, para que un cierre de golpe no descomprima dos veces el mismo juego; y al quitarla (falta la
-    // contraseña o un Jícaro nuevo), para que escribirla después, también tras cerrar Atarraya, lo descomprima
+    // Cada vez que cambia lo que se sabe de Jícaro con unas partes, la lista se guarda enseguida (no al rato): «en curso»
+    // antes de abrir Jícaro (si Atarraya se cierra antes de que termine bien, al abrirlo se le pasa otra vez), «hecho»
+    // cuando termina bien, y «pendiente» si hace falta la contraseña o un Jícaro nuevo (para que escribirla después,
+    // también tras cerrar Atarraya, lo descomprima)
     if (!m_motor.Guardar()) Registrar("jícaro: no se pudo guardar la lista de descargas");
+}
+
+void VentanaPrincipal::RetomarJicaro()
+{
+    // Los juegos que se le habían pasado a Jícaro y no terminaron bien (Atarraya se cerró mientras esperaban su turno o
+    // mientras Jícaro trabajaba): vuelven a pendientes y se le pasan otra vez. Si ahora no se puede (Jícaro no está o se
+    // apagó en Ajustes), siguen «en curso» para la próxima vez.
+    if (!m_ajustes.jicaroAlTerminar || jicaro::Buscar(m_ajustes.rutaJicaro).empty()) return;
+    auto fotos = m_motor.Fotos();
+    auto ids = jicaro::PorRetomar(fotos);
+    if (ids.empty()) return;
+    std::set<std::string> grupos;
+    for (uint64_t id : ids)
+    {
+        hnd::Foto f;
+        if (m_motor.Buscar(id, f) && !f.datos.grupo.empty()) grupos.insert(f.datos.grupo);
+    }
+    for (const auto& f : fotos)
+    {
+        bool deEsos = f.datos.grupo.empty() ? std::find(ids.begin(), ids.end(), f.datos.id) != ids.end() : grupos.count(f.datos.grupo) > 0;
+        if (!f.torrent && deEsos && f.datos.jicaro == EstadoJicaro::EnCurso) m_motor.MarcarJicaro(f.datos.id, EstadoJicaro::Pendiente);
+    }
+    AnotarJicaro();
+    Registrar("jícaro: " + std::to_string(ids.size()) + (ids.size() == 1 ? " paquete que no terminó vuelve" : " paquetes que no terminaron vuelven")
+              + " a descomprimirse");
+    for (uint64_t id : ids)
+    {
+        hnd::Foto f;
+        if (m_motor.Buscar(id, f)) EncolarJicaro(PrepararJicaro(f.datos));
+    }
 }
 
 std::string VentanaPrincipal::ClaveDeContrasena(const DatosDescarga& d) const
@@ -3313,7 +3378,7 @@ void VentanaPrincipal::SiguienteJicaro()
                 contrasenas::Borrar(clave);
                 Registrar("jícaro: el paquete tiene contraseña y Jícaro es anterior a la 0.2.0; no se abrió");
                 // Queda por descomprimir: con un Jícaro nuevo, se intenta otra vez al escribir (o confirmar) la contraseña
-                for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
+                for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::Pendiente);
                 AnotarJicaro();
                 MostrarResultadoJicaro(std::move(t), jicaro::Resultado::JicaroViejo);
                 continue;
@@ -3326,6 +3391,8 @@ void VentanaPrincipal::SiguienteJicaro()
         if (!proceso)
         {
             Registrar(orden.empty() ? "jícaro: una ruta no se puede pasar a Jícaro; no se abrió" : "jícaro: no se pudo abrir");
+            for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::Pendiente);
+            AnotarJicaro();
             MostrarResultadoJicaro(std::move(t), jicaro::Resultado::NoAbrio);
             continue;
         }
@@ -3379,11 +3446,9 @@ void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
     }
     // Sin una contraseña que sirva, el juego queda por descomprimir: en cuanto la persona escriba la del paquete (con el
     // botón de este aviso o desde el menú del paquete, también después de cerrar Atarraya), Jícaro lo intenta de nuevo
-    if (jicaro::PideContrasena(r))
-    {
-        for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
-        AnotarJicaro();
-    }
+    // «Hecho» solo si Jícaro terminó (bien, a medias o la persona lo canceló); si no, vuelve a pendiente
+    for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, jicaro::EstadoDespues(r));
+    AnotarJicaro();
     MostrarResultadoJicaro(std::move(t), r);
     SiguienteJicaro();
 }
@@ -3541,8 +3606,10 @@ void VentanaPrincipal::BorrarPartes()
 // --- Contraseñas de los paquetes ------------------------------------------------------------------------------------
 // Siempre cifradas (DPAPI). Nunca van al registro ni a la línea de comandos: a Jícaro le llegan por su entrada estándar.
 
-bool VentanaPrincipal::EscribirContrasena(const std::string& clave, const std::wstring& nombre, bool incorrecta)
+bool VentanaPrincipal::EscribirContrasena(const std::string clave, const std::wstring nombre, bool incorrecta)
 {
+    // «clave» y «nombre» van copiados a propósito: el botón del aviso pasa los de ese mismo aviso, que se mueve y se borra
+    // más abajo (y la ventana de la contraseña puede cambiar la lista de avisos mientras está abierta)
     if (clave.empty()) return false;
     bool tenia = m_contrasenas.Tiene(clave);
     wxString texto = incorrecta ? L"La contraseña de «" + wxString(nombre) + L"» no sirve. Escribe otra:"
@@ -3575,20 +3642,17 @@ bool VentanaPrincipal::EscribirContrasena(const std::string& clave, const std::w
     Registrar("contraseñas: se guardó la de un paquete (cifrada)");
     // Los juegos de ese paquete que esperaban una contraseña (o un Jícaro nuevo): Jícaro sigue con ellos, en la misma
     // carpeta de antes
-    size_t otraVez = 0;
-    for (auto it = m_resultadosJicaro.begin(); it != m_resultadosJicaro.end();)
+    auto vuelven = jicaro::SacarLosQueEsperan(
+        m_resultadosJicaro, clave, [](const ResultadoJicaro& r) -> const std::string& { return r.t.clave; },
+        [](const ResultadoJicaro& r) { return jicaro::PideContrasena(r.r) || r.r == jicaro::Resultado::JicaroViejo; });
+    size_t otraVez = vuelven.size();
+    for (auto& r : vuelven)
     {
-        if (it->t.clave == clave && (jicaro::PideContrasena(it->r) || it->r == jicaro::Resultado::JicaroViejo))
-        {
-            TrabajoJicaro t = std::move(it->t);
-            t.intento = 0;
-            t.conContrasena = false;
-            for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, true);
-            m_colaJicaro.push_back(std::move(t));
-            it = m_resultadosJicaro.erase(it);
-            otraVez++;
-        }
-        else ++it;
+        TrabajoJicaro t = std::move(r.t);
+        t.intento = 0;
+        t.conContrasena = false;
+        for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::EnCurso);
+        m_colaJicaro.push_back(std::move(t));
     }
     if (otraVez) AnotarJicaro();   // antes de que se abra Jícaro con ellos
     // Y los que quedaron por descomprimir sin aviso a la vista (se cerró el aviso, o Atarraya se cerró): se vuelven a mirar

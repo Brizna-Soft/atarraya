@@ -64,8 +64,10 @@ Atarraya $version - descargas, videos, torrents y enlaces magnet, gratis, de Bri
 10. Nuevo en la 0.4.1: contraseñas y descomprimir cada juego apenas está completo.
    - Si tienes la contraseña de todo un lote de enlaces, escríbela una sola vez: al pegarlos en el recolector, o
      con clic derecho en el paquete ("Contraseña del paquete..."). Si el sitio la manda por Click'n'Load, se toma sola.
-   - Jícaro descomprime cada juego (un comprimido, o todas sus partes) en cuanto llega su última parte, sin esperar
-     al resto del paquete. Cada juego, una sola vez.
+   - Jícaro descomprime cada juego (un comprimido, o todas sus partes) en cuanto llegaron todas sus partes, sin
+     huecos y sabiendo cuál es la última, sin esperar al resto del paquete (si eso no se sabe, espera a que termine
+     el paquete). Cada juego, una sola vez. Si Atarraya se cierra antes de que Jícaro termine, al abrirlo sigue.
+   - Nunca junta partes de dos paquetes: si en la carpeta hay partes con el mismo nombre de otro, te avisa.
    - Si la contraseña no sirve, Atarraya te avisa y te la pide otra vez. Nunca prueba claves a ciegas.
    - Se guarda cifrada (solo tu cuenta de Windows la puede leer) y nunca va al registro ni a la línea de comandos.
      Recordarlas para otros paquetes se enciende en Ajustes (viene apagado).

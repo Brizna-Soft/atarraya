@@ -164,6 +164,183 @@ namespace
         }
         return false;
     }
+
+    uint32_t Le32(const std::string& b, size_t p)
+    {
+        return (uint32_t)(unsigned char)b[p] | ((uint32_t)(unsigned char)b[p + 1] << 8) | ((uint32_t)(unsigned char)b[p + 2] << 16)
+             | ((uint32_t)(unsigned char)b[p + 3] << 24);
+    }
+
+    uint64_t Le64(const std::string& b, size_t p)
+    {
+        return (uint64_t)Le32(b, p) | ((uint64_t)Le32(b, p + 4) << 32);
+    }
+
+    uint32_t Crc32(const char* datos, size_t n)
+    {
+        static const auto tabla = [] {
+            std::vector<uint32_t> t(256);
+            for (uint32_t i = 0; i < 256; i++)
+            {
+                uint32_t c = i;
+                for (int k = 0; k < 8; k++) c = (c & 1) ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+                t[i] = c;
+            }
+            return t;
+        }();
+        uint32_t c = 0xFFFFFFFFu;
+        for (size_t i = 0; i < n; i++) c = tabla[(c ^ (unsigned char)datos[i]) & 0xFF] ^ (c >> 8);
+        return c ^ 0xFFFFFFFFu;
+    }
+
+    // Lee pedazos de un archivo (sin bloquearlo para los demás)
+    class Lector
+    {
+    public:
+        explicit Lector(const std::wstring& ruta)
+        {
+            m_h = CreateFileW(ruta.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_ATTRIBUTE_NORMAL, nullptr);
+            LARGE_INTEGER t = {};
+            if (m_h != INVALID_HANDLE_VALUE && GetFileSizeEx(m_h, &t)) m_tamano = t.QuadPart;
+        }
+        ~Lector()
+        {
+            if (m_h != INVALID_HANDLE_VALUE) CloseHandle(m_h);
+        }
+        Lector(const Lector&) = delete;
+        Lector& operator=(const Lector&) = delete;
+        int64_t Tamano() const { return m_tamano; }
+        // Hasta «n» bytes desde «desde» (menos si el archivo termina antes); vacío si no se pudo
+        std::string Leer(int64_t desde, size_t n) const
+        {
+            std::string b;
+            if (m_h == INVALID_HANDLE_VALUE || desde < 0 || desde >= m_tamano) return b;
+            n = (size_t)std::min<int64_t>((int64_t)n, m_tamano - desde);
+            b.resize(n);
+            OVERLAPPED ov = {};
+            ov.Offset = (DWORD)(desde & 0xFFFFFFFF);
+            ov.OffsetHigh = (DWORD)(desde >> 32);
+            DWORD leidos = 0;
+            if (!ReadFile(m_h, b.data(), (DWORD)n, &leidos, &ov)) return {};
+            b.resize(leidos);
+            return b;
+        }
+
+    private:
+        HANDLE m_h = INVALID_HANDLE_VALUE;
+        int64_t m_tamano = -1;
+    };
+
+    using hnd::jicaro::Ultima;
+
+    // RAR 5: se recorren los bloques de la parte (solo las cabeceras: los datos se saltan) hasta el del final, cuya bandera
+    // 0x0001 dice que sigue otra parte. Con las cabeceras cifradas no se puede saber.
+    Ultima FinalRar5(const Lector& f)
+    {
+        int64_t p = 8;
+        for (int vuelta = 0; vuelta < 100000 && p + 6 <= f.Tamano(); vuelta++)
+        {
+            std::string b = f.Leer(p, 4 + 10);
+            size_t q = 4;
+            uint64_t tam = 0;
+            if (b.size() < 6 || !LeerVint(b, q, tam) || tam == 0 || tam > 2 * 1024 * 1024) return Ultima::NoSe;
+            int64_t cabecera = p + (int64_t)q;
+            std::string c = f.Leer(cabecera, (size_t)tam);
+            if (c.size() != tam) return Ultima::NoSe;
+            size_t r = 0;
+            uint64_t tipo = 0, banderas = 0, extra = 0, datos = 0;
+            if (!LeerVint(c, r, tipo) || !LeerVint(c, r, banderas)) return Ultima::NoSe;
+            if ((banderas & 0x0001) && !LeerVint(c, r, extra)) return Ultima::NoSe;
+            if ((banderas & 0x0002) && !LeerVint(c, r, datos)) return Ultima::NoSe;
+            if (tipo == 4) return Ultima::NoSe;   // cabeceras cifradas
+            if (tipo == 5)
+            {
+                uint64_t fin = 0;
+                if (!LeerVint(c, r, fin)) return Ultima::NoSe;
+                return (fin & 0x0001) ? Ultima::NoEs : Ultima::Es;
+            }
+            if (datos > (uint64_t)f.Tamano()) return Ultima::NoSe;
+            p = cabecera + (int64_t)tam + (int64_t)datos;
+        }
+        return Ultima::NoSe;
+    }
+
+    // RAR 4: lo mismo, con sus bloques (tipo 0x7B = el final; su bandera 0x0001 dice que sigue otra parte)
+    Ultima FinalRar4(const Lector& f)
+    {
+        int64_t p = 7;
+        for (int vuelta = 0; vuelta < 100000 && p + 7 <= f.Tamano(); vuelta++)
+        {
+            std::string b = f.Leer(p, 36);
+            if (b.size() < 7) return Ultima::NoSe;
+            unsigned tipo = (unsigned char)b[2];
+            unsigned banderas = (unsigned char)b[3] | ((unsigned char)b[4] << 8);
+            unsigned tam = (unsigned char)b[5] | ((unsigned char)b[6] << 8);
+            if (tam < 7) return Ultima::NoSe;
+            if (tipo == 0x73 && (banderas & 0x0080)) return Ultima::NoSe;   // cabeceras cifradas
+            if (tipo == 0x7B) return (banderas & 0x0001) ? Ultima::NoEs : Ultima::Es;
+            uint64_t datos = 0;
+            if (banderas & 0x8000)
+            {
+                if (b.size() < 11) return Ultima::NoSe;
+                datos = Le32(b, 7);
+                // Un archivo de más de 4 GB: la parte alta de su tamaño va más adelante en su cabecera
+                if (tipo == 0x74 && (banderas & 0x0100))
+                {
+                    if (b.size() < 36) return Ultima::NoSe;
+                    datos |= (uint64_t)Le32(b, 32) << 32;
+                }
+            }
+            if (datos > (uint64_t)f.Tamano()) return Ultima::NoSe;
+            p += (int64_t)tam + (int64_t)datos;
+        }
+        return Ultima::NoSe;
+    }
+
+    Ultima FinalRar(const std::wstring& ruta)
+    {
+        Lector f(ruta);
+        std::string inicio = f.Leer(0, 8);
+        static const char rar5[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x01, 0x00 };
+        static const char rar4[] = { 'R', 'a', 'r', '!', 0x1A, 0x07, 0x00 };
+        if (inicio.size() >= sizeof(rar5) && memcmp(inicio.data(), rar5, sizeof(rar5)) == 0) return FinalRar5(f);
+        if (inicio.size() >= sizeof(rar4) && memcmp(inicio.data(), rar4, sizeof(rar4)) == 0) return FinalRar4(f);
+        return Ultima::NoSe;
+    }
+
+    // 7z: la cabecera de inicio (en la primera parte) dice cuánto mide el comprimido entero: sus 32 bytes más dónde está y
+    // cuánto mide la cabecera del final. Tiene su propia suma de control. -1 si no se puede leer.
+    int64_t TamanoDe7z(const std::wstring& primera)
+    {
+        Lector f(primera);
+        std::string b = f.Leer(0, 32);
+        static const unsigned char firma[] = { '7', 'z', 0xBC, 0xAF, 0x27, 0x1C };
+        if (b.size() < 32 || memcmp(b.data(), firma, sizeof(firma)) != 0 || Crc32(b.data() + 12, 20) != Le32(b, 8)) return -1;
+        uint64_t desde = Le64(b, 12), tam = Le64(b, 20);
+        if (desde > (1ull << 50) || tam > (1ull << 40)) return -1;
+        return 32 + (int64_t)desde + (int64_t)tam;
+    }
+
+    // ZIP partido: el .zip es el último trozo y el final de su índice central dice su número (0 es el primero): ese es
+    // también cuántas .zNN hay. -1 si no se puede leer (o es un ZIP64, que lo guarda en otro lado).
+    int TrozosDelZip(const std::wstring& zip)
+    {
+        Lector f(zip);
+        if (f.Tamano() < 22) return -1;
+        int64_t leer = std::min<int64_t>(f.Tamano(), 65536 + 22);
+        std::string fin = f.Leer(f.Tamano() - leer, (size_t)leer);
+        for (size_t p = fin.size() >= 22 ? fin.size() - 22 : std::string::npos; p != std::string::npos; p--)
+        {
+            if (fin.compare(p, 4, "PK\x05\x06", 4) == 0)
+            {
+                unsigned este = (unsigned char)fin[p + 4] | ((unsigned char)fin[p + 5] << 8);
+                return este == 0xFFFF ? -1 : (int)este;
+            }
+            if (p == 0) break;
+        }
+        return -1;
+    }
 }
 
 std::wstring hnd::jicaro::RutaPredeterminada()
@@ -392,8 +569,78 @@ std::vector<hnd::jicaro::ParteBajada> hnd::jicaro::ArchivosDelPaquete(const std:
     return r;
 }
 
+hnd::jicaro::Ultima hnd::jicaro::LaUltima(const std::vector<std::wstring>& partes, wchar_t tipo)
+{
+    if (partes.empty()) return Ultima::NoSe;
+    switch (tipo)
+    {
+    case L'n':   // «peli.part3.rar»: lo dice el final de la última
+    case L'v':   // «peli.rar», «peli.r00»...: también
+        return FinalRar(partes.back());
+    case L'c':
+    {
+        // «peli.7z.001»...: la primera dice cuánto mide todo. De un «.zip.001» o «.rar.001» (un programa que corta
+        // archivos) no se sabe.
+        if (!TerminaCon(Minusculas(partes.front()), L".7z.001")) return Ultima::NoSe;
+        int64_t total = TamanoDe7z(partes.front());
+        if (total < 0) return Ultima::NoSe;
+        int64_t suma = 0;
+        for (const auto& p : partes)
+        {
+            Lector f(p);
+            if (f.Tamano() < 0) return Ultima::NoSe;
+            suma += f.Tamano();
+        }
+        return suma == total ? Ultima::Es : suma < total ? Ultima::NoEs : Ultima::NoSe;
+    }
+    case L'z':
+    {
+        // El .zip (el primero de la lista: es el que se abre) es el último trozo; su índice dice cuántas .zNN hay
+        int trozos = TrozosDelZip(partes.front());
+        int hay = (int)partes.size() - 1;
+        if (trozos < 0 || trozos == hay) return Ultima::Es;
+        return trozos > hay ? Ultima::NoEs : Ultima::NoSe;
+    }
+    default: return Ultima::NoSe;
+    }
+}
+
+std::wstring hnd::jicaro::ParteAjena(const Juego& j, const std::vector<std::wstring>& delPaquete)
+{
+    if (j.carpeta.empty()) return {};
+    std::set<std::wstring> propias;
+    for (const auto& r : delPaquete) propias.insert(Minusculas(r));
+    WIN32_FIND_DATAW d = {};
+    HANDLE h = FindFirstFileExW((j.carpeta + L"\\*").c_str(), FindExInfoBasic, &d, FindExSearchNameMatch, nullptr, 0);
+    if (h == INVALID_HANDLE_VALUE) return {};
+    std::wstring ajena;
+    do
+    {
+        if (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+        std::wstring ruta = j.carpeta + L"\\" + d.cFileName;
+        Pieza p;
+        // Jícaro busca las partes por su nombre: una con el mismo nombre de juego que no es del paquete se mezclaría
+        if (PiezaDe(ruta, p) && p.clave == j.clave && !propias.count(Minusculas(ruta))) ajena = d.cFileName;
+    } while (ajena.empty() && FindNextFileW(h, &d));
+    FindClose(h);
+    return ajena;
+}
+
+std::vector<uint64_t> hnd::jicaro::PorRetomar(const std::vector<Foto>& descargas)
+{
+    std::vector<uint64_t> r;
+    std::set<std::string> grupos;
+    for (const auto& f : descargas)
+    {
+        if (f.torrent || f.datos.jicaro != EstadoJicaro::EnCurso || f.datos.estado != Estado::Completada) continue;
+        if (f.datos.grupo.empty() || grupos.insert(f.datos.grupo).second) r.push_back(f.datos.id);
+    }
+    return r;
+}
+
 hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, const std::vector<Foto>& descargas,
-                                                   const std::vector<Parte>& cola)
+                                                   const std::vector<Parte>& cola,
+                                                   const std::function<Ultima(const std::vector<std::wstring>&, wchar_t)>& ultima)
 {
     JuegosDelPaquete r;
     if (grupo.empty()) return r;
@@ -415,11 +662,15 @@ hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, cons
         return r.juegos[it->second];
     };
     std::set<uint64_t> enLaLista;
+    bool sigue = false;   // algo del paquete todavía baja o espera (en la lista o en la cola)
     for (const auto& f : descargas)
     {
         if (f.datos.grupo != grupo) continue;
         enLaLista.insert(f.datos.id);
         bool bajada = f.datos.estado == Estado::Completada;
+        if (f.datos.estado == Estado::EnCola || f.datos.estado == Estado::Iniciando || f.datos.estado == Estado::Descargando
+            || f.datos.estado == Estado::Pausada)
+            sigue = true;
         std::wstring ruta = f.datos.carpeta + L"\\" + f.datos.nombre;
         Pieza p;
         if (f.datos.nombre.empty() || !PiezaDe(ruta, p))
@@ -432,12 +683,18 @@ hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, cons
         numeros[p.clave].insert(p.numero);
         if (bajada) bajadas[p.clave].push_back({ p.numero, { f.datos.id, ruta, f.datos.identidad } });
         else j.faltan++;
-        if (f.datos.descomprimido) j.descomprimido = true;
+        // Lo más avanzado de sus partes: si una ya está hecha (o en curso), el juego también
+        if (f.datos.jicaro == EstadoJicaro::Hecho || (f.datos.jicaro == EstadoJicaro::EnCurso && j.jicaro == EstadoJicaro::Pendiente))
+            j.jicaro = f.datos.jicaro;
     }
     for (const auto& q : cola)
     {
+        if (q.grupo != grupo) continue;
+        if (q.estado == EstadoParte::Esperando || q.estado == EstadoParte::Abierta || q.estado == EstadoParte::Tomada
+            || q.estado == EstadoParte::Espera || q.estado == EstadoParte::Navegador)
+            sigue = true;
         // Las que ya bajaron (o la está bajando Atarraya) están en la lista de descargas
-        if (q.grupo != grupo || q.estado == EstadoParte::Lista || (q.descarga && enLaLista.count(q.descarga))) continue;
+        if (q.estado == EstadoParte::Lista || (q.descarga && enLaLista.count(q.descarga))) continue;
         std::wstring nombre = NombreDeParte(q.nombre);
         std::wstring carpeta = q.carpeta;
         Pieza p;
@@ -449,14 +706,36 @@ hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, cons
         juegoDe(p, carpeta).faltan++;
         numeros[p.clave].insert(p.numero);
     }
+    r.terminado = !sigue;
     for (auto& j : r.juegos)
     {
         auto& b = bajadas[j.clave];
         std::stable_sort(b.begin(), b.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
         for (auto& [n, parte] : b) j.partes.push_back(std::move(parte));
-        // Un ZIP partido se abre por su .zip: hasta que llega, el juego no está completo
+        // Sin huecos: los números de sus partes (bajadas o no) van seguidos desde el primero. «.part1.rar» y «.7z.001»
+        // empiezan en 1; el estilo viejo empieza con el .rar (0), un ZIP partido tiene su .zip (0), que es el que se abre,
+        // y un .7z entero es el 0.
         const auto& hay = numeros[j.clave];
-        if (j.clave[0] == L'z' && !hay.count(0)) j.faltan++;
+        wchar_t tipo = j.Tipo();
+        int desde = (tipo == L'n' || tipo == L'c') ? 1 : 0;
+        j.huecos = hay.empty() || *hay.begin() != desde || (int)hay.size() != *hay.rbegin() - desde + 1;
+        // En partes: varias, un «.part1.rar» o «.7z.001», o un .rar o .zip solo que su cabecera dice que es de varias
+        bool todas = j.faltan == 0 && !j.partes.empty() && !j.huecos;
+        j.enPartes = tipo == L'n' || tipo == L'c' || hay.size() > 1;
+        if (!j.enPartes && todas && (tipo == L'v' || tipo == L'z'))
+            j.enPartes = tipo == L'v' ? EsVolumenRar(j.partes[0].ruta) : EsZipPartido(j.partes[0].ruta);
+        if (todas && j.enPartes)
+        {
+            std::vector<std::wstring> rutas;
+            for (const auto& p : j.partes) rutas.push_back(p.ruta);
+            j.ultima = ultima ? ultima(rutas, tipo) : Ultima::NoSe;
+        }
+        // Completo: un comprimido entero que ya bajó, o todas las partes sin huecos y se sabe que la última es la última.
+        // Si eso no se sabe, espera a que termine todo el paquete.
+        if (r.dudosas == 0 && todas)
+            j.completo = !j.enPartes || j.ultima == Ultima::Es || (j.ultima == Ultima::NoSe && r.terminado);
+        // Ya no baja nada del paquete, se sabe de qué juego es cada parte, y a este le falta algo: no se abre (se avisa)
+        j.incompleto = r.terminado && r.dudosas == 0 && !j.completo && j.faltan == 0 && !j.partes.empty();
     }
     return r;
 }
@@ -611,6 +890,13 @@ bool hnd::jicaro::PideContrasena(Resultado r)
     return r == Resultado::Contrasena || r == Resultado::ContrasenaIncorrecta;
 }
 
+hnd::EstadoJicaro hnd::jicaro::EstadoDespues(Resultado r)
+{
+    // Terminó (bien o a medias) o la persona lo canceló: no se abre otra vez solo. Todo lo demás (contraseña, Jícaro
+    // viejo, no se abrió, faltaba algo, falló) queda pendiente.
+    return r == Resultado::Listo || r == Resultado::Parcial || r == Resultado::Cancelado ? EstadoJicaro::Hecho : EstadoJicaro::Pendiente;
+}
+
 std::wstring hnd::jicaro::Titulo(Resultado r)
 {
     switch (r)
@@ -624,6 +910,8 @@ std::wstring hnd::jicaro::Titulo(Resultado r)
     case Resultado::Cancelado: return L"Jícaro: cancelado";
     case Resultado::YaExtrayendo: return L"Jícaro ya lo está descomprimiendo";
     case Resultado::NoAbrio: return L"Jícaro no se abrió";
+    case Resultado::PartesAjenas: return L"Jícaro: partes de otro paquete";
+    case Resultado::Incompleto: return L"Jícaro: falta una parte";
     default: return L"Jícaro: no se pudo descomprimir";
     }
 }
@@ -653,6 +941,13 @@ std::wstring hnd::jicaro::Texto(Resultado r, const std::wstring& nombre, const s
     case Resultado::Cancelado: return L"Se canceló la descompresión de " + n + L". Las partes siguen en su carpeta.";
     case Resultado::YaExtrayendo: return L"Jícaro ya está descomprimiendo " + n + L" en otra ventana.";
     case Resultado::NoAbrio: return L"No se pudo abrir Jícaro para descomprimir " + n + L". Revisa en Ajustes dónde está.";
+    case Resultado::PartesAjenas:
+        return L"En la carpeta de " + n + L" hay partes con el mismo nombre que no son de este paquete, y Jícaro podría juntarlas. "
+               L"Atarraya no lo abrió. Pon cada paquete en su carpeta (en el recolector, «Una carpeta por paquete») o quita esas partes "
+               L"de ahí y ábrelo con Jícaro.";
+    case Resultado::Incompleto:
+        return L"Ya terminó de bajar el paquete, pero a " + n + L" le falta una parte, así que Atarraya no se lo pasó a Jícaro. "
+               L"Bájala, ponla en la misma carpeta y ábrelo con Jícaro.";
     default: return L"Jícaro no pudo descomprimir " + n + L". En su ventana dice por qué. Las partes siguen en su carpeta.";
     }
 }

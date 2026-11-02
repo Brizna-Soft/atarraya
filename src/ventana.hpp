@@ -164,6 +164,8 @@ private:
     std::vector<TrabajoJicaro> PrepararJicaro(const hnd::DatosDescarga& d);
     // Guarda la lista ya, con la marca «descomprimido» de las partes como quedó
     void AnotarJicaro();
+    // Al abrir: los juegos que quedaron «en curso» se le pasan otra vez a Jícaro
+    void RetomarJicaro();
     // Las que ya estaban en la lista y entran a un paquete de la tanda (y los grupos que se juntan)
     void AplicarTanda(const hnd::jicaro::Tanda& tanda);
     // Al terminar una descarga (ya marcada como bajada de internet): qué archivo quedó, para «Borrar las partes»
@@ -178,7 +180,8 @@ private:
     // Contraseñas de los paquetes (cifradas). «clave»: el grupo del paquete, o «descarga:<id>» para una suelta.
     std::string ClaveDeContrasena(const hnd::DatosDescarga& d) const;
     // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue
-    bool EscribirContrasena(const std::string& clave, const std::wstring& nombre, bool incorrecta);
+    // «clave» y «nombre» van por valor: pueden ser los de un aviso que se mueve y se borra al seguir con su juego
+    bool EscribirContrasena(const std::string clave, const std::wstring nombre, bool incorrecta);
     void ContrasenaDelPaquete();           // desde el menú de la lista
     void RecordarContrasenas(const std::vector<std::string>& lista);   // solo si la persona lo encendió en Ajustes
     void GuardarContrasenas();

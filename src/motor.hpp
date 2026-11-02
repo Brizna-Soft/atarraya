@@ -36,6 +36,10 @@ namespace hnd
         int64_t Falta() const { return fin < 0 ? INT64_MAX : (fin - inicio + 1) - hecho; }
     };
 
+    // Jícaro con el juego de una descarga (se guarda con cada una): todavía no se le pasó, se le pasó y todavía no terminó
+    // bien («en curso»: si Atarraya se cierra antes, al abrirlo se le pasa otra vez), o terminó bien
+    enum class EstadoJicaro { Pendiente, EnCurso, Hecho };
+
     struct DatosDescarga
     {
         uint64_t id = 0;
@@ -61,8 +65,8 @@ namespace hnd
         // El archivo que quedó al terminar (se lee cuando Windows ya lo marcó como bajado de internet): «Borrar las
         // partes» solo manda a la Papelera un archivo que sigue siendo este
         IdentidadArchivo identidad;
-        // Su juego (el comprimido, o todas sus partes) ya se le pasó a Jícaro: no se descomprime otra vez solo
-        bool descomprimido = false;
+        // Su juego (el comprimido, o todas sus partes) y Jícaro: solo «Hecho» cuando Jícaro terminó bien
+        EstadoJicaro jicaro = EstadoJicaro::Pendiente;
         // Videos por partes: «formato» es "hls" o "dash" (vacío en una descarga normal) y «url» es su lista. En DASH,
         // «pista» dice cuál bajar: «video:<id>» o «audio:<id>». Se baja parte por parte y se junta en un archivo.
         std::string formato, pista;
@@ -172,7 +176,7 @@ namespace hnd
         void CambiarGrupo(uint64_t id, const std::wstring& paquete, const std::string& grupo);
         void UnirGrupos(const std::string& viejo, const std::string& nuevo, const std::wstring& paquete);
         void FijarIdentidad(uint64_t id, const IdentidadArchivo& identidad);
-        void MarcarDescomprimido(uint64_t id, bool si = true);
+        void MarcarJicaro(uint64_t id, EstadoJicaro estado);
 
         // Recoge las conexiones que terminaron (para que la cola compartida vea los estados al día)
         void Recoger();

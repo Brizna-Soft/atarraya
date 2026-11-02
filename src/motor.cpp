@@ -1366,13 +1366,13 @@ namespace hnd
         m_sucio = true;
     }
 
-    void Motor::MarcarDescomprimido(uint64_t id, bool si)
+    void Motor::MarcarJicaro(uint64_t id, EstadoJicaro estado)
     {
         std::lock_guard g(m_lista);
         auto x = Encontrar(id);
         if (!x) return;
         std::lock_guard g2(x->m);
-        x->d.descomprimido = si;
+        x->d.jicaro = estado;
         m_sucio = true;
     }
 
@@ -1537,7 +1537,7 @@ namespace hnd
                     { "identidad", d.identidad.Valida() ? json{ { "volumen", d.identidad.volumen }, { "indice", d.identidad.indice },
                                                                 { "tamano", d.identidad.tamano }, { "modificado", d.identidad.modificado } }
                                                         : json() },
-                    { "descomprimido", d.descomprimido },
+                    { "jicaro", d.jicaro == EstadoJicaro::Hecho ? "hecho" : d.jicaro == EstadoJicaro::EnCurso ? "en curso" : "" },
                     { "formato", d.formato }, { "pista", d.pista }, { "flujoTotal", d.flujoTotal }, { "flujoHechos", d.flujoHechos },
                     { "flujoBytes", d.flujoBytes }, { "flujoLocal", d.flujoLocal }, { "flujoListas", d.flujoListas },
                     { "soloAfuera", d.soloAfuera }, { "sinProxy", d.sinProxy },
@@ -1606,7 +1606,12 @@ namespace hnd
                     d.identidad.tamano = i->value("tamano", (int64_t)-1);
                     d.identidad.modificado = i->value("modificado", (int64_t)0);
                 }
-                d.descomprimido = j.value("descomprimido", false);
+                // «en curso» se guarda tal cual: al abrir, la ventana le pasa otra vez a Jícaro esos juegos (si Atarraya se
+                // cerró mientras esperaban o mientras Jícaro trabajaba, nunca se dan por descomprimidos)
+                std::string jicaro = j.value("jicaro", "");
+                d.jicaro = jicaro == "hecho" || j.value("descomprimido", false) ? EstadoJicaro::Hecho
+                         : jicaro == "en curso"                                 ? EstadoJicaro::EnCurso
+                                                                                : EstadoJicaro::Pendiente;
                 d.formato = j.value("formato", "");
                 if (d.formato != "hls" && d.formato != "dash") d.formato.clear();
                 d.pista = j.value("pista", "");

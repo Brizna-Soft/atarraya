@@ -4,6 +4,7 @@
 #include <wincrypt.h>
 
 #include <algorithm>
+#include <cstdint>
 
 #pragma comment(lib, "crypt32.lib")
 
@@ -67,10 +68,10 @@ namespace
         return r;
     }
 
-    // Una lista en JSON, cifrada con DPAPI y en base64 (vacío si no se pudo). Borra el texto en claro.
+    // Una lista (ver Empaquetar), cifrada con DPAPI y en base64 (vacío si no se pudo). Borra el texto en claro.
     std::string CifrarLista(const std::vector<std::string>& lista)
     {
-        std::string claro = json(lista).dump();
+        std::string claro = hnd::contrasenas::Empaquetar(lista);
         DATA_BLOB entrada = { (DWORD)claro.size(), reinterpret_cast<BYTE*>(claro.data()) };
         DATA_BLOB extra = { (DWORD)(sizeof(Entropia) - 1), reinterpret_cast<BYTE*>(const_cast<char*>(Entropia)) };
         DATA_BLOB salida = {};
@@ -91,33 +92,66 @@ namespace
         DATA_BLOB extra = { (DWORD)(sizeof(Entropia) - 1), reinterpret_cast<BYTE*>(const_cast<char*>(Entropia)) };
         DATA_BLOB salida = {};
         if (!CryptUnprotectData(&entrada, nullptr, &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &salida)) return r;
-        std::string claro(reinterpret_cast<const char*>(salida.pbData), salida.cbData);
+        // Directo del bloque descifrado a cada contraseña (sin otra copia), y el bloque se borra antes de soltarlo
+        hnd::contrasenas::Desempaquetar(reinterpret_cast<const char*>(salida.pbData), salida.cbData, maximo, r);
         SecureZeroMemory(salida.pbData, salida.cbData);
         LocalFree(salida.pbData);
-        try
-        {
-            json j = json::parse(claro);
-            if (j.is_array())
-            {
-                for (const auto& c : j)
-                {
-                    if (r.size() >= maximo) break;
-                    if (c.is_string() && !c.get_ref<const std::string&>().empty()) r.push_back(c.get<std::string>());
-                }
-            }
-        }
-        catch (...)
-        {
-            hnd::contrasenas::Borrar(r);
-        }
-        hnd::contrasenas::Borrar(claro);
         return r;
     }
+
+    uint32_t Le32(const char* p)
+    {
+        return (uint32_t)(unsigned char)p[0] | ((uint32_t)(unsigned char)p[1] << 8) | ((uint32_t)(unsigned char)p[2] << 16)
+             | ((uint32_t)(unsigned char)p[3] << 24);
+    }
+}
+
+std::string hnd::contrasenas::Empaquetar(const std::vector<std::string>& lista)
+{
+    size_t total = 1;
+    for (const auto& c : lista) total += 4 + c.size();
+    std::string r;
+    r.reserve(total);   // de una vez: nunca se agranda (al agrandarse dejaría copias sin borrar)
+    r.push_back('\x01');
+    for (const auto& c : lista)
+    {
+        uint32_t n = (uint32_t)c.size();
+        for (int i = 0; i < 4; i++) r.push_back((char)((n >> (8 * i)) & 0xFF));
+        r.append(c);
+    }
+    return r;
+}
+
+bool hnd::contrasenas::Desempaquetar(const char* datos, size_t largo, size_t maximo, std::vector<std::string>& lista)
+{
+    Borrar(lista);
+    if (!datos || largo == 0 || datos[0] != '\x01') return false;
+    // Primero se revisan los largos y se cuentan, para reservar el lugar justo: la lista nunca se agranda
+    size_t cuantas = 0;
+    for (size_t p = 1; p < largo;)
+    {
+        if (largo - p < 4) return false;
+        uint32_t n = Le32(datos + p);
+        p += 4;
+        if (n > largo - p || n > MaximoLargo) return false;
+        p += n;
+        if (n > 0) cuantas++;
+    }
+    lista.reserve(std::min(cuantas, maximo));
+    for (size_t p = 1; p < largo && lista.size() < maximo;)
+    {
+        uint32_t n = Le32(datos + p);
+        p += 4;
+        if (n > 0) lista.emplace_back(datos + p, n);   // directo a su lugar
+        p += n;
+    }
+    return true;
 }
 
 std::vector<std::string> hnd::contrasenas::DeTexto(const std::string& texto)
 {
     std::vector<std::string> r;
+    r.reserve(Maximo);   // las listas de contraseñas nunca se agrandan: al agrandarse dejarían copias sin borrar
     size_t i = 0;
     while (i <= texto.size() && r.size() < Maximo)
     {
@@ -137,6 +171,7 @@ std::vector<std::string> hnd::contrasenas::DeTexto(const std::string& texto)
 std::vector<std::string> hnd::contrasenas::Juntar(const std::vector<std::string>& a, const std::vector<std::string>& b)
 {
     std::vector<std::string> r;
+    r.reserve(std::min(Maximo, a.size() + b.size()));
     for (const auto* l : { &a, &b })
     {
         for (const auto& c : *l)
@@ -246,6 +281,7 @@ void hnd::contrasenas::Guardadas::Recordar(const std::vector<std::string>& lista
     // La más nueva primero; sin repetir; como mucho 20
     std::vector<std::string> todas = Recordadas();
     std::vector<std::string> nuevas;
+    nuevas.reserve(lista.size() + todas.size());
     for (const auto& c : lista)
     {
         if (!c.empty() && std::find(nuevas.begin(), nuevas.end(), c) == nuevas.end()) nuevas.push_back(c);

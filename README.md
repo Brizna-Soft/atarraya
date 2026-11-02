@@ -137,10 +137,17 @@ Desde la 0.2.2, si tienes [Jícaro](https://brizna-soft.github.io/programas/jica
 Brizna Soft, Atarraya le pide que descomprima lo que bajaste en cuanto termina:
 
 - **Cuándo:** desde la 0.4.1, cada juego de un paquete apenas está completo, sin esperar al resto del paquete: un
-  comprimido entero al terminar, y uno en partes (`.part1.rar`, `.rar` con `.r00`, `.7z.001`, `.zip` con `.z01`...) al
-  llegar su última parte. Cada juego, una sola vez. También un .rar, .zip o .7z suelto. Si una parte falla o todavía no
-  se baja, su juego espera; también a una que ya se estaba bajando cuando llegó el paquete. Las partes que bajas sueltas
-  desde el navegador no se descomprimen solas, porque Atarraya no sabe si ya están todas.
+  comprimido entero al terminar, y uno en partes (`.part1.rar`, `.rar` con `.r00`, `.7z.001`, `.zip` con `.z01`...)
+  cuando llegaron todas sus partes, sin huecos (si falta la 2, no se abre aunque estén la 1 y la 3), y el comprimido
+  dice que la última es la última (RAR y 7z lo dicen; un ZIP partido, con su `.zip` y todas sus `.zNN`). Si eso no se
+  puede saber, espera a que termine todo el paquete; si al terminar le falta una parte, te avisa. Cada juego, una sola
+  vez. También un .rar, .zip o .7z suelto. Si una parte falla o todavía no se baja, su juego espera; también a una que
+  ya se estaba bajando cuando llegó el paquete. Las partes que bajas sueltas desde el navegador no se descomprimen
+  solas, porque Atarraya no sabe si ya están todas.
+- **Nunca junta partes de dos paquetes.** Si en la carpeta de un juego hay partes con el mismo nombre que no son de su
+  paquete, Atarraya no se lo pasa a Jícaro y te avisa (lo mejor es «Una carpeta por paquete» en el recolector).
+- **Si Atarraya se cierra** mientras un juego espera su turno o mientras Jícaro lo descomprime, al volver a abrirlo se
+  lo pasa otra vez: solo queda como hecho cuando Jícaro termina.
 - **Dónde:** al lado de las partes. Un paquete con un solo juego va a una carpeta nueva con el nombre del paquete; con
   varios, cada juego a la suya. Si ya existe, usa «nombre (2)».
 - **Con contraseña** (desde la 0.4.1): si tienes la contraseña de todo un lote de enlaces, escríbela una sola vez al

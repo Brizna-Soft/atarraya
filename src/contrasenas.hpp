@@ -40,6 +40,13 @@ namespace hnd::contrasenas
     void Borrar(std::string& s);
     void Borrar(std::vector<std::string>& v);
 
+    // La lista en claro justo antes de cifrarla (y justo después de descifrarla): un «1» y cada contraseña con su largo
+    // (4 bytes) y sus bytes. Sin JSON: sus objetos harían copias de cada contraseña que después nadie borra. Se arma en un
+    // solo bloque del tamaño justo y se lee directo a cada contraseña, sin copias de más (el que llama borra lo suyo).
+    // Desempaquetar devuelve false (y la lista vacía) si el bloque no tiene esa forma.
+    std::string Empaquetar(const std::vector<std::string>& lista);
+    bool Desempaquetar(const char* datos, size_t largo, size_t maximo, std::vector<std::string>& lista);
+
     // Las guardadas (contrasenas.json, en la carpeta de datos de Atarraya): las de cada paquete de la lista de descargas
     // (por su grupo) y, aparte, las que se recuerdan para otros paquetes. Todo cifrado.
     class Guardadas

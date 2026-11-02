@@ -85,30 +85,59 @@ namespace hnd::jicaro
     std::vector<ParteBajada> ArchivosDelPaquete(const std::string& grupo, const std::vector<Foto>& descargas,
                                                 const std::vector<Parte>& cola);
 
+    // ¿La última parte de un juego en partes (las que bajaron, en orden y sin huecos) es la última del juego? Lo dice el
+    // propio comprimido, leído del disco:
+    //   - RAR 4 y RAR 5 («peli.part3.rar», «peli.r02»): el bloque del final de esa parte dice si sigue otra;
+    //   - 7z partido («peli.7z.003»): la primera parte dice cuánto mide el comprimido entero, y se suman las partes;
+    //   - ZIP partido («peli.zip» con «peli.z01»...): el .zip es el último trozo y su índice dice cuántos hay.
+    // «NoSe» si no lo dice (por ejemplo, un «.rar.001» de un programa que corta archivos, o cabeceras cifradas).
+    // «tipo» es la letra del juego (ver Juego::clave).
+    enum class Ultima { NoSe, Es, NoEs };
+    Ultima LaUltima(const std::vector<std::wstring>& partes, wchar_t tipo);
+
     // Cada juego de un paquete: un comprimido entero o un juego de partes («peli.part1.rar», «peli.part2.rar»...;
     // «peli.rar» con «peli.r00»...; «peli.7z.001»...; «peli.zip» con «peli.z01»...). Se descomprime apenas está
     // completo, sin esperar al resto del paquete, y una sola vez.
     //   - «partes»: las suyas que ya bajaron, en orden (la primera es la que se le pasa a Jícaro).
     //   - «faltan»: las suyas que todavía no bajaron (en la lista de descargas o en la cola de «de una en una»).
-    //   - «descomprimido»: ya se le pasó a Jícaro (se guarda con cada descarga).
-    // Mientras falte alguna parte del paquete de la que no se sabe de qué juego es («dudosas»: por ejemplo, una página
-    // de un sitio de descargas sin el nombre del archivo), ningún juego del paquete está completo: podría ser suya.
+    //   - «huecos»: falta un número en el medio (o el .rar o el .zip que lo abre).
+    //   - «jicaro»: si ya se le pasó a Jícaro (se guarda con cada descarga).
+    // Un juego en partes está completo solo si bajaron todas sus partes, sin huecos, y se sabe que la última es la
+    // última (LaUltima). Si eso no se puede saber, espera a que termine todo el paquete. Mientras falte alguna parte del
+    // paquete de la que no se sabe de qué juego es («dudosas»: por ejemplo, una página de un sitio de descargas sin el
+    // nombre del archivo), ningún juego del paquete está completo: podría ser suya. «incompleto»: ya terminó todo el
+    // paquete y a ese juego le falta algo (no se le pasa a Jícaro: se avisa).
     struct Juego
     {
-        std::wstring clave;
+        std::wstring clave;   // la letra del tipo, «|», su carpeta y su nombre
         std::wstring nombre;
         std::wstring carpeta;
         std::vector<ParteBajada> partes;
         size_t faltan = 0;
-        bool descomprimido = false;
+        bool huecos = false;
+        bool enPartes = false;
+        Ultima ultima = Ultima::NoSe;
+        EstadoJicaro jicaro = EstadoJicaro::Pendiente;
+        bool completo = false;
+        bool incompleto = false;
+        wchar_t Tipo() const { return clave.empty() ? L'?' : clave[0]; }
     };
     struct JuegosDelPaquete
     {
         std::vector<Juego> juegos;
         size_t dudosas = 0;
-        bool Completo(const Juego& j) const { return dudosas == 0 && j.faltan == 0 && !j.partes.empty(); }
+        bool terminado = false;   // ya no baja nada del paquete (ni en la lista ni en la cola)
+        bool Completo(const Juego& j) const { return j.completo; }
     };
-    JuegosDelPaquete Juegos(const std::string& grupo, const std::vector<Foto>& descargas, const std::vector<Parte>& cola);
+    JuegosDelPaquete Juegos(const std::string& grupo, const std::vector<Foto>& descargas, const std::vector<Parte>& cola,
+                            const std::function<Ultima(const std::vector<std::wstring>&, wchar_t)>& ultima = LaUltima);
+    // Otro archivo en la carpeta de un juego que Jícaro tomaría como parte suya (el mismo nombre de juego) y que no es
+    // de este paquete («delPaquete»: las rutas de todas sus descargas). Vacío si no hay: así Jícaro nunca junta partes
+    // de dos paquetes que quedaron en la misma carpeta.
+    std::wstring ParteAjena(const Juego& j, const std::vector<std::wstring>& delPaquete);
+    // Al abrir Atarraya: las descargas cuyo juego quedó «en curso» (se le había pasado a Jícaro y no terminó bien), una
+    // por paquete (o la suelta), para pasárselo otra vez
+    std::vector<uint64_t> PorRetomar(const std::vector<Foto>& descargas);
 
     // Lo que hay que descomprimir de un paquete: un comprimido por vez, armado solo con las partes del paquete (nunca
     // con archivos de otro, aunque estén en la misma carpeta y se llamen igual)
@@ -166,10 +195,34 @@ namespace hnd::jicaro
     // Lo que dice Jícaro al terminar, según su código de salida. «Contrasena»: hace falta una (o el cifrado no se
     // puede abrir); «ContrasenaIncorrecta»: la que se le pasó no sirve (Jícaro 0.2.0). «JicaroViejo»: el paquete tiene
     // contraseña y el Jícaro instalado es anterior a la 0.2.0 (no se abrió).
-    enum class Resultado { Listo, Error, Cancelado, FaltanPartes, Contrasena, YaExtrayendo, Parcial, NoAbrio, ContrasenaIncorrecta, JicaroViejo };
+    // «PartesAjenas»: en su carpeta hay partes con el mismo nombre que no son del paquete (no se abrió). «Incompleto»: ya
+    // terminó todo el paquete y a ese juego le falta una parte (no se abrió).
+    enum class Resultado { Listo, Error, Cancelado, FaltanPartes, Contrasena, YaExtrayendo, Parcial, NoAbrio, ContrasenaIncorrecta, JicaroViejo,
+                           PartesAjenas, Incompleto };
     Resultado LeerCodigo(unsigned long codigo);
     // ¿Hay que pedir (otra) contraseña?
     bool PideContrasena(Resultado r);
+    // Cómo queda el juego después: «Hecho» solo si Jícaro terminó (bien, a medias o la persona lo canceló: no se vuelve a
+    // abrir solo); si no, «Pendiente» (por ejemplo, para intentarlo otra vez con la contraseña)
+    EstadoJicaro EstadoDespues(Resultado r);
+
+    // De los avisos que esperan algo (una contraseña o un Jícaro nuevo), saca los de «clave» y los devuelve. «clave» va
+    // por valor a propósito: puede ser la de uno de esos avisos, que se mueve y se borra al sacarlo.
+    template <class Lista, class ClaveDe, class Espera>
+    std::vector<typename Lista::value_type> SacarLosQueEsperan(Lista& lista, const std::string clave, ClaveDe claveDe, Espera espera)
+    {
+        std::vector<typename Lista::value_type> r;
+        for (auto it = lista.begin(); it != lista.end();)
+        {
+            if (claveDe(*it) == clave && espera(*it))
+            {
+                r.push_back(std::move(*it));
+                it = lista.erase(it);
+            }
+            else ++it;
+        }
+        return r;
+    }
     // Para la persona, en español. «nombre» es el del paquete o el del comprimido; «destino», la carpeta.
     std::wstring Titulo(Resultado r);
     std::wstring Texto(Resultado r, const std::wstring& nombre, const std::wstring& destino);
