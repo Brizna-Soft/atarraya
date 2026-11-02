@@ -1215,6 +1215,7 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
     }
     AplicarTanda(tanda);
     int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
+    std::vector<uint64_t> aLaLista, aTorrents;   // los enlaces que están (o quedaron) en cada lista
     for (const auto& e : lista)
     {
         if (e.estado == Comprobacion::NoExiste || e.estado == Comprobacion::NoPermitido) { noEstan++; continue; }   // se quedan en el recolector
@@ -1242,18 +1243,18 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
             InfoTorrent info;
             std::string error;
             if (!MotorTorrent::LeerMagnet(e.url, info, error)) { fallaron++; continue; }
-            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; hechos.push_back(e.id); continue; }
+            if (m_torrents.BuscarPorHuella(info.huella)) { yaEstaban++; hechos.push_back(e.id); aTorrents.push_back(e.id); continue; }
             NuevoTorrent n;
             n.magnet = e.url;
             n.carpeta = destino;
             n.compartir = m_ajustes.compartirTorrents;
             n.elegirDespues = m_ajustes.elegirArchivosMagnet;
             n.empezar = empezar;
-            if (m_torrents.Agregar(n, error)) { torrents++; hechos.push_back(e.id); }
+            if (m_torrents.Agregar(n, error)) { torrents++; hechos.push_back(e.id); aTorrents.push_back(e.id); }
             else fallaron++;
             continue;
         }
-        if (m_motor.BuscarPorUrl(e.url)) { yaEstaban++; hechos.push_back(e.id); continue; }
+        if (m_motor.BuscarPorUrl(e.url)) { yaEstaban++; hechos.push_back(e.id); aLaLista.push_back(e.id); continue; }
         DatosDescarga d;
         d.url = e.url;
         d.referer = e.referer;
@@ -1265,7 +1266,14 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         m_motor.Agregar(d, empezar);
         descargas++;
         hechos.push_back(e.id);
+        aLaLista.push_back(e.id);
     }
+    // Los enlaces salen del recolector (lo hace quien llamó, con «hechos») recién cuando la lista de descargas y la de
+    // torrents ya quedaron guardadas con ellos: si Atarraya se cierra de golpe en el medio, nada se pierde
+    size_t antes = hechos.size();
+    hechos = SalenDelRecolector(std::move(hechos), aLaLista, [this]() { return m_motor.Guardar(); });
+    hechos = SalenDelRecolector(std::move(hechos), aTorrents, [this]() { return m_torrents.Guardar(); });
+    if (hechos.size() < antes) Registrar("recolector: no se pudo guardar la lista; esos enlaces se quedan también en el recolector");
     wxWindow* padre = m_ventanaRecolector && m_ventanaRecolector->IsShown() ? (wxWindow*)m_ventanaRecolector : (wxWindow*)this;
     // Las páginas de sitios de descargas se abren de una en una: la siguiente cuando termina la anterior
     if (!sitios.empty() && EmpezarDeUnaEnUna(sitios, carpeta, porPaquete, empezar, padre, &tanda))

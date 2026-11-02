@@ -165,6 +165,16 @@ bool hnd::EnlaceParaRecolectar(const std::string& url)
     }
 }
 
+std::vector<uint64_t> hnd::SalenDelRecolector(std::vector<uint64_t> hechos, const std::vector<uint64_t>& enLaLista,
+                                              const std::function<bool()>& guardar)
+{
+    if (enLaLista.empty() || (guardar && guardar())) return hechos;
+    hechos.erase(std::remove_if(hechos.begin(), hechos.end(),
+                                [&](uint64_t id) { return std::find(enLaLista.begin(), enLaLista.end(), id) != enLaLista.end(); }),
+                 hechos.end());
+    return hechos;
+}
+
 std::wstring hnd::PaqueteDe(const EnlaceRecolectado& e)
 {
     if (!e.paquete.empty()) return e.paquete;

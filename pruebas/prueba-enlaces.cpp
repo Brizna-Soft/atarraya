@@ -376,6 +376,44 @@ namespace
             Comprobar(!GuardarEnRecolector(q.Sobrantes(), recSinLugar) && q.Partes().size() == 1,
                       "de una en una: si el recolector no se puede guardar, la cola no se vacía");
         }
+        std::wstring archivoLista = base + L"-lista.json", archivoRec = base + L"-recolector3.json";
+        {
+            // Del recolector a la lista de descargas sin perder nada: primero la lista se guarda con la descarga nueva y
+            // recién después el enlace sale del recolector
+            const std::string url = "https://ejemplo.com/peli.part1.rar";
+            Recolector rec(archivoRec);
+            rec.Agregar({ url }, L"Peli", "", "prueba");
+            rec.Guardar();
+            uint64_t enlace = rec.Lista().front().id;
+            Motor m(archivoLista);
+            DatosDescarga d;
+            d.url = url;
+            d.carpeta = base;
+            m.Agregar(d, false);
+            auto salen = SalenDelRecolector({ enlace }, { enlace }, [&]() { return m.Guardar(); });
+            // Atarraya se cierra de golpe justo aquí, antes de guardar el recolector sin el enlace
+            Motor mDespues(archivoLista);
+            mDespues.Cargar();
+            Recolector recDespues(archivoRec);
+            recDespues.Cargar();
+            Comprobar(salen == std::vector<uint64_t>{ enlace } && mDespues.BuscarPorUrl(url) != 0 && recDespues.Contiene(url),
+                      "recolector: un cierre justo después de pasar un enlace a la lista no lo pierde (queda en los dos lados)");
+            rec.Quitar(salen);
+            rec.Guardar();
+            Recolector recFinal(archivoRec);
+            recFinal.Cargar();
+            Comprobar(!recFinal.Contiene(url), "recolector: después el enlace sale del recolector");
+            // Si la lista no se pudo guardar, el enlace se queda también en el recolector (los demás salen)
+            Motor listaSinLugar(base + L"-carpeta-que-no-existe\\lista.json");
+            listaSinLugar.Agregar(d, false);
+            Comprobar(SalenDelRecolector({ enlace, 77 }, { enlace }, [&]() { return listaSinLugar.Guardar(); }) == std::vector<uint64_t>{ 77 },
+                      "recolector: si la lista no se pudo guardar, el enlace se queda en el recolector");
+        }
+        for (const auto& f : { archivoLista, archivoRec })
+        {
+            DeleteFileW(f.c_str());
+            DeleteFileW((f + L".tmp").c_str());
+        }
         std::wstring archivoCola3 = base + L"-cola3.json", archivoCola4 = base + L"-cola4.json";
         {
             // Terminó con una saltada y una con error, y el recolector no se pudo guardar: al volver a abrir siguen ahí

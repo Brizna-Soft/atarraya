@@ -67,6 +67,9 @@ namespace hnd
         void Cargar();
         uint64_t Agregar(const NuevoTorrent& n, std::string& error);   // 0 si no se pudo
         uint64_t BuscarPorHuella(const std::string& huella);           // 0 si no está
+        // La lista guardada ya, sin esperar al reloj (por ejemplo, antes de que esos enlaces salgan del recolector).
+        // false si no se pudo guardar.
+        bool Guardar();
 
         void Reanudar(uint64_t id);
         void Pausar(uint64_t id);
