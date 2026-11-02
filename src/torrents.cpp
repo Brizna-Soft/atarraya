@@ -1243,6 +1243,12 @@ std::vector<std::wstring> hnd::MotorTorrent::Avisos()
     return r;
 }
 
+bool hnd::MotorTorrent::Guardar()
+{
+    if (m->sucio) m->GuardarLista();
+    return !m->sucio;
+}
+
 void hnd::MotorTorrent::Tick()
 {
     if (!m->ses)
@@ -1432,6 +1438,7 @@ uint64_t hnd::MotorTorrent::Agregar(const NuevoTorrent&, std::string& error)
 }
 
 uint64_t hnd::MotorTorrent::BuscarPorHuella(const std::string&) { return 0; }
+bool hnd::MotorTorrent::Guardar() { return true; }
 void hnd::MotorTorrent::Reanudar(uint64_t) {}
 void hnd::MotorTorrent::Pausar(uint64_t) {}
 void hnd::MotorTorrent::Quitar(uint64_t, bool) {}

@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -96,6 +97,13 @@ namespace hnd
     // El paquete de un enlace: el que trae, o uno sacado del nombre («peli.part1.rar» y «peli.part2.rar» → «peli»)
     std::wstring PaqueteDe(const EnlaceRecolectado& e);
     const wchar_t* TextoComprobacion(Comprobacion c);
+
+    // Al pasar enlaces a la lista de descargas (o a la de torrents): de «hechos», los que ya pueden salir del recolector.
+    // Los de «enLaLista» salen solo si esa lista quedó guardada con ellos («guardar»; false si no se pudo: se quedan
+    // también en el recolector). Así, si Atarraya se cierra de golpe antes de guardar el recolector, a lo sumo quedan en
+    // los dos lados (al confirmarlos otra vez, ya estaban), pero nunca se pierden.
+    std::vector<uint64_t> SalenDelRecolector(std::vector<uint64_t> hechos, const std::vector<uint64_t>& enLaLista,
+                                             const std::function<bool()>& guardar);
 
     // Para el portapapeles: solo se recolectan enlaces a archivos, magnet y páginas de sitios de descargas
     bool EnlaceParaRecolectar(const std::string& url);
