@@ -135,7 +135,7 @@ namespace hnd
         Motor& operator=(const Motor&) = delete;
 
         void Cargar();
-        void Guardar();
+        bool Guardar();   // ya, sin esperar a la próxima vuelta; falso si no se pudo escribir
 
         uint64_t Agregar(DatosDescarga d, bool empezar);
         // Un archivo que ya bajó el navegador (la extensión siguió su descarga): entra a la lista como terminado, con

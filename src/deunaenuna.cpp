@@ -435,15 +435,11 @@ uint64_t hnd::DeUnaEnUna::Confirmar(int i)
     return p.descarga;
 }
 
-hnd::AccionPausa hnd::DeUnaEnUna::RevisarPausa(int i, Estado estado, bool pausando)
+hnd::AccionPausa hnd::DeUnaEnUna::RevisarPausa(int i, Estado estado, bool pausando) const
 {
     if (i < 0 || (size_t)i >= m_partes.size()) return AccionPausa::Listo;
-    auto& p = m_partes[i];
-    if (p.estado != EstadoParte::Tomada)
-    {
-        p.reanudar = false;
-        return AccionPausa::Listo;
-    }
+    const auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Tomada) return AccionPausa::Listo;
     bool enMarcha = estado == Estado::EnCola || estado == Estado::Iniciando || estado == Estado::Descargando;
     if (p.sinConfirmar)
     {
@@ -455,8 +451,49 @@ hnd::AccionPausa hnd::DeUnaEnUna::RevisarPausa(int i, Estado estado, bool pausan
     if (pausando) return AccionPausa::Nada;
     if (estado == Estado::Pausada) return AccionPausa::Reanudar;
     // Ya sigue (o terminó, o falló: eso lo atiende la cola como siempre)
-    p.reanudar = false;
     return AccionPausa::Listo;
+}
+
+bool hnd::DeUnaEnUna::RevisarPausas(const ListaParaPausas& lista, std::vector<int>* repausadas)
+{
+    bool cambio = false;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        auto& p = m_partes[i];
+        if (!p.sinConfirmar && !p.reanudar) continue;
+        if (p.estado != EstadoParte::Tomada)
+        {
+            // Ya no es de Atarraya (terminó, se saltó...): no hay descarga que pausar ni reanudar
+            p.sinConfirmar = false;
+            p.reanudar = false;
+            cambio = true;
+            continue;
+        }
+        Estado estado = Estado::EnCola;
+        bool pausando = false;
+        if (!lista.buscar || !lista.buscar(p.descarga, estado, pausando)) continue;   // la persona la quitó: la cola la salta
+        switch (RevisarPausa((int)i, estado, pausando))
+        {
+        case AccionPausa::Pausar:
+            if (lista.pausar) lista.pausar(p.descarga);
+            if (repausadas) repausadas->push_back((int)i);
+            break;
+        case AccionPausa::Reanudar:
+            if (lista.reanudar) lista.reanudar(p.descarga);
+            break;
+        case AccionPausa::Listo:
+            // Ya sigue: primero se guarda la lista de descargas con la descarga reanudada y recién después se borra la
+            // marca (si no se pudo guardar, la marca queda y se intenta en la próxima vuelta)
+            if (p.reanudar && lista.guardar && lista.guardar())
+            {
+                p.reanudar = false;
+                cambio = true;
+            }
+            break;
+        default: break;
+        }
+    }
+    return cambio;
 }
 
 int hnd::DeUnaEnUna::ParteDeToma(const std::string& toma) const

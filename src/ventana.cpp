@@ -629,6 +629,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     for (auto id : aMedias) m_motor.Quitar(id);
     if (!aMedias.empty())
     {
+        m_motor.Guardar();   // antes que la cola (ver TomaANavegador)
         GuardarCola();
         Registrar("de una en una: " + std::to_string(aMedias.size()) + " descargas que se estaban probando quedan para el navegador");
     }
@@ -1501,8 +1502,11 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         int i = m_sitios.ParteDeToma(campo("toma"));
         uint64_t pausar = m_sitios.MarcarSinConfirmar(i);
         if (!pausar) return;
-        m_motor.Pausar(pausar);
+        // Primero queda guardada la marca: si Atarraya se cierra de golpe antes de que la pausa quede guardada, al
+        // abrirlo la marca la vuelve a poner
         GuardarCola();
+        m_motor.Pausar(pausar);
+        m_motor.Guardar();
         size_t cuantas = m_sitios.Partes().size();
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": no se pudo confirmar si el navegador sigue bajándola; "
                   "Atarraya pausó la suya hasta saberlo");
@@ -2407,24 +2411,21 @@ void VentanaPrincipal::RevisarPausas()
     // Después de un cierre de golpe, una «sin confirmar» puede haber vuelto a la cola: se pausa otra vez antes de que
     // arranque. Y una ya confirmada se reanuda hasta que de verdad sigue (mientras su pausa no termina, reanudar no hace
     // nada): así nunca quedan bajando las dos ni la parte detenida.
-    bool cambio = false;
-    const auto& partes = m_sitios.Partes();
-    for (size_t i = 0; i < partes.size(); i++)
-    {
-        const auto& p = partes[i];
-        if (p.estado != EstadoParte::Tomada || (!p.sinConfirmar && !p.reanudar)) continue;
+    DeUnaEnUna::ListaParaPausas lista;
+    lista.buscar = [this](uint64_t id, Estado& estado, bool& pausando) {
         hnd::Foto f;
-        if (!m_motor.Buscar(p.descarga, f)) continue;   // la persona la quitó: RevisarPartes la salta
-        bool antes = p.reanudar;
-        AccionPausa a = m_sitios.RevisarPausa((int)i, f.datos.estado, f.pausando);
-        if (a == AccionPausa::Pausar)
-        {
-            m_motor.Pausar(p.descarga);
-            Registrar("de una en una: parte " + std::to_string(i + 1) + ": sigue sin confirmar; su descarga vuelve a la pausa");
-        }
-        else if (a == AccionPausa::Reanudar) m_motor.Reanudar(p.descarga);
-        cambio = cambio || antes != m_sitios.Partes()[i].reanudar;
-    }
+        if (!m_motor.Buscar(id, f)) return false;
+        estado = f.datos.estado;
+        pausando = f.pausando;
+        return true;
+    };
+    lista.pausar = [this](uint64_t id) { m_motor.Pausar(id); };
+    lista.reanudar = [this](uint64_t id) { m_motor.Reanudar(id); };
+    lista.guardar = [this]() { return m_motor.Guardar(); };   // la descarga reanudada, guardada antes de borrar la marca
+    std::vector<int> repausadas;
+    bool cambio = m_sitios.RevisarPausas(lista, &repausadas);
+    for (int i : repausadas)
+        Registrar("de una en una: parte " + std::to_string(i + 1) + ": sigue sin confirmar; su descarga vuelve a la pausa");
     if (cambio) GuardarCola();
 }
 
@@ -2498,6 +2499,7 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d, const std::string& tom
     // guarda en la cola: si Atarraya se cierra a la mitad, al abrirlo queda la del navegador y nunca bajan las dos.
     if (!toma.empty()) m_sitios.Probar(i, id, toma, AhoraUnix());
     else m_sitios.Tomar(i, id);
+    m_motor.Guardar();   // la cola nombra esa descarga: que ya esté guardada en la lista
     GuardarCola();
     size_t total = m_sitios.Partes().size();
     if (!toma.empty())
@@ -2524,6 +2526,9 @@ void VentanaPrincipal::TomaANavegador(int i, bool recordarSitio)
     // extensión la sigue: una sola descarga de esa parte
     uint64_t quitar = m_sitios.Decidir(i, false);
     if (quitar) m_motor.Quitar(quitar);
+    // La lista de descargas, sin la de Atarraya, se guarda antes que la cola (que deja de recordar esa descarga): si se
+    // cierra de golpe en el medio, al abrir la cola todavía la tiene y la quita otra vez
+    m_motor.Guardar();
     GuardarCola();
     if (recordarSitio) m_sitiosNavegador.Anotar(pagina, AhoraUnix());
     Registrar("de una en una: parte " + std::to_string(i + 1) + ": Atarraya no pudo seguir la descarga del navegador"
@@ -2721,6 +2726,7 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
         if (p.estado != EstadoParte::Tomada || (estado != "bajando" && estado != "completa")) return;
         uint64_t quitar = m_sitios.NavegadorSiguio(i);
         if (quitar) m_motor.Quitar(quitar);
+        m_motor.Guardar();   // antes que la cola (ver TomaANavegador)
         GuardarCola();
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": el navegador siguió con la suya; Atarraya quita la suya");
     }
@@ -2836,6 +2842,9 @@ void VentanaPrincipal::MoverParteDelNavegador(int i)
     uint64_t id = m_motor.AgregarTerminada(d);
     m_motor.FijarIdentidad(id, p.identidadNavegador);   // el mismo archivo (al moverlo no cambia)
     m_sitios.TerminarEnNavegador(i, true, id);
+    // Primero la lista de descargas (con la terminada) y después la cola, que deja de recordar lo que faltaba mover: si
+    // se cierra de golpe en el medio, nada se pierde
+    m_motor.Guardar();
     GuardarCola();
     Registrar("de una en una: parte " + std::to_string(i + 1) + " lista: la bajó el navegador"
               + (r == Movida::OtroDisco ? std::string(" (quedó en otro disco)") : std::string(" y está en la carpeta del paquete")));
