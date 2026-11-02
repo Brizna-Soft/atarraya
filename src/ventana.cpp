@@ -3088,7 +3088,8 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         t.partes = std::move(plan.partes);
         t.destino = destino;
         t.clave = clave;
-        // Una sola vez por juego: queda anotado con cada parte (también si Atarraya se cierra)
+        // Una sola vez por juego: queda anotado con cada parte (también si Atarraya se cierra: la lista se guarda con la
+        // marca antes de abrir Jícaro; ver AnotarJicaro)
         for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga);
         trabajos.push_back(std::move(t));
     };
@@ -3102,7 +3103,11 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
             return trabajos;
         if (!m_jicaroVistos.insert("descarga " + std::to_string(d.id)).second) return trabajos;
         for (auto& plan : jicaro::Planear({ { d.id, ruta, d.identidad } }, d.paquete)) agregar(plan, ClaveDeContrasena(d));
-        if (!trabajos.empty()) Registrar("jícaro: terminó un comprimido suelto");
+        if (!trabajos.empty())
+        {
+            AnotarJicaro();
+            Registrar("jícaro: terminó un comprimido suelto");
+        }
         return trabajos;
     }
 
@@ -3119,10 +3124,21 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
         listos++;
     }
     if (!trabajos.empty())
+    {
+        AnotarJicaro();
         Registrar("jícaro: " + std::to_string(listos) + (listos == 1 ? " juego completo" : " juegos completos") + " de un paquete ("
                   + std::to_string(juegos.juegos.size()) + " en total); " + std::to_string(trabajos.size())
                   + (trabajos.size() == 1 ? " comprimido" : " comprimidos") + " para descomprimir");
+    }
     return trabajos;
+}
+
+void VentanaPrincipal::AnotarJicaro()
+{
+    // Cada vez que cambia la marca «descomprimido» de unas partes, la lista se guarda enseguida (no al rato): antes de
+    // abrir Jícaro, para que un cierre de golpe no descomprima dos veces el mismo juego; y al quitarla (falta la
+    // contraseña o un Jícaro nuevo), para que escribirla después, también tras cerrar Atarraya, lo descomprima
+    if (!m_motor.Guardar()) Registrar("jícaro: no se pudo guardar la lista de descargas");
 }
 
 std::string VentanaPrincipal::ClaveDeContrasena(const DatosDescarga& d) const
@@ -3189,6 +3205,7 @@ void VentanaPrincipal::SiguienteJicaro()
                 Registrar("jícaro: el paquete tiene contraseña y Jícaro es anterior a la 0.2.0; no se abrió");
                 // Queda por descomprimir: con un Jícaro nuevo, se intenta otra vez al escribir (o confirmar) la contraseña
                 for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
+                AnotarJicaro();
                 MostrarResultadoJicaro(std::move(t), jicaro::Resultado::JicaroViejo);
                 continue;
             }
@@ -3256,6 +3273,7 @@ void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
     if (jicaro::PideContrasena(r))
     {
         for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
+        AnotarJicaro();
     }
     MostrarResultadoJicaro(std::move(t), r);
     SiguienteJicaro();
@@ -3463,6 +3481,7 @@ bool VentanaPrincipal::EscribirContrasena(const std::string& clave, const std::w
         }
         else ++it;
     }
+    if (otraVez) AnotarJicaro();   // antes de que se abra Jícaro con ellos
     // Y los que quedaron por descomprimir sin aviso a la vista (se cerró el aviso, o Atarraya se cerró): se vuelven a mirar
     // los juegos completos del paquete; los que ya se descomprimieron bien no se tocan
     const std::string suelta = "descarga:";

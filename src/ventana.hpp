@@ -157,6 +157,8 @@ private:
     };
     // Si con esta descarga terminó todo su paquete, lo que hay que descomprimir (vacío si falta algo o ya se hizo)
     std::vector<TrabajoJicaro> PrepararJicaro(const hnd::DatosDescarga& d);
+    // Guarda la lista ya, con la marca «descomprimido» de las partes como quedó
+    void AnotarJicaro();
     // Las que ya estaban en la lista y entran a un paquete de la tanda (y los grupos que se juntan)
     void AplicarTanda(const hnd::jicaro::Tanda& tanda);
     // Al terminar una descarga (ya marcada como bajada de internet): qué archivo quedó, para «Borrar las partes»
