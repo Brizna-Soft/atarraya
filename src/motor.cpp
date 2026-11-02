@@ -1255,6 +1255,7 @@ namespace hnd
             f.hecho = f.datos.Hecho();
             f.velocidad = x->velocidad;
             f.activas = x->activas;
+            f.pausando = x->enMarcha && x->pausaPedida;
             r.push_back(std::move(f));
         }
         return r;
@@ -1273,6 +1274,7 @@ namespace hnd
         f.hecho = f.datos.Hecho();
         f.velocidad = x->velocidad;
         f.activas = x->activas;
+        f.pausando = x->enMarcha && x->pausaPedida;
         return true;
     }
 

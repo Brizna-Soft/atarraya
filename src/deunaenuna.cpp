@@ -239,6 +239,7 @@ void hnd::DeUnaEnUna::Cargar()
             }
             p.finalNavegador = j.value("finalNavegador", false);
             p.sinConfirmar = j.value("sinConfirmar", false) && p.estado == EstadoParte::Tomada;
+            p.reanudar = j.value("reanudar", false) && p.estado == EstadoParte::Tomada && !p.sinConfirmar;
             m_partes.push_back(std::move(p));
             if (m_partes.size() >= 5000) break;
         }
@@ -266,7 +267,7 @@ bool hnd::DeUnaEnUna::Guardar() const
                       { "identidadNavegador", json{ { "volumen", p.identidadNavegador.volumen }, { "indice", p.identidadNavegador.indice },
                                                     { "tamano", p.identidadNavegador.tamano },
                                                     { "modificado", p.identidadNavegador.modificado } } },
-                      { "finalNavegador", p.finalNavegador }, { "sinConfirmar", p.sinConfirmar } });
+                      { "finalNavegador", p.finalNavegador }, { "sinConfirmar", p.sinConfirmar }, { "reanudar", p.reanudar } });
     }
     json todo = { { "version", 1 }, { "partes", l } };
     return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
@@ -363,6 +364,7 @@ void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
     p.toma.clear();
     p.estadoToma = EstadoToma::Ninguna;
     p.sinConfirmar = false;
+    p.reanudar = false;
 }
 
 void hnd::DeUnaEnUna::Probar(int i, uint64_t descarga, const std::string& toma, int64_t ahora)
@@ -418,6 +420,7 @@ uint64_t hnd::DeUnaEnUna::MarcarSinConfirmar(int i)
     auto& p = m_partes[i];
     if (p.estado != EstadoParte::Tomada || p.estadoToma != EstadoToma::Tomada || p.sinConfirmar) return 0;
     p.sinConfirmar = true;
+    p.reanudar = false;
     return p.descarga;
 }
 
@@ -427,7 +430,33 @@ uint64_t hnd::DeUnaEnUna::Confirmar(int i)
     auto& p = m_partes[i];
     if (!p.sinConfirmar) return 0;
     p.sinConfirmar = false;
-    return p.estado == EstadoParte::Tomada ? p.descarga : 0;
+    if (p.estado != EstadoParte::Tomada) return 0;
+    p.reanudar = true;   // hasta que de verdad siga
+    return p.descarga;
+}
+
+hnd::AccionPausa hnd::DeUnaEnUna::RevisarPausa(int i, Estado estado, bool pausando)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return AccionPausa::Listo;
+    auto& p = m_partes[i];
+    if (p.estado != EstadoParte::Tomada)
+    {
+        p.reanudar = false;
+        return AccionPausa::Listo;
+    }
+    bool enMarcha = estado == Estado::EnCola || estado == Estado::Iniciando || estado == Estado::Descargando;
+    if (p.sinConfirmar)
+    {
+        // Tiene que estar en pausa mientras no se sepa: después de un cierre de golpe puede haber vuelto a la cola
+        return enMarcha && !pausando ? AccionPausa::Pausar : AccionPausa::Nada;
+    }
+    if (!p.reanudar) return AccionPausa::Listo;
+    // Mientras la pausa no termina (todavía cierra sus conexiones), reanudar no hace nada: se espera y se intenta de nuevo
+    if (pausando) return AccionPausa::Nada;
+    if (estado == Estado::Pausada) return AccionPausa::Reanudar;
+    // Ya sigue (o terminó, o falló: eso lo atiende la cola como siempre)
+    p.reanudar = false;
+    return AccionPausa::Listo;
 }
 
 int hnd::DeUnaEnUna::ParteDeToma(const std::string& toma) const
@@ -593,6 +622,7 @@ void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
     p.identidadNavegador = {};
     p.finalNavegador = false;
     p.sinConfirmar = false;
+    p.reanudar = false;
 }
 
 int hnd::DeUnaEnUna::BuscarToma(const std::string& toma) const
@@ -934,6 +964,7 @@ int hnd::DeUnaEnUna::Terminar(uint64_t descarga, bool ok)
         {
             p.estado = ok ? EstadoParte::Lista : EstadoParte::Fallo;
             p.sinConfirmar = false;
+            p.reanudar = false;
             return (int)i;
         }
     }
@@ -949,6 +980,7 @@ void hnd::DeUnaEnUna::Saltar(int i)
     {
         p.estado = EstadoParte::Saltada;
         p.sinConfirmar = false;
+        p.reanudar = false;
         p.hasta = 0;
         p.limite = false;
     }

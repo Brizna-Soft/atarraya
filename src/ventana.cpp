@@ -770,6 +770,8 @@ void VentanaPrincipal::Refrescar()
     // 1. Estados al día: lo que terminó desde la última vez ya no ocupa lugar
     m_motor.Recoger();
     m_torrents.Recoger();
+    // Las partes «sin confirmar» siguen en pausa y las que había que reanudar se reanudan (antes de ver qué arranca)
+    RevisarPausas();
     auto actuales = m_motor.Fotos();
     for (auto& f : m_torrents.Fotos()) actuales.push_back(std::move(f));
 
@@ -2479,6 +2481,32 @@ void VentanaPrincipal::AbrirParte(int i, bool avisar)
               + (porLaExtension ? std::string(", por la extensión)") : std::string("; la extensión no está conectada: ahí no se leen los avisos de espera)")));
     if (avisar)
         Avisar(wxString::Format(L"Parte %d de %zu en tu navegador", i + 1, total), L"Resuelve el captcha y pulsa descargar. Atarraya la toma sola.");
+}
+
+void VentanaPrincipal::RevisarPausas()
+{
+    // Después de un cierre de golpe, una «sin confirmar» puede haber vuelto a la cola: se pausa otra vez antes de que
+    // arranque. Y una ya confirmada se reanuda hasta que de verdad sigue (mientras su pausa no termina, reanudar no hace
+    // nada): así nunca quedan bajando las dos ni la parte detenida.
+    bool cambio = false;
+    const auto& partes = m_sitios.Partes();
+    for (size_t i = 0; i < partes.size(); i++)
+    {
+        const auto& p = partes[i];
+        if (p.estado != EstadoParte::Tomada || (!p.sinConfirmar && !p.reanudar)) continue;
+        hnd::Foto f;
+        if (!m_motor.Buscar(p.descarga, f)) continue;   // la persona la quitó: RevisarPartes la salta
+        bool antes = p.reanudar;
+        AccionPausa a = m_sitios.RevisarPausa((int)i, f.datos.estado, f.pausando);
+        if (a == AccionPausa::Pausar)
+        {
+            m_motor.Pausar(p.descarga);
+            Registrar("de una en una: parte " + std::to_string(i + 1) + ": sigue sin confirmar; su descarga vuelve a la pausa");
+        }
+        else if (a == AccionPausa::Reanudar) m_motor.Reanudar(p.descarga);
+        cambio = cambio || antes != m_sitios.Partes()[i].reanudar;
+    }
+    if (cambio) GuardarCola();
 }
 
 void VentanaPrincipal::RevisarPorAbrir()
