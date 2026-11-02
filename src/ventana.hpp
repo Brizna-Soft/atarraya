@@ -104,6 +104,7 @@ private:
     // si no, o si no contesta enseguida, como antes (en la copia de prueba, solo la anota)
     void AbrirParte(int i, bool avisar);
     void RevisarPorAbrir();                // las que la extensión no abrió a tiempo: como antes
+    void RevisarPausas();                  // «sin confirmar» en pausa; las confirmadas, reanudadas de verdad
     void Avanzar();                        // terminó o se saltó una: abre la siguiente, o cierra la cola si no queda nada
     // La baja Atarraya, con una conexión. Con «toma», el navegador sigue bajando la suya mientras Atarraya prueba: si
     // Atarraya no puede (una página, un 403 o 410, un enlace de un solo uso), la deja en el navegador.

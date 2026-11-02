@@ -89,7 +89,15 @@ namespace hnd
         // La tomó Atarraya, pero la extensión no pudo cancelar la del navegador ni saber cómo quedó: pueden estar bajando
         // las dos. La de Atarraya queda en pausa hasta que se sepa. Se guarda.
         bool sinConfirmar = false;
+        // Ya se supo que la del navegador no sigue: Atarraya tiene que reanudar la suya, que había pausado. Se guarda y se
+        // intenta hasta que de verdad sigue (si la pausa todavía no había terminado, reanudar no hace nada).
+        bool reanudar = false;
     };
+
+    // Lo que hay que hacer con la descarga de Atarraya de una parte «sin confirmar» (o que hay que reanudar), según cómo
+    // está en la lista: pausarla (otra vez, por ejemplo después de un cierre de golpe), reanudarla, nada todavía, o ya
+    // está («Listo»: no hay que seguir revisando)
+    enum class AccionPausa { Nada, Pausar, Reanudar, Listo };
 
     // Pasar a la carpeta del paquete lo que bajó el navegador, sin mover nunca un archivo ajeno:
     //   - LeerArchivoDelNavegador: cuando el navegador avisa que terminó. Una ruta completa de esta PC, sin enlaces
@@ -182,6 +190,8 @@ namespace hnd
         // navegador no sigue; devuelve la de Atarraya que hay que reanudar (0: no aplica).
         uint64_t MarcarSinConfirmar(int i);
         uint64_t Confirmar(int i);
+        // Cada vez que se revisa: «estado» y «pausando» son los de su descarga en la lista. Con «Listo», deja de revisarse.
+        AccionPausa RevisarPausa(int i, Estado estado, bool pausando);
         // Lo que se le contesta a la extensión sobre una «toma»: quién la baja («probando», «tomada», «navegador»;
         // «terminada»: ya llegó y quedó anotado lo que bajó el navegador; «desconocida»: no es de ninguna parte), si
         // Atarraya todavía espera un aviso del navegador sobre ella (la extensión guarda su aviso final y lo repite

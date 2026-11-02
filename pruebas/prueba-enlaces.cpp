@@ -2121,6 +2121,33 @@ namespace
             Comprobar(alVolver.NavegadorSiguio(i) == 91 && !alVolver.Partes()[i].sinConfirmar && alVolver.Partes()[i].estado == EstadoParte::Navegador,
                       "sin confirmar: si la sigue bajando el navegador, queda esa y se quita la de Atarraya");
         }
+        {
+            // Un cierre de golpe a la mitad: la pausa se pone otra vez, y la reanudación se intenta hasta que de verdad sigue
+            DeUnaEnUna q(archivo);
+            q.Vaciar();
+            q.Agregar({ parte("https://ddownload.com/j1j1j1j1/peli.part7.rar") });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 95, "n5-pausa", 1000);
+            q.Decidir(i, true);
+            q.MarcarSinConfirmar(i);
+            q.Guardar();
+            DeUnaEnUna tras(archivo);   // se cerró antes de que la lista guardara la pausa: su descarga volvió a la cola
+            tras.Cargar();
+            Comprobar(tras.RevisarPausa(i, Estado::EnCola, false) == AccionPausa::Pausar && tras.RevisarPausa(i, Estado::Descargando, false) == AccionPausa::Pausar
+                          && tras.RevisarPausa(i, Estado::Descargando, true) == AccionPausa::Nada && tras.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Nada,
+                      "sin confirmar: después de un cierre de golpe, la descarga de Atarraya vuelve a la pausa (si volvió a la cola o seguía)");
+            tras.Confirmar(i);
+            Comprobar(tras.Partes()[i].reanudar && tras.RevisarPausa(i, Estado::Descargando, true) == AccionPausa::Nada
+                          && tras.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Reanudar && tras.Partes()[i].reanudar,
+                      "sin confirmar: al confirmarse se reanuda; si la pausa todavía no terminó, se espera y se intenta otra vez");
+            tras.Guardar();
+            DeUnaEnUna otraVez(archivo);   // y se cerró otra vez antes de reanudarla
+            otraVez.Cargar();
+            Comprobar(otraVez.Partes()[i].reanudar && otraVez.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Reanudar
+                          && otraVez.RevisarPausa(i, Estado::Descargando, false) == AccionPausa::Listo && !otraVez.Partes()[i].reanudar
+                          && otraVez.RevisarPausa(i, Estado::Pausada, false) == AccionPausa::Listo,
+                      "sin confirmar: al abrir Atarraya la reanuda; cuando ya sigue, no se toca más (la parte nunca queda detenida)");
+        }
         DeleteFileW(archivo.c_str());
     }
 

@@ -83,6 +83,7 @@ namespace hnd
         int64_t hecho = 0;
         double velocidad = 0;   // bytes por segundo
         int activas = 0;        // conexiones abiertas ahora (en un torrent: pares conectados)
+        bool pausando = false;  // se pidió pausarla y todavía está cerrando sus conexiones (hasta que termina, no se reanuda)
 
         // Solo torrents
         bool torrent = false;
