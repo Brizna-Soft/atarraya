@@ -187,6 +187,45 @@ function finalEntregado(respuesta, final) {
   return respuesta.espera === false ? "listo" : "repetir";
 }
 
+// Cada extensión (en cada perfil de cada navegador) tiene su «instancia», al azar y una sola vez, que va al principio de
+// cada «toma»: así Atarraya sabe de qué extensión es cada descarga del navegador, aunque haya varios navegadores
+// conectados, y solo le cree a esa extensión lo que cuenta de ella. «azar»: una función que llena un Uint8Array.
+function nuevaInstancia(azar) {
+  const b = new Uint8Array(12);
+  azar(b);
+  return Array.from(b, (x) => "abcdefghijklmnopqrstuvwxyz0123456789"[x % 36]).join("");
+}
+function instanciaValida(instancia) {
+  return typeof instancia === "string" && /^[a-z0-9]{8,32}$/.test(instancia);
+}
+function tomaNueva(instancia, id, ahora) {
+  return "i" + instancia + "-n" + id + "-" + Math.floor(ahora).toString(36);
+}
+function instanciaDeToma(toma) {
+  const m = /^i([a-z0-9]{8,32})-n/.exec(typeof toma === "string" ? toma : "");
+  return m ? m[1] : "";
+}
+
+// Lo que la extensión le cuenta a Atarraya cada vez que se conecta: las descargas del navegador de la cola que conoce y
+// cómo van. Atarraya lo junta con su cola y su lista: nunca quedan dos descargas de la misma parte, y una parte cuya
+// descarga del navegador ya nadie sigue vuelve a abrirse. «estado»: «probando» (todavía decide con Atarraya quién la
+// baja), «siguiendo» (la baja el navegador), «sinConfirmar» (no se pudo cancelar ni saber cómo quedó), «completa» (el
+// navegador la terminó; falta que Atarraya confirme el aviso) o «terminada» (falló, se canceló o ya no baja).
+function informeDeSeguidas(instancia, lista) {
+  const tomas = [];
+  for (const par of Array.isArray(lista) ? lista : []) {
+    const s = Array.isArray(par) ? par[1] : null;
+    if (!s || typeof s !== "object" || typeof s.toma !== "string") continue;
+    let estado = "siguiendo";
+    if (s.probando) estado = "probando";
+    else if (s.final && typeof s.final === "object") estado = s.final.tipo === "navegador" && s.final.estado === "completa" ? "completa" : "terminada";
+    else if (s.sinConfirmar && typeof s.sinConfirmar === "object") estado = "sinConfirmar";
+    tomas.push({ toma: s.toma, estado, pagina: typeof s.pagina === "string" ? s.pagina : "" });
+    if (tomas.length >= 500) break;
+  }
+  return { tipo: "seguidas", instancia, tomas };
+}
+
 // Las descargas seguidas que se guardaron: las de los últimos días, y sin plazo las que tienen un aviso final que
 // Atarraya no confirmó o que quedaron «sin confirmar» (Atarraya puede estar cerrado mucho tiempo)
 function seguidasGuardadas(lista, ahora) {
@@ -202,5 +241,6 @@ function seguidasGuardadas(lista, ahora) {
 
 if (typeof module !== "undefined") {
   module.exports = { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar,
-                     resolverSinConfirmar, tocaFinal, finalEntregado, seguidasGuardadas };
+                     resolverSinConfirmar, tocaFinal, finalEntregado, seguidasGuardadas, nuevaInstancia, instanciaValida,
+                     tomaNueva, instanciaDeToma, informeDeSeguidas };
 }

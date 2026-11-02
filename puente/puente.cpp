@@ -7,8 +7,8 @@
 // Las consultas de «de una en una» («emparejar»: ¿esta descarga es de una parte?, «toma»: ¿quién baja esta descarga?)
 // esperan la respuesta: Atarraya la manda enseguida con WM_COPYDATA a una ventana invisible del puente. Las consultas y
 // los avisos («navegador»: cómo va una descarga que sigue la extensión, «espera»: la página pide esperar, «soltar»: que
-// siga el navegador, «sinConfirmar» y «confirmada»: si la del navegador sigue después de no poder cancelarla) nunca
-// abren Atarraya.
+// siga el navegador, «sinConfirmar» y «confirmada»: si la del navegador sigue después de no poder cancelarla,
+// «seguidas»: lo que sabe la extensión de esas descargas, al conectarse) nunca abren Atarraya.
 //
 // El «puerto»: si lo primero que llega es «hola», la extensión deja este puente abierto mientras Atarraya está abierto
 // (si no lo está, contesta «adios» y termina). El puente crea una ventana invisible donde Atarraya le deja sus órdenes
@@ -211,6 +211,37 @@ namespace
         return r;
     }
 
+    // «seguidas»: lo que sabe la extensión de las descargas del navegador de la cola (lo cuenta al conectarse). Solo pasa
+    // quién es («instancia»: letras y números) y, de cada descarga, su «toma», cómo va y la página de la parte, como texto
+    // y con un largo máximo; como mucho 500.
+    nlohmann::json SoloLasSeguidas(const nlohmann::json& j)
+    {
+        auto texto = [](const nlohmann::json& o, const char* campo, size_t maximo) {
+            auto it = o.find(campo);
+            return it != o.end() && it->is_string() && it->get_ref<const std::string&>().size() <= maximo ? it->get<std::string>()
+                                                                                                         : std::string();
+        };
+        std::string instancia = texto(j, "instancia", 32);
+        for (char c : instancia)
+        {
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))) instancia.clear();
+        }
+        nlohmann::json tomas = nlohmann::json::array();
+        auto lista = j.find("tomas");
+        if (lista != j.end() && lista->is_array())
+        {
+            for (const auto& t : *lista)
+            {
+                if (!t.is_object()) continue;
+                std::string toma = texto(t, "toma", 128);
+                if (toma.empty()) continue;
+                tomas.push_back({ { "toma", toma }, { "estado", texto(t, "estado", 32) }, { "pagina", texto(t, "pagina", 8192) } });
+                if (tomas.size() >= 500) break;
+            }
+        }
+        return { { "tipo", "seguidas" }, { "instancia", instancia }, { "tomas", tomas } };
+    }
+
     // http, https, ftp o un enlace magnet (clic derecho en un magnet → «Descargar con Atarraya»)
     bool DireccionValida(const std::string& url)
     {
@@ -404,6 +435,12 @@ int main()
                 HWND h = BuscarPrograma();
                 if (!url.empty() && !DireccionValida(url)) respuesta = { { "ok", false }, { "error", "direccion no valida" } };
                 else respuesta = { { "ok", h != nullptr && Enviar(h, SoloLoPermitido(j).dump()) } };
+            }
+            else if (tipo == "seguidas")
+            {
+                // Lo que sabe la extensión de las descargas del navegador de la cola: solo si Atarraya está abierto
+                HWND h = BuscarPrograma();
+                respuesta = { { "ok", h != nullptr && Enviar(h, SoloLasSeguidas(j).dump()) } };
             }
             else
             {

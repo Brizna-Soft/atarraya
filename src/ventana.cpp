@@ -633,7 +633,30 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
 
     // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola). Si había terminado pero
     // las que no bajaron no llegaron al recolector, se intenta otra vez.
-    m_sitios.Cargar();
+    // La cola va en el mismo archivo que la lista de descargas y se guardan juntas, de una vez: entre las dos nunca queda
+    // nada a medias. La de antes tenía su propio archivo: se pasa una sola vez y ese archivo se borra.
+    {
+        std::string anexo = m_motor.AnexoCargado();
+        nlohmann::json a;
+        try
+        {
+            if (!anexo.empty()) a = nlohmann::json::parse(anexo);
+        }
+        catch (...)
+        {
+        }
+        bool deAntes = !a.is_object() || !a.contains("cola");
+        if (deAntes) m_sitios.Cargar();
+        else m_sitios.DesdeJson(a["cola"]);
+        m_motor.anexo = [this](nlohmann::json& x) { x = { { "cola", m_sitios.ComoJson() } }; };
+        m_sitios.guardarJunto = [this]() { return m_motor.Guardar(); };
+        if (deAntes && m_motor.Guardar())
+        {
+            std::wstring vieja = hnd::CarpetaDatos() + L"\\de-una-en-una.json";
+            if (GetFileAttributesW(vieja.c_str()) != INVALID_FILE_ATTRIBUTES && DeleteFileW(vieja.c_str()))
+                Registrar("de una en una: la cola pasó al archivo de la lista de descargas");
+        }
+    }
     m_sitiosNavegador.Cargar();
     // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola
     m_contrasenas.Cargar();
@@ -647,16 +670,10 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
         m_contrasenas.QuedarseCon(vivos);
         GuardarContrasenas();
     }
-    // Lo que se estaba probando cuando Atarraya se cerró queda para el navegador, que siguió bajando la suya: se quita
-    // la de Atarraya antes de que arranque, así nunca bajan las dos
-    auto aMedias = m_sitios.ResolverTomasAlAbrir();
-    for (auto id : aMedias) m_motor.Quitar(id);
-    if (!aMedias.empty())
-    {
-        m_motor.Guardar();   // antes que la cola (ver TomaANavegador)
-        GuardarCola();
-        Registrar("de una en una: " + std::to_string(aMedias.size()) + " descargas que se estaban probando quedan para el navegador");
-    }
+    // Antes de que arranque nada: se junta lo que dicen la cola y la lista (ver Conciliar en deunaenuna.hpp). Lo que
+    // sabe la extensión llega cuando se conecta (Pedido «seguidas»).
+    m_abiertoDesde = AhoraUnix();
+    AplicarConciliacion(m_sitios.ConciliarAlAbrir(EnLaListaDe()), false);
     // Lo que el navegador terminó y no se alcanzó a pasar a la carpeta del paquete (Atarraya se cerró en el medio)
     for (int i : m_sitios.PorMover()) CallAfter([this, i]() { MoverParteDelNavegador(i); });
     if (m_sitios.Terminada()) Avanzar();
@@ -672,6 +689,9 @@ VentanaPrincipal::~VentanaPrincipal()
     *m_vivo = false;   // lo que llegue tarde de otros hilos ya no toca esta ventana
     m_motor.alTerminar = nullptr;
     m_torrents.alTerminar = nullptr;
+    // La cola se va con la ventana: desde aquí, la lista se guarda con la última cola que se guardó
+    m_motor.anexo = nullptr;
+    m_sitios.guardarJunto = nullptr;
 }
 
 void VentanaPrincipal::CrearMenu()
@@ -1588,11 +1608,9 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         int i = m_sitios.ParteDeToma(campo("toma"));
         uint64_t pausar = m_sitios.MarcarSinConfirmar(i);
         if (!pausar) return;
-        // Primero queda guardada la marca: si Atarraya se cierra de golpe antes de que la pausa quede guardada, al
-        // abrirlo la marca la vuelve a poner
-        GuardarCola();
+        // La marca y la pausa, guardadas juntas (si la pausa todavía cierra sus conexiones, la marca la vuelve a poner)
         m_motor.Pausar(pausar);
-        m_motor.Guardar();
+        GuardarCola();
         size_t cuantas = m_sitios.Partes().size();
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": no se pudo confirmar si el navegador sigue bajándola; "
                   "Atarraya pausó la suya hasta saberlo");
@@ -1615,6 +1633,12 @@ void VentanaPrincipal::Pedido(const std::string& texto)
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": se confirmó que el navegador ya no la baja; sigue la de Atarraya");
         ActualizarBarraSitios();
         Refrescar();
+        return;
+    }
+    if (tipo == "seguidas")
+    {
+        // Una extensión se conectó y cuenta las descargas del navegador de la cola que conoce: se concilia
+        PedidoSeguidas(j);
         return;
     }
     if (tipo == "soltar")
@@ -2278,8 +2302,10 @@ bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolecta
         p.carpeta = porPaquete ? carpeta + L"\\" + LimpiarNombre(p.paquete) : carpeta;
         partes.push_back(std::move(p));
     }
-    // La cola se guarda antes de que los enlaces salgan del recolector: si no se puede guardar, se quedan ahí
-    if (!m_sitios.Agregar(std::move(partes)))
+    // La cola se guarda antes de que los enlaces salgan del recolector: si no se puede guardar, se quedan ahí. Las que ya
+    // estaban en la cola no entran otra vez (y salen del recolector: ya están en la cola).
+    size_t nuevas = 0;
+    if (!m_sitios.Agregar(std::move(partes), &nuevas))
     {
         Registrar("de una en una: no se pudo guardar la cola; los enlaces se quedan en el recolector");
         ayuda::Aviso(L"No se pudo guardar la cola de «de una en una» en " + wxString(CarpetaDatos())
@@ -2288,7 +2314,8 @@ bool VentanaPrincipal::EmpezarDeUnaEnUna(const std::vector<const EnlaceRecolecta
         return false;
     }
     m_resumenSitios.clear();
-    Registrar("de una en una: " + std::to_string(sitios.size()) + (sitios.size() == 1 ? " página" : " páginas") + " en la cola");
+    Registrar("de una en una: " + std::to_string(nuevas) + (nuevas == 1 ? " página" : " páginas") + " en la cola"
+              + (nuevas < sitios.size() ? " (" + std::to_string(sitios.size() - nuevas) + " ya estaban)" : std::string()));
     int i = abrir && !m_sitios.HayAbierta() ? m_sitios.AbrirSiguiente() : -1;
     if (i >= 0) GuardarCola();
     Mostrar();   // la barra con los botones está en la ventana principal
@@ -2423,6 +2450,13 @@ void VentanaPrincipal::ActualizarBarraSitios()
                                     : wxString(L" y te avisa.");
             otraVez = saltar = true;
         }
+        else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar && partes[i].alAbrir)
+        {
+            texto = wxString::Format(L"Parte %d de %zu: Atarraya espera a que tu navegador diga si siguió bajándola mientras Atarraya "
+                                     L"estaba cerrado, para no bajarla dos veces. Si en un minuto no dice nada, sigue la de Atarraya.",
+                                     i + 1, total);
+            saltar = true;
+        }
         else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar)
         {
             texto = wxString::Format(L"Parte %d de %zu: no se pudo confirmar si tu navegador la sigue bajando. Atarraya pausó la suya "
@@ -2516,6 +2550,77 @@ void VentanaPrincipal::RevisarPausas()
     for (int i : repausadas)
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": sigue sin confirmar; su descarga vuelve a la pausa");
     if (cambio) GuardarCola();
+    // Las retenidas al abrir que ninguna extensión aclaró en un minuto: sigue la de Atarraya (ver SoltarRetenidas). Se
+    // reanudan en la próxima vuelta (marca «reanudar»).
+    if (m_sitios.HayRetenidas() && AhoraUnix() - m_abiertoDesde >= 60)
+    {
+        auto c = m_sitios.SoltarRetenidas();
+        for (const auto& m : c.motivos) Registrar("de una en una: " + m);
+        if (c.cambio) GuardarCola();
+        ActualizarBarraSitios();
+    }
+}
+
+std::function<hnd::EnLaLista(uint64_t)> VentanaPrincipal::EnLaListaDe()
+{
+    return [this](uint64_t id) {
+        EnLaLista r;
+        hnd::Foto f;
+        if (id && m_motor.Buscar(id, f))
+        {
+            r.existe = true;
+            r.estado = f.datos.estado;
+        }
+        return r;
+    };
+}
+
+void VentanaPrincipal::AplicarConciliacion(const hnd::Conciliacion& c, bool avanzar)
+{
+    for (const auto& m : c.motivos) Registrar("de una en una: " + m);
+    for (uint64_t id : c.quitar) m_motor.Quitar(id);
+    // Lo que cambió en la cola y en la lista, guardado junto y de una vez
+    if (c.cambio || !c.quitar.empty()) GuardarCola();
+    if (avanzar && !c.abrir.empty())
+    {
+        size_t cuantas = m_sitios.Partes().size();
+        int i = c.abrir.front();
+        Avisar(wxString::Format(L"Parte %d de %zu: hay que abrirla otra vez", i + 1, cuantas),
+               L"Tu navegador ya no sigue esa descarga. La página se abre otra vez en tu navegador cuando le toque.", true);
+        Avanzar();
+    }
+    if (c.cambio || !c.quitar.empty())
+    {
+        ActualizarBarraSitios();
+        if (!m_saliendo && m_reloj.IsRunning()) Refrescar();
+    }
+}
+
+void VentanaPrincipal::PedidoSeguidas(const nlohmann::json& j)
+{
+    // Lo que sabe una extensión de las descargas del navegador de la cola (lo cuenta cada vez que se conecta). Cualquier
+    // programa de esta PC puede mandar un pedido: solo se toma lo que es texto, con un largo razonable.
+    auto texto = [](const nlohmann::json& o, const char* nombre, size_t maximo) {
+        auto it = o.find(nombre);
+        return it != o.end() && it->is_string() && it->get_ref<const std::string&>().size() <= maximo ? it->get<std::string>() : std::string();
+    };
+    Informe informe;
+    informe.instancia = texto(j, "instancia", 64);
+    if (auto t = j.find("tomas"); t != j.end() && t->is_array())
+    {
+        for (const auto& x : *t)
+        {
+            if (!x.is_object()) continue;
+            TomaInformada ti{ texto(x, "toma", 128), texto(x, "estado", 32), texto(x, "pagina", 8192) };
+            if (ti.toma.empty()) continue;
+            informe.tomas.push_back(std::move(ti));
+            if (informe.tomas.size() >= 500) break;
+        }
+    }
+    if (informe.instancia.empty() || InstanciaDeToma("i" + informe.instancia + "-n0-0") != informe.instancia) return;
+    Registrar("de una en una: una extensión contó " + std::to_string(informe.tomas.size())
+              + (informe.tomas.size() == 1 ? " descarga del navegador" : " descargas del navegador"));
+    AplicarConciliacion(m_sitios.ConciliarConExtension(informe, EnLaListaDe()), true);
 }
 
 void VentanaPrincipal::RevisarPorAbrir()
@@ -2600,11 +2705,12 @@ void VentanaPrincipal::TomarParte(int i, DatosDescarga d, const std::string& tom
     // Una sola conexión, como el navegador: así no se pasa de lo que el sitio deja bajar sin cuenta premium
     d.conexiones = 1;
     uint64_t id = m_motor.Agregar(d, true);
-    // Con «toma», el navegador sigue bajando la suya hasta que se decide quién la baja (lo pregunta la extensión). Se
-    // guarda en la cola: si Atarraya se cierra a la mitad, al abrirlo queda la del navegador y nunca bajan las dos.
+    // Con «toma», el navegador sigue bajando la suya hasta que se decide quién la baja (lo pregunta la extensión). La
+    // descarga y la parte se guardan juntas, de una vez: si Atarraya se cierra antes, no quedó ninguna de las dos (la
+    // extensión deja seguir la del navegador y al conectarse la cuenta); si se cierra después, al abrirlo queda la del
+    // navegador (ConciliarAlAbrir). Nunca bajan las dos.
     if (!toma.empty()) m_sitios.Probar(i, id, toma, AhoraUnix());
     else m_sitios.Tomar(i, id);
-    m_motor.Guardar();   // la cola nombra esa descarga: que ya esté guardada en la lista
     GuardarCola();
     size_t total = m_sitios.Partes().size();
     if (!toma.empty())
@@ -2631,10 +2737,7 @@ void VentanaPrincipal::TomaANavegador(int i, bool recordarSitio)
     // extensión la sigue: una sola descarga de esa parte
     uint64_t quitar = m_sitios.Decidir(i, false);
     if (quitar) m_motor.Quitar(quitar);
-    // La lista de descargas, sin la de Atarraya, se guarda antes que la cola (que deja de recordar esa descarga): si se
-    // cierra de golpe en el medio, al abrir la cola todavía la tiene y la quita otra vez
-    m_motor.Guardar();
-    GuardarCola();
+    GuardarCola();   // la lista sin la de Atarraya y la cola, juntas
     if (recordarSitio) m_sitiosNavegador.Anotar(pagina, AhoraUnix());
     Registrar("de una en una: parte " + std::to_string(i + 1) + ": Atarraya no pudo seguir la descarga del navegador"
               + (recordarSitio ? "; la próxima vez de " + SoloSitio(pagina) + " la deja en el navegador" : std::string())
@@ -2831,8 +2934,7 @@ void VentanaPrincipal::PedidoNavegador(const std::string& toma, const std::strin
         if (p.estado != EstadoParte::Tomada || (estado != "bajando" && estado != "completa")) return;
         uint64_t quitar = m_sitios.NavegadorSiguio(i);
         if (quitar) m_motor.Quitar(quitar);
-        m_motor.Guardar();   // antes que la cola (ver TomaANavegador)
-        GuardarCola();
+        GuardarCola();   // la lista y la cola, juntas
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": el navegador siguió con la suya; Atarraya quita la suya");
     }
     else if (i < 0)
@@ -2947,9 +3049,8 @@ void VentanaPrincipal::MoverParteDelNavegador(int i)
     uint64_t id = m_motor.AgregarTerminada(d);
     m_motor.FijarIdentidad(id, p.identidadNavegador);   // el mismo archivo (al moverlo no cambia)
     m_sitios.TerminarEnNavegador(i, true, id);
-    // Primero la lista de descargas (con la terminada) y después la cola, que deja de recordar lo que faltaba mover: si
-    // se cierra de golpe en el medio, nada se pierde
-    m_motor.Guardar();
+    // La lista (con la terminada) y la cola, juntas. Si Atarraya se cerró de golpe después de mover el archivo y antes
+    // de guardar, al abrirlo se encuentra ya movido (MoverArchivoDelNavegador) y se anota igual.
     GuardarCola();
     Registrar("de una en una: parte " + std::to_string(i + 1) + " lista: la bajó el navegador"
               + (r == Movida::OtroDisco ? std::string(" (quedó en otro disco)") : std::string(" y está en la carpeta del paquete")));

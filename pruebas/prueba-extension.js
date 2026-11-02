@@ -15,7 +15,7 @@ const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto,
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
   : { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar, resolverSinConfirmar, tocaFinal,
-      finalEntregado, seguidasGuardadas };
+      finalEntregado, seguidasGuardadas, nuevaInstancia, instanciaValida, tomaNueva, instanciaDeToma, informeDeSeguidas };
 
 let fallas = 0;
 function decir(texto) {
@@ -308,7 +308,7 @@ if (enNode) {
     && (fondo.match(/cola\.marcar\(/g) || []).length === 1 && (fondo.match(/tabs\.create\(/g) || []).length === 1
     && abrir.indexOf("tabs.create(") > 0 && abrir.indexOf("tabs.create(") < abrir.indexOf("cola.marcar(") && /paginaPorAbrir\(orden\)/.test(abrir),
     "extensión: una pestaña es de la cola solo si la abrió la misma extensión (tabs.create), a pedido de Atarraya");
-  comprobar(/connectNative\(HOST\)/.test(fondo) && /postMessage\(\{ tipo: "hola" \}\)/.test(fondo) && /m\.tipo === "listo"\) alVolverAtarraya\(\)/.test(fondo)
+  comprobar(/connectNative\(HOST\)/.test(fondo) && /postMessage\(\{ tipo: "hola" \}\)/.test(fondo) && /m\.tipo === "listo"\) alVolverAtarraya\(true\)/.test(fondo)
     && /cola\.paginaVista\(tabId, url/.test(fondo) && /cola\.leeAvisos\(tabId, remitente\.url/.test(fondo),
     "extensión: el puerto con Atarraya; al conectar van los avisos finales guardados, y los avisos de espera solo de pestañas de la cola");
   const puenteCpp = leer("../puente/puente.cpp");
@@ -318,25 +318,45 @@ if (enNode) {
   comprobar(!/\.click\(|dispatchEvent|\.submit\(|innerHTML|\.value\s*=|focus\(/.test(colaJs + esperasJs) && !/document\./.test(esperasJs),
     "extensión: cola.js y esperas.js solo leen el texto: no hacen clics, no escriben ni mandan formularios");
   const enLaCola = fondo.slice(fondo.indexOf("async function descargaDeLaCola"), fondo.indexOf("api.downloads.onCreated.addListener"));
-  comprobar(/downloads\.cancel\(item\.id\)/.test(enLaCola) && enLaCola.indexOf('accion === "cancelar"') > 0
-    && enLaCola.indexOf('accion === "cancelar"') < enLaCola.indexOf("downloads.cancel(item.id)")
-    && /new TomaDelNavegador\(/.test(enLaCola) && !/\.catch\(\(\) => \{\}\)/.test(enLaCola),
+  const decidir = fondo.slice(fondo.indexOf("async function decidirToma"), fondo.indexOf("api.downloads.onCreated.addListener"));
+  comprobar(/downloads\.cancel\(id\)/.test(decidir) && decidir.indexOf('accion === "cancelar"') > 0
+    && decidir.indexOf('accion === "cancelar"') < decidir.indexOf("downloads.cancel(id)")
+    && /new TomaDelNavegador\(/.test(decidir) && !/\.catch\(\(\) => \{\}\)/.test(enLaCola),
     "extensión: la descarga de una parte se cancela en el navegador solo cuando Atarraya ya la tomó (y sin tragarse los errores)");
-  comprobar(/resultadoCancelar\(ahora, cancelo, consulto\)/.test(enLaCola) && /tipo: "soltar"/.test(enLaCola)
-    && enLaCola.indexOf("resultadoCancelar(") < enLaCola.indexOf("downloads.erase({ id: item.id })")
-    && /if \(r === "sinConfirmar"\) \{[\s\S]*?anotarSinConfirmar\(item, datos, toma\);\s*return;\s*\}/.test(enLaCola),
+  comprobar(/resultadoCancelar\(ahora, cancelo, consulto\)/.test(decidir) && /tipo: "soltar"/.test(decidir)
+    && decidir.indexOf("resultadoCancelar(") < decidir.indexOf("downloads.erase({ id })")
+    && /if \(r === "sinConfirmar"\) \{[\s\S]*?anotarSinConfirmar\(\{ id \}, datosDe\(s\), toma\);\s*return;\s*\}/.test(decidir),
     "extensión: al vencer el plazo le pide a Atarraya que suelte la suya, y después de cancelar mira si de verdad se canceló");
+  // Lo que se decide queda anotado antes de pasarle la descarga a Atarraya, y al despertar se sigue decidiendo
+  comprobar(enLaCola.indexOf("probando: { desde: Date.now() }") > 0 && enLaCola.indexOf("probando: { desde: Date.now() }") < enLaCola.indexOf("guardarCola()")
+    && enLaCola.indexOf("guardarCola()") < enLaCola.indexOf("ok = await enviar(pedido)") && /await decidirToma\(item\.id\)/.test(enLaCola)
+    && /if \(s\.probando\) decidirToma\(id\);\s*else entregarFinal\(id\);/.test(fondo) && /if \(s\.probando\) return;/.test(fondo)
+    && /tomaNueva\(instancia, item\.id, Date\.now\(\)\)/.test(enLaCola),
+    "extensión: quién baja una parte se anota antes de pasársela a Atarraya, y si el «service worker» se apaga, al despertar se sigue decidiendo");
+  // Si Atarraya la tenía retenida (al abrirse, no sabía si el navegador siguió), después de cancelar se le avisa hasta que lo confirma
+  comprobar(/if \(e && e\.ok\) retenida = e\.sinConfirmar === true;/.test(decidir)
+    && /if \(retenida\) \{[\s\S]*?anotarFinal\(id, s, \{ tipo: "confirmada", toma, estado: "cancelada" \}\);[\s\S]*?\} else \{\s*seguidas\.delete\(id\);/.test(decidir),
+    "extensión: si Atarraya retuvo la suya hasta saber, el aviso de que la del navegador ya no baja se repite hasta que lo confirma");
   // El aviso final no se borra al mandarlo: solo cuando Atarraya confirma que ya no espera nada de esa descarga
   const revisar = fondo.slice(fondo.indexOf("function anotarSinConfirmar"), fondo.indexOf("function alVolverAtarraya"));
-  comprobar((fondo.match(/seguidas\.delete\(/g) || []).length === 1 && revisar.indexOf("finalEntregado(r, s.final)") > 0
+  comprobar((fondo.match(/seguidas\.delete\(/g) || []).length === 2 && (revisar.match(/seguidas\.delete\(/g) || []).length === 1
+    && revisar.indexOf("finalEntregado(r, s.final)") > 0
     && revisar.indexOf("finalEntregado(r, s.final)") < revisar.indexOf("seguidas.delete(id)") && /if \(aviso\.terminar\) \{\s*anotarFinal\(/.test(revisar),
     "extensión: el aviso final se guarda y la descarga se olvida solo cuando Atarraya lo confirma");
   comprobar(/resolverSinConfirmar\(item, consulto\)/.test(revisar) && /anotarFinal\(id, s, \{ tipo: "confirmada"/.test(revisar)
     && /hablar\(\{ tipo: "sinConfirmar", toma: s\.toma \}\)/.test(revisar) && /if \(!consulto\) return;/.test(revisar),
     "extensión: una parte «sin confirmar» se sigue mirando hasta saber si la del navegador sigue (y no se da por borrada si no se pudo mirar)");
   comprobar(/seguidasGuardadas\(/.test(fondo) && /if \(r\.abierto\) alVolverAtarraya\(\)/.test(fondo)
-    && /listoCola\.then\(\(\) => \{\s*for \(const id of \[\.\.\.seguidas\.keys\(\)\]\) entregarFinal\(id\);/.test(fondo),
+    && /listoCola\.then\(\(\) => \{\s*for \(const \[id, s\] of \[\.\.\.seguidas\]\) \{\s*if \(s\.probando\) decidirToma\(id\);\s*else entregarFinal\(id\);/.test(fondo),
     "extensión: los avisos finales guardados se mandan otra vez al despertar y cuando Atarraya vuelve a contestar");
+  // Al conectarse, cuenta lo que sabe de las descargas de la cola (Atarraya lo concilia con su cola y su lista)
+  const volver = fondo.slice(fondo.indexOf("function alVolverAtarraya"), fondo.indexOf("function vigilarSeguidas"));
+  comprobar(/enviarInforme\(conecto\)/.test(volver) && /hablar\(informeDeSeguidas\(instancia, \[\.\.\.seguidas\]\)\)/.test(volver)
+    && /if \(!r \|\| !r\.ok\) ultimoInforme = 0;/.test(volver) && /instanciaValida\(g && g\.instancia\)/.test(fondo)
+    && /nuevaInstancia\(\(b\) => crypto\.getRandomValues\(b\)\)/.test(fondo),
+    "extensión: al conectarse con Atarraya le cuenta las descargas de la cola que sigue (con su instancia, al azar y guardada)");
+  comprobar(/tipo == "seguidas"/.test(puenteCpp) && /SoloLasSeguidas\(j\)\.dump\(\)/.test(puenteCpp) && /tomas\.size\(\) >= 500/.test(puenteCpp),
+    "puente: lo que cuenta la extensión pasa solo con sus campos de texto, con un largo máximo y como mucho 500");
 }
 
 // --- Avisos de espera de los sitios de descargas (esperas.js) ----------------------------------------------------------
@@ -510,6 +530,36 @@ comprobar(C.finalEntregado({ ok: true, espera: true, sinConfirmar: true }, confi
   && C.finalEntregado({ ok: true, espera: true, sinConfirmar: false }, confirmada) === "listo" && C.finalEntregado(null, confirmada) === "repetir"
   && C.finalEntregado({ ok: true, espera: false }, confirmada) === "repetir",
   "sin confirmar: el aviso de que ya no baja se repite hasta que Atarraya reanuda la suya");
+
+// --- Lo que la extensión cuenta al conectarse (conciliar) --------------------------------------------------------------
+let semilla = 7;
+const inst = C.nuevaInstancia((b) => { for (let i = 0; i < b.length; i++) b[i] = (semilla = (semilla * 97 + 13) % 256); });
+comprobar(C.instanciaValida(inst) && inst.length === 12 && !C.instanciaValida("ABC") && !C.instanciaValida("abc") && !C.instanciaValida(7)
+  && C.instanciaValida("abcdefgh") && !C.instanciaValida("a".repeat(33)),
+  "conciliar: cada extensión tiene su instancia (12 letras o números al azar)");
+const tn = C.tomaNueva(inst, 77, 1700000000000);
+comprobar(tn === "i" + inst + "-n77-" + (1700000000000).toString(36) && C.instanciaDeToma(tn) === inst && C.instanciaDeToma("n7-final") === ""
+  && C.instanciaDeToma("iABC-n1-x") === "" && C.instanciaDeToma(null) === "" && tn.length <= 128,
+  "conciliar: cada «toma» empieza con la instancia de su extensión (las de antes no tienen)");
+const inf = C.informeDeSeguidas(inst, [
+  [1, { toma: "t1", pagina: "https://ddownload.com/a1/p1.rar", probando: { desde: 1 } }],
+  [2, { toma: "t2", pagina: "https://ddownload.com/a2/p2.rar" }],
+  [3, { toma: "t3", final: { tipo: "navegador", estado: "completa" } }],
+  [4, { toma: "t4", final: { tipo: "navegador", estado: "cancelada" } }],
+  [5, { toma: "t5", sinConfirmar: { desde: 1, intento: 0, avisado: false } }],
+  [6, { toma: "t6", final: { tipo: "confirmada", toma: "t6", estado: "cancelada" } }],
+  [7, null], ["x", {}], 8,
+]);
+comprobar(inf.tipo === "seguidas" && inf.instancia === inst && JSON.stringify(inf.tomas.map((t) => t.estado))
+    === JSON.stringify(["probando", "siguiendo", "completa", "terminada", "sinConfirmar", "terminada"])
+  && inf.tomas[0].pagina === "https://ddownload.com/a1/p1.rar" && inf.tomas[2].pagina === "" && inf.tomas.every((t) => Object.keys(t).length === 3),
+  "conciliar: cuenta cada descarga de la cola que sigue (decidiendo, bajando, sin confirmar, terminada) con su página, y nada más");
+comprobar(C.informeDeSeguidas(inst, Array.from({ length: 600 }, (_, i) => [i, { toma: "t" + i }])).tomas.length === 500
+  && C.informeDeSeguidas(inst, null).tomas.length === 0,
+  "conciliar: como mucho 500");
+const pr = { toma: tn, desde: 1000, probando: { desde: 1000 } };
+comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasGuardadas([[3, pr]], 1000 + 4 * DIA).length === 0,
+  "conciliar: lo que se estaba decidiendo se recuerda (storage.local) para seguir decidiendo al despertar");
 
 decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
 if (enNode) process.exitCode = fallas ? 1 : 0;
