@@ -13,6 +13,8 @@
 #include <thread>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "util.hpp"
 
 namespace hnd
@@ -137,6 +139,14 @@ namespace hnd
         void Cargar();
         bool Guardar();   // ya, sin esperar a la próxima vuelta; falso si no se pudo escribir
 
+        // Otra parte del estado (la cola de «de una en una») va en este mismo archivo y se escribe con la lista, de una
+        // sola vez (a un archivo aparte que después reemplaza al anterior): así nunca queda guardada una sin la otra,
+        // aunque Atarraya se cierre de golpe en cualquier momento. «anexo» la pone cada vez que se guarda; si no está (al
+        // cerrar, cuando la ventana ya no existe), va la última que se guardó.
+        std::function<void(nlohmann::json& anexo)> anexo;
+        // Lo que había junto a la lista al cargar (texto JSON); vacío si el archivo no traía nada
+        std::string AnexoCargado() const;
+
         uint64_t Agregar(DatosDescarga d, bool empezar);
         // Un archivo que ya bajó el navegador (la extensión siguió su descarga): entra a la lista como terminado, con
         // su carpeta, su nombre y su tamaño, sin conectarse a nada. Así cuenta en su paquete (para Jícaro).
@@ -195,6 +205,8 @@ namespace hnd
 
         struct Limitador;
         std::unique_ptr<Limitador> m_limitador;
+        struct Anexo;
+        std::unique_ptr<Anexo> m_anexo;   // el último que se guardó (o se cargó)
     };
 
     // Para la ventana y las pruebas

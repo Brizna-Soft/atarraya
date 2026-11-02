@@ -208,7 +208,20 @@ void hnd::DeUnaEnUna::Cargar()
     if (!LeerArchivo(m_archivo, texto)) return;
     try
     {
-        json todo = json::parse(texto);
+        DesdeJson(json::parse(texto));
+    }
+    catch (...)
+    {
+        m_partes.clear();
+        CopyFileW(m_archivo.c_str(), (m_archivo + L".danado").c_str(), FALSE);
+    }
+}
+
+void hnd::DeUnaEnUna::DesdeJson(const json& todo)
+{
+    m_partes.clear();
+    try
+    {
         for (auto& j : todo.at("partes"))
         {
             Parte p;
@@ -240,6 +253,7 @@ void hnd::DeUnaEnUna::Cargar()
             p.finalNavegador = j.value("finalNavegador", false);
             p.sinConfirmar = j.value("sinConfirmar", false) && p.estado == EstadoParte::Tomada;
             p.reanudar = j.value("reanudar", false) && p.estado == EstadoParte::Tomada && !p.sinConfirmar;
+            p.alAbrir = j.value("alAbrir", false) && p.sinConfirmar;
             m_partes.push_back(std::move(p));
             if (m_partes.size() >= 5000) break;
         }
@@ -247,14 +261,13 @@ void hnd::DeUnaEnUna::Cargar()
     catch (...)
     {
         m_partes.clear();
-        CopyFileW(m_archivo.c_str(), (m_archivo + L".danado").c_str(), FALSE);
     }
     // Si ya no queda nada por hacer ni por devolver, no hay nada que mostrar. Las saltadas o con error se quedan en la
     // cola hasta que lleguen al recolector (por ejemplo, si la última vez no se pudo guardar el recolector).
     if (Terminada() && Sobrantes().empty()) m_partes.clear();
 }
 
-bool hnd::DeUnaEnUna::Guardar() const
+json hnd::DeUnaEnUna::ComoJson() const
 {
     json l = json::array();
     for (auto& p : m_partes)
@@ -267,23 +280,33 @@ bool hnd::DeUnaEnUna::Guardar() const
                       { "identidadNavegador", json{ { "volumen", p.identidadNavegador.volumen }, { "indice", p.identidadNavegador.indice },
                                                     { "tamano", p.identidadNavegador.tamano },
                                                     { "modificado", p.identidadNavegador.modificado } } },
-                      { "finalNavegador", p.finalNavegador }, { "sinConfirmar", p.sinConfirmar }, { "reanudar", p.reanudar } });
+                      { "finalNavegador", p.finalNavegador }, { "sinConfirmar", p.sinConfirmar }, { "reanudar", p.reanudar },
+                      { "alAbrir", p.alAbrir } });
     }
-    json todo = { { "version", 1 }, { "partes", l } };
-    return EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace));
+    return { { "version", 1 }, { "partes", l } };
 }
 
-bool hnd::DeUnaEnUna::Agregar(std::vector<Parte> partes)
+bool hnd::DeUnaEnUna::Guardar() const
+{
+    if (guardarJunto) return guardarJunto();   // con la lista de descargas, en un solo archivo y de una vez
+    return EscribirSeguro(m_archivo, ComoJson().dump(1, ' ', false, json::error_handler_t::replace));
+}
+
+bool hnd::DeUnaEnUna::Agregar(std::vector<Parte> partes, size_t* nuevas)
 {
     size_t antes = m_partes.size();
     for (auto& p : partes)
     {
+        // La misma página no entra dos veces (ni si ya estaba, ni si viene repetida)
+        if (std::any_of(m_partes.begin(), m_partes.end(), [&](const Parte& q) { return q.url == p.url; })) continue;
         p.estado = EstadoParte::Esperando;
         p.descarga = 0;
         m_partes.push_back(std::move(p));
     }
-    if (Guardar()) return true;
+    if (nuevas) *nuevas = m_partes.size() - antes;
+    if (m_partes.size() == antes || Guardar()) return true;
     m_partes.resize(antes);   // no se pudo guardar: la cola queda como estaba
+    if (nuevas) *nuevas = 0;
     return false;
 }
 
@@ -365,6 +388,7 @@ void hnd::DeUnaEnUna::Tomar(int i, uint64_t descarga)
     p.estadoToma = EstadoToma::Ninguna;
     p.sinConfirmar = false;
     p.reanudar = false;
+    p.alAbrir = false;
 }
 
 void hnd::DeUnaEnUna::Probar(int i, uint64_t descarga, const std::string& toma, int64_t ahora)
@@ -418,8 +442,10 @@ uint64_t hnd::DeUnaEnUna::MarcarSinConfirmar(int i)
 {
     if (i < 0 || (size_t)i >= m_partes.size()) return 0;
     auto& p = m_partes[i];
-    if (p.estado != EstadoParte::Tomada || p.estadoToma != EstadoToma::Tomada || p.sinConfirmar) return 0;
+    // Una retenida al abrir pasa a ser «sin confirmar» de verdad: la extensión se hizo cargo y ya no vence el plazo
+    if (p.estado != EstadoParte::Tomada || p.estadoToma != EstadoToma::Tomada || (p.sinConfirmar && !p.alAbrir)) return 0;
     p.sinConfirmar = true;
+    p.alAbrir = false;
     p.reanudar = false;
     return p.descarga;
 }
@@ -430,9 +456,227 @@ uint64_t hnd::DeUnaEnUna::Confirmar(int i)
     auto& p = m_partes[i];
     if (!p.sinConfirmar) return 0;
     p.sinConfirmar = false;
+    p.alAbrir = false;
     if (p.estado != EstadoParte::Tomada) return 0;
     p.reanudar = true;   // hasta que de verdad siga
     return p.descarga;
+}
+
+std::string hnd::InstanciaDeToma(const std::string& toma)
+{
+    // «i» + 8 a 32 letras o números + «-n» + el número de la descarga del navegador + «-» + la hora
+    if (toma.size() < 12 || toma[0] != 'i') return {};
+    size_t n = toma.find("-n");
+    if (n == std::string::npos || n < 9 || n > 33) return {};
+    std::string instancia = toma.substr(1, n - 1);
+    for (char c : instancia)
+    {
+        if (!std::isdigit((unsigned char)c) && !(c >= 'a' && c <= 'z')) return {};
+    }
+    return instancia;
+}
+
+void hnd::DeUnaEnUna::VolverALaCola(int i)
+{
+    if (i < 0 || (size_t)i >= m_partes.size()) return;
+    auto& p = m_partes[i];
+    p.estado = EstadoParte::Esperando;
+    p.descarga = 0;
+    p.hasta = 0;
+    p.limite = false;
+    p.avisada = false;
+    p.toma.clear();
+    p.estadoToma = EstadoToma::Ninguna;
+    p.tomaDesde = 0;
+    p.bajado = 0;
+    p.total = -1;
+    p.rutaNavegador.clear();
+    p.identidadNavegador = {};
+    p.finalNavegador = false;
+    p.sinConfirmar = false;
+    p.reanudar = false;
+    p.alAbrir = false;
+}
+
+hnd::Conciliacion hnd::DeUnaEnUna::ConciliarAlAbrir(const std::function<EnLaLista(uint64_t)>& enLaLista)
+{
+    Conciliacion c;
+    auto parte = [](size_t i) { return "parte " + std::to_string(i + 1) + ": "; };
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        auto& p = m_partes[i];
+        if (p.estado != EstadoParte::Tomada) continue;
+        EnLaLista a = p.descarga && enLaLista ? enLaLista(p.descarga) : EnLaLista{};
+        bool completa = a.existe && a.estado == Estado::Completada;
+        if (p.estadoToma == EstadoToma::Probando)
+        {
+            if (completa)
+            {
+                // Atarraya ya tiene el archivo entero: queda esa (la del navegador sobra; si la extensión todavía
+                // pregunta, se le contesta «tomada» y la cancela)
+                Decidir((int)i, true);
+                c.motivos.push_back(parte(i) + "Atarraya ya la había terminado mientras probaba; queda la suya");
+                c.cambio = true;
+                continue;
+            }
+            // Atarraya probaba seguir la del navegador cuando se cerró. Mientras Atarraya está cerrado, la extensión no
+            // recibe respuesta y deja que siga la del navegador: esa es la que sigue. Queda la del navegador (la que dio
+            // el sitio después del captcha: cancelarla no tiene vuelta atrás) y se quita la de Atarraya, que solo era
+            // una prueba y se puede quitar sin perder nada.
+            uint64_t d = Decidir((int)i, false);
+            if (d) c.quitar.push_back(d);
+            c.motivos.push_back(parte(i) + "Atarraya probaba seguirla cuando se cerró; queda la del navegador");
+            c.cambio = true;
+            continue;
+        }
+        // Sin su descarga en la lista: la persona la quitó (RevisarPartes la salta, como siempre)
+        if (!a.existe) continue;
+        // Terminó sin que la cola se enterara: RevisarPartes la da por lista (y prepara Jícaro)
+        if (completa) continue;
+        if (a.estado == Estado::Error)
+        {
+            // Se detuvo con un error sin que la cola se enterara: como al terminar con error (al final vuelve al
+            // recolector; si la persona la reanuda y termina bien, queda lista)
+            p.estado = EstadoParte::Fallo;
+            p.sinConfirmar = p.reanudar = p.alAbrir = false;
+            c.motivos.push_back(parte(i) + "su descarga se había detenido con un error");
+            c.cambio = true;
+            continue;
+        }
+        // Atarraya ya la había tomado y la extensión tenía que cancelar la del navegador. Si Atarraya se cerró antes de
+        // que la extensión preguntara, la extensión no recibió respuesta y dejó seguir la del navegador. Hasta que la
+        // extensión lo cuente, la de Atarraya queda en pausa («retenida»): así nunca bajan las dos. Si ninguna extensión
+        // lo aclara en un minuto (el navegador está cerrado, así que la suya tampoco baja), sigue la de Atarraya.
+        if (p.estadoToma == EstadoToma::Tomada && !p.toma.empty() && !p.sinConfirmar)
+        {
+            p.sinConfirmar = true;
+            p.alAbrir = true;
+            p.reanudar = false;
+            c.motivos.push_back(parte(i) + "la de Atarraya espera a que la extensión cuente si el navegador siguió con la suya");
+            c.cambio = true;
+        }
+    }
+    return c;
+}
+
+hnd::Conciliacion hnd::DeUnaEnUna::ConciliarConExtension(const Informe& informe, const std::function<EnLaLista(uint64_t)>& enLaLista)
+{
+    Conciliacion c;
+    auto parte = [](size_t i) { return "parte " + std::to_string(i + 1) + ": "; };
+    auto informada = [&](const std::string& toma) -> const TomaInformada* {
+        for (const auto& t : informe.tomas)
+        {
+            if (t.toma == toma) return &t;
+        }
+        return nullptr;
+    };
+    // La baja (o ya la bajó) el navegador
+    auto activa = [](const TomaInformada* t) { return t && (t->estado == "siguiendo" || t->estado == "completa"); };
+
+    // 1. Las partes con una «toma» de esta extensión: solo ella sabe si sigue su descarga del navegador
+    for (size_t i = 0; i < m_partes.size() && !informe.instancia.empty(); i++)
+    {
+        auto& p = m_partes[i];
+        if (p.toma.empty() || InstanciaDeToma(p.toma) != informe.instancia) continue;
+        const TomaInformada* t = informada(p.toma);
+        if (p.estado == EstadoParte::Navegador && !p.finalNavegador)
+        {
+            if (t) continue;
+            // La baja el navegador, pero su extensión ya no la conoce (por ejemplo, se borraron sus datos o pasaron días):
+            // nadie la sigue ni va a avisar cuando termine. La parte no tiene ninguna descarga activa: vuelve a la cola
+            // para abrirse otra vez.
+            VolverALaCola((int)i);
+            c.abrir.push_back((int)i);
+            c.motivos.push_back(parte(i) + "la extensión ya no sigue la descarga del navegador; vuelve a abrirse");
+            c.cambio = true;
+            continue;
+        }
+        if (p.estado != EstadoParte::Tomada) continue;
+        if (activa(t))
+        {
+            EnLaLista a = p.descarga && enLaLista ? enLaLista(p.descarga) : EnLaLista{};
+            if (a.existe && a.estado == Estado::Completada)
+            {
+                // Las dos, pero la de Atarraya ya está entera: queda esa (la del navegador termina sola en su carpeta)
+                if (p.estadoToma == EstadoToma::Probando) Decidir((int)i, true);
+                p.sinConfirmar = p.alAbrir = false;
+                c.motivos.push_back(parte(i) + "el navegador siguió con la suya, pero la de Atarraya ya terminó; queda la de Atarraya");
+                c.cambio = true;
+                continue;
+            }
+            // El navegador siguió con la suya (la extensión no pudo cancelarla, o no supo de Atarraya a tiempo) y la de
+            // Atarraya también está: queda la del navegador, la que dio el sitio después del captcha (cancelarla no
+            // tiene vuelta atrás); la de Atarraya se quita sin perder nada.
+            uint64_t d = NavegadorSiguio((int)i);
+            if (d) c.quitar.push_back(d);
+            c.motivos.push_back(parte(i) + "el navegador siguió con la suya; queda la del navegador y se quita la de Atarraya");
+            c.cambio = true;
+            continue;
+        }
+        if (!t || t->estado == "terminada")
+        {
+            if (p.sinConfirmar)
+            {
+                // La extensión no conoce ninguna descarga del navegador de esta parte que siga (la canceló, o ya no
+                // baja): la de Atarraya es la única. Sigue.
+                Confirmar((int)i);
+                c.motivos.push_back(parte(i) + "el navegador ya no la baja; sigue la de Atarraya");
+                c.cambio = true;
+            }
+            else if (p.estadoToma == EstadoToma::Probando)
+            {
+                // Atarraya prueba seguirla, pero la extensión ya no sabe de esa descarga del navegador (perdió lo que
+                // estaba decidiendo): nadie la va a cancelar ni a seguir. La de Atarraya es la única que se sigue: queda.
+                Decidir((int)i, true);
+                c.motivos.push_back(parte(i) + "la extensión ya no decide sobre la del navegador; queda la de Atarraya");
+                c.cambio = true;
+            }
+            continue;
+        }
+        // «probando» o «sinConfirmar»: la extensión se hizo cargo (decide con Atarraya o lo sigue mirando y avisa).
+        // Una retenida al abrir ya no vence: espera lo que diga la extensión.
+        if (p.alAbrir)
+        {
+            p.alAbrir = false;
+            c.cambio = true;
+        }
+    }
+
+    // 2. Descargas del navegador que la extensión sigue y la cola no conoce, de la página de una parte que no tiene
+    //    ninguna descarga activa (abierta o esperando): la parte pasa a esa, que es la única. Pasa si Atarraya se cerró
+    //    de golpe antes de anotar que probaba seguirla.
+    for (const auto& t : informe.tomas)
+    {
+        if (!activa(&t) || ParteDeToma(t.toma) >= 0) continue;
+        int i = ParteDePagina(t.pagina);
+        if (i < 0) continue;
+        EnNavegador(i, t.toma);
+        c.motivos.push_back(parte((size_t)i) + "la baja el navegador (la extensión la seguía y la cola no lo sabía)");
+        c.cambio = true;
+    }
+    return c;
+}
+
+bool hnd::DeUnaEnUna::HayRetenidas() const
+{
+    return std::any_of(m_partes.begin(), m_partes.end(), [](const Parte& p) { return p.alAbrir && p.sinConfirmar; });
+}
+
+hnd::Conciliacion hnd::DeUnaEnUna::SoltarRetenidas()
+{
+    Conciliacion c;
+    for (size_t i = 0; i < m_partes.size(); i++)
+    {
+        auto& p = m_partes[i];
+        if (!p.alAbrir || !p.sinConfirmar) continue;
+        // Ninguna extensión contó nada de su descarga del navegador: el navegador no está abierto (y entonces la suya
+        // tampoco baja) o su extensión es de antes. Sigue la de Atarraya; si el navegador después sigue con la suya, la
+        // extensión avisa y queda la del navegador (NavegadorSiguio).
+        Confirmar((int)i);
+        c.motivos.push_back("parte " + std::to_string(i + 1) + ": ninguna extensión contó nada en un minuto; sigue la de Atarraya");
+        c.cambio = true;
+    }
+    return c;
 }
 
 hnd::AccionPausa hnd::DeUnaEnUna::RevisarPausa(int i, Estado estado, bool pausando) const
@@ -466,6 +710,7 @@ bool hnd::DeUnaEnUna::RevisarPausas(const ListaParaPausas& lista, std::vector<in
             // Ya no es de Atarraya (terminó, se saltó...): no hay descarga que pausar ni reanudar
             p.sinConfirmar = false;
             p.reanudar = false;
+            p.alAbrir = false;
             cambio = true;
             continue;
         }
@@ -660,6 +905,7 @@ void hnd::DeUnaEnUna::EnNavegador(int i, const std::string& toma)
     p.finalNavegador = false;
     p.sinConfirmar = false;
     p.reanudar = false;
+    p.alAbrir = false;
 }
 
 int hnd::DeUnaEnUna::BuscarToma(const std::string& toma) const
@@ -829,6 +1075,20 @@ hnd::Movida hnd::MoverArchivoDelNavegador(const std::wstring& ruta, const Identi
     {
         motivo = "una de las rutas no es una ruta completa de esta PC";
         return Movida::NoSePudo;
+    }
+    // Ya se había movido: Atarraya se cerró de golpe después de moverlo y antes de anotarlo. En la carpeta del paquete,
+    // con su nombre, está ese mismo archivo (el mismo número de archivo del mismo disco, el mismo tamaño y la misma
+    // fecha), revisado como siempre: sin enlaces y un archivo común en esa ruta.
+    if (GetFileAttributesW(completa.c_str()) == INVALID_FILE_ATTRIBUTES && identidad.Valida())
+    {
+        std::wstring nombre = completa.substr(completa.find_last_of(L'\\') + 1);
+        IdentidadArchivo ahi;
+        std::string sinUso;
+        if (!nombre.empty() && LeerArchivoDelNavegador(dir + L"\\" + nombre, ahi, sinUso) && ahi == identidad)
+        {
+            destino = dir + L"\\" + nombre;
+            return Movida::Movida;
+        }
     }
     if (!SinEnlaces(completa) || !SinEnlaces(dir))
     {
@@ -1002,6 +1262,7 @@ int hnd::DeUnaEnUna::Terminar(uint64_t descarga, bool ok)
             p.estado = ok ? EstadoParte::Lista : EstadoParte::Fallo;
             p.sinConfirmar = false;
             p.reanudar = false;
+            p.alAbrir = false;
             return (int)i;
         }
     }
@@ -1018,6 +1279,7 @@ void hnd::DeUnaEnUna::Saltar(int i)
         p.estado = EstadoParte::Saltada;
         p.sinConfirmar = false;
         p.reanudar = false;
+        p.alAbrir = false;
         p.hasta = 0;
         p.limite = false;
     }

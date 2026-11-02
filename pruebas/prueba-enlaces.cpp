@@ -24,7 +24,10 @@
 #include <winioctl.h>
 
 #include <fstream>
+#include <map>
+#include <memory>
 
+#include <nlohmann/json.hpp>
 #include <shellapi.h>
 
 #include "clicknload.hpp"
@@ -1999,6 +2002,492 @@ namespace
     }
 
     // 0.4.0 (revisión): las páginas de la cola las abre la extensión; con varios navegadores conectados, el predeterminado
+    // 0.4.0 (revisión 5): la cola y la lista de descargas se guardan juntas, en un solo archivo y de una vez, y al abrir
+    // Atarraya (y cuando la extensión cuenta lo que sabe) se junta todo. Para cada operación se simula un cierre de golpe
+    // justo antes y justo después de cada escritura, con lo que hizo el navegador mientras tanto, y al reabrir se revisa
+    // que nunca haya dos descargas activas de la misma parte ni partes perdidas.
+    struct AtarrayaDePrueba
+    {
+        std::unique_ptr<Motor> m;
+        DeUnaEnUna q{ std::wstring() };
+        std::wstring archivo;
+        std::vector<std::string> escrituras;   // el archivo después de cada escritura
+        explicit AtarrayaDePrueba(std::wstring a) : archivo(std::move(a))
+        {
+            // Como la ventana: la cola sale del mismo archivo que la lista, y se guardan juntas
+            m = std::make_unique<Motor>(archivo);
+            m->Cargar();
+            std::string anexo = m->AnexoCargado();
+            if (!anexo.empty())
+            {
+                auto j = nlohmann::json::parse(anexo);
+                if (j.contains("cola")) q.DesdeJson(j["cola"]);
+            }
+            m->anexo = [this](nlohmann::json& x) { x = { { "cola", q.ComoJson() } }; };
+            q.guardarJunto = [this]() {
+                bool ok = m->Guardar();
+                std::string t;
+                LeerArchivo(archivo, t);
+                escrituras.push_back(t);
+                return ok;
+            };
+        }
+        ~AtarrayaDePrueba()
+        {
+            m->anexo = nullptr;
+            m.reset();
+        }
+        std::function<EnLaLista(uint64_t)> EnLaListaDe()
+        {
+            return [this](uint64_t id) {
+                EnLaLista r;
+                Foto f;
+                if (id && m->Buscar(id, f))
+                {
+                    r.existe = true;
+                    r.estado = f.datos.estado;
+                }
+                return r;
+            };
+        }
+        void Aplicar(const Conciliacion& c)
+        {
+            for (auto id : c.quitar) m->Quitar(id);
+            if (c.cambio || !c.quitar.empty()) q.Guardar();
+        }
+        // Como la ventana en cada vuelta: las que terminaron o se quitaron sin que la cola se enterara, y las pausas
+        void Vuelta()
+        {
+            for (size_t i = 0; i < q.Partes().size(); i++)
+            {
+                const auto& p = q.Partes()[i];
+                if (p.estado != EstadoParte::Tomada) continue;
+                Foto f;
+                if (!m->Buscar(p.descarga, f)) q.Saltar((int)i);
+                else if (f.datos.estado == Estado::Completada) q.Terminar(p.descarga, true);
+            }
+            DeUnaEnUna::ListaParaPausas l;
+            l.buscar = [this](uint64_t id, Estado& e, bool& pausando) {
+                Foto f;
+                if (!m->Buscar(id, f)) return false;
+                e = f.datos.estado;
+                pausando = f.pausando;
+                return true;
+            };
+            l.pausar = [this](uint64_t id) { m->Pausar(id); };
+            l.reanudar = [this](uint64_t id) { m->Reanudar(id); };
+            l.guardar = [this]() { return m->Guardar(); };
+            q.RevisarPausas(l);
+            q.RevisarPausas(l);   // la segunda vuelta borra la marca «reanudar» (después de guardar)
+            q.Guardar();
+        }
+    };
+
+    void ConciliarPruebas()
+    {
+        namespace fs = std::filesystem;
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        const std::wstring base = std::wstring(temporal) + L"atarraya-prueba-conciliar-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        fs::remove_all(base, ec);
+        fs::create_directories(base, ec);
+        const std::string inst = "abcdefgh1234";
+        auto parte = [&](int n) {
+            Parte p;
+            p.url = "https://ddownload.com/c" + std::to_string(n) + "k" + std::to_string(n) + "c" + std::to_string(n) + "k/peli.part"
+                + std::to_string(n) + ".rar";
+            p.nombre = L"peli.part" + std::to_wstring(n) + L".rar";
+            p.carpeta = base;
+            p.grupo = "g1";
+            return p;
+        };
+        auto tomaDe = [&](int n) { return "i" + inst + "-n" + std::to_string(n) + "-k1"; };
+        auto descarga = [&](int n) {
+            DatosDescarga d;
+            d.url = "https://s1.ddownload.com/d/c" + std::to_string(n) + "/peli.part" + std::to_string(n) + ".rar";
+            d.carpeta = base;
+            d.nombre = L"peli.part" + std::to_wstring(n) + L".rar";
+            d.conexiones = 1;
+            d.grupo = "g1";
+            return d;
+        };
+        int archivos = 0;
+        auto nueva = [&]() { return std::make_unique<AtarrayaDePrueba>(base + L"\\descargas-" + std::to_wstring(++archivos) + L".json"); };
+        // Reabrir con lo que había en el disco
+        auto reabrir = [&](const std::string& disco) {
+            std::wstring a = base + L"\\reabrir-" + std::to_wstring(++archivos) + L".json";
+            EscribirSeguro(a, disco);
+            return std::make_unique<AtarrayaDePrueba>(a);
+        };
+
+        // El navegador de la prueba: cada descarga suya («toma») para la extensión: «probando» (decide con Atarraya),
+        // «siguiendo» (la baja el navegador), «sinConfirmar», «terminada» o "" (ya no está), y la página de su parte
+        struct EnElNavegador
+        {
+            std::string estado, pagina;
+        };
+        using Navegador = std::map<std::string, EnElNavegador>;
+        auto informe = [&](const Navegador& n) {
+            Informe inf;
+            inf.instancia = inst;
+            for (const auto& [t, e] : n)
+            {
+                if (!e.estado.empty()) inf.tomas.push_back({ t, e.estado, e.pagina });
+            }
+            return inf;
+        };
+        // Nunca dos descargas activas de la misma parte, y ninguna parte perdida (sin terminar, sin descarga y sin abrirse).
+        // «soloDobles»: recién abierto, antes de que la extensión cuente lo que sabe (una parte que baja el navegador
+        // todavía no se puede juzgar)
+        auto bien = [&](AtarrayaDePrueba& a, const Navegador& n, std::string& que, bool soloDobles = false) {
+            const auto& partes = a.q.Partes();
+            for (size_t i = 0; i < partes.size(); i++)
+            {
+                const auto& p = partes[i];
+                Foto f;
+                bool hayA = p.estado == EstadoParte::Tomada && p.descarga && a.m->Buscar(p.descarga, f);
+                bool activaA = hayA && !p.sinConfirmar
+                    && (f.datos.estado == Estado::EnCola || f.datos.estado == Estado::Iniciando || f.datos.estado == Estado::Descargando);
+                int activasB = 0;
+                bool conoceB = false;
+                for (const auto& [t, e] : n)
+                {
+                    if (e.pagina != p.url || e.estado.empty()) continue;
+                    if (e.estado != "terminada") activasB++;   // decidiendo, bajando o sin confirmar: puede estar bajando
+                    if (t == p.toma) conoceB = true;
+                }
+                if ((activaA ? 1 : 0) + activasB > 1)
+                {
+                    que = "parte " + std::to_string(i + 1) + ": dos descargas activas";
+                    return false;
+                }
+                if (soloDobles) continue;
+                bool terminada = p.estado == EstadoParte::Lista || p.estado == EstadoParte::Saltada || p.estado == EstadoParte::Fallo;
+                bool porAbrir = p.estado == EstadoParte::Esperando || p.estado == EstadoParte::Abierta || p.estado == EstadoParte::Espera;
+                // Una del navegador de una extensión de antes (sin instancia): solo esa extensión puede avisar; se espera
+                bool deAntes = p.estado == EstadoParte::Navegador && InstanciaDeToma(p.toma).empty();
+                bool sigue = (p.estado == EstadoParte::Tomada && hayA) || (p.estado == EstadoParte::Navegador && (conoceB || p.finalNavegador)) || deAntes;
+                if (!terminada && !porAbrir && !sigue)
+                {
+                    que = "parte " + std::to_string(i + 1) + ": perdida";
+                    return false;
+                }
+            }
+            return true;
+        };
+        // Reabre con «disco» y revisa al abrir; después, si «cuenta», la extensión cuenta lo que sabe (si no, pasa el minuto
+        // sin que ninguna cuente nada) y se revisa otra vez
+        auto revisar = [&](const std::string& disco, const Navegador& n, bool cuenta, const std::string& caso) {
+            auto a = reabrir(disco);
+            std::string que;
+            a->Aplicar(a->q.ConciliarAlAbrir(a->EnLaListaDe()));
+            a->Vuelta();
+            bool ok = bien(*a, n, que, true);
+            if (cuenta) a->Aplicar(a->q.ConciliarConExtension(informe(n), a->EnLaListaDe()));
+            else a->Aplicar(a->q.SoltarRetenidas());
+            a->Vuelta();
+            ok = ok && bien(*a, n, que);
+            Comprobar(ok, ("conciliar: " + caso + (ok ? std::string() : " (" + que + ")")).c_str());
+            return a;
+        };
+        auto unaSola = [&](AtarrayaDePrueba& a, size_t antes, const char* que) {
+            Comprobar(a.escrituras.size() == antes + 1,
+                      (std::string("conciliar: ") + que + " se guarda de una sola vez (la cola y la lista juntas, en el mismo archivo)").c_str());
+        };
+
+        // 1. Tomar con «toma» (lo que encontró Codex): la descarga y la parte se guardan juntas
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(1) });
+            int i = a->q.AbrirSiguiente();
+            a->q.Guardar();
+            std::string antesDeTomar = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            uint64_t id = a->m->Agregar(descarga(1), true);
+            a->q.Probar(i, id, tomaDe(1), 1000);
+            a->q.Guardar();
+            unaSola(*a, n0, "tomar");
+            std::string despues = a->escrituras.back();
+            // Mientras Atarraya estuvo cerrado, la extensión no tuvo respuesta y dejó seguir la del navegador
+            Navegador siguio{ { tomaDe(1), { "siguiendo", parte(1).url } } };
+            Navegador decidiendo{ { tomaDe(1), { "probando", parte(1).url } } };
+            auto r1 = revisar(antesDeTomar, siguio, true, "tomar: cierre antes de guardar; queda la del navegador (la cola la adopta al contarla la extensión)");
+            Comprobar(r1->q.Partes()[0].estado == EstadoParte::Navegador && r1->q.Partes()[0].toma == tomaDe(1) && r1->m->Fotos().empty(),
+                      "conciliar: tomar: la parte pasa a la descarga del navegador que la cola no conocía");
+            revisar(antesDeTomar, decidiendo, true, "tomar: cierre antes de guardar, con la extensión todavía decidiendo");
+            auto r2 = revisar(despues, siguio, true, "tomar: cierre después de guardar; queda la del navegador y se quita la de Atarraya");
+            Comprobar(r2->q.Partes()[0].estado == EstadoParte::Navegador && r2->m->Fotos().empty(),
+                      "conciliar: tomar: al abrir se quita la de Atarraya, que solo era una prueba");
+            revisar(despues, decidiendo, true, "tomar: cierre después de guardar, con la extensión todavía decidiendo");
+            revisar(despues, siguio, false, "tomar: cierre después de guardar, sin que ninguna extensión cuente nada");
+        }
+
+        // 2. Tomar sin «toma» (la del navegador ya se canceló al pasársela a Atarraya)
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(2) });
+            int i = a->q.AbrirSiguiente();
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            uint64_t id = a->m->Agregar(descarga(2), true);
+            a->q.Tomar(i, id);
+            a->q.Guardar();
+            unaSola(*a, n0, "tomar sin toma");
+            auto r1 = revisar(antes, {}, true, "tomar sin toma: cierre antes de guardar; la parte sigue abierta (se baja otra vez)");
+            Comprobar(r1->q.Partes()[0].estado == EstadoParte::Abierta && r1->m->Fotos().empty(), "conciliar: tomar sin toma: nada a medias");
+            auto r2 = revisar(a->escrituras.back(), {}, true, "tomar sin toma: cierre después de guardar; sigue la de Atarraya");
+            Comprobar(r2->q.Partes()[0].estado == EstadoParte::Tomada && r2->m->Fotos().size() == 1, "conciliar: tomar sin toma: la parte y su descarga, juntas");
+        }
+
+        // 3. Atarraya decide que la toma (la extensión cancela la del navegador cuando lo pregunta)
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(3) });
+            int i = a->q.AbrirSiguiente();
+            uint64_t id = a->m->Agregar(descarga(3), true);
+            a->q.Probar(i, id, tomaDe(3), 1000);
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            a->q.Decidir(i, true);
+            a->q.Guardar();
+            unaSola(*a, n0, "decidir");
+            std::string despues = a->escrituras.back();
+            Navegador siguio{ { tomaDe(3), { "siguiendo", parte(3).url } } };
+            Navegador decidiendo{ { tomaDe(3), { "probando", parte(3).url } } };
+            Navegador cancelada;   // la extensión ya la había cancelado (y la olvidó)
+            revisar(antes, siguio, true, "decidir: cierre antes de guardar; queda la del navegador");
+            auto r1 = revisar(despues, siguio, true, "decidir: cierre después, sin que la extensión alcanzara a preguntar; queda la del navegador");
+            Comprobar(r1->q.Partes()[0].estado == EstadoParte::Navegador && r1->m->Fotos().empty(),
+                      "conciliar: decidir: si el navegador siguió, se quita la de Atarraya");
+            auto r2 = revisar(despues, cancelada, true, "decidir: cierre después de que la extensión la canceló; sigue la de Atarraya");
+            Foto f;
+            Comprobar(r2->q.Partes()[0].estado == EstadoParte::Tomada && !r2->q.Partes()[0].sinConfirmar && r2->m->Buscar(id, f)
+                          && f.datos.estado == Estado::EnCola,
+                      "conciliar: decidir: si la extensión ya no la conoce, la de Atarraya sigue");
+            // La extensión todavía decide (se apagó y despertó): Atarraya retiene la suya; cuando la extensión pregunta, se
+            // le contesta «tomada», la cancela y avisa que ya no baja
+            auto r3 = revisar(despues, decidiendo, true, "decidir: cierre después, con la extensión todavía decidiendo; la de Atarraya espera");
+            auto e = r3->q.EstadoDeToma(tomaDe(3));
+            Comprobar(e.estado == "tomada" && e.sinConfirmar && r3->m->Buscar(id, f) && f.datos.estado == Estado::Pausada,
+                      "conciliar: decidir: mientras la extensión decide, la de Atarraya queda en pausa y se le contesta «tomada»");
+            r3->q.Confirmar(0);   // «confirmada»: la del navegador ya no baja
+            r3->Vuelta();
+            std::string que;
+            Comprobar(bien(*r3, cancelada, que) && r3->m->Buscar(id, f) && f.datos.estado == Estado::EnCola && !r3->q.Partes()[0].reanudar,
+                      "conciliar: decidir: cuando la extensión confirma que canceló la suya, sigue la de Atarraya");
+            auto r4 = revisar(despues, cancelada, false, "decidir: cierre después y el navegador cerrado; al minuto sigue la de Atarraya");
+            Comprobar(r4->m->Buscar(id, f) && f.datos.estado == Estado::EnCola && !r4->q.HayRetenidas(),
+                      "conciliar: decidir: si ninguna extensión cuenta nada en un minuto, sigue la de Atarraya");
+        }
+
+        // 4. Terminar: la descarga terminó y la cola lo anota
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(4) });
+            int i = a->q.AbrirSiguiente();
+            DatosDescarga d = descarga(4);
+            d.tamano = 100;
+            uint64_t id = a->m->AgregarTerminada(d);
+            a->q.Tomar(i, id);
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            a->q.Terminar(id, true);
+            a->q.Guardar();
+            unaSola(*a, n0, "terminar");
+            auto r1 = revisar(antes, {}, true, "terminar: cierre antes de anotarla; al abrir queda lista");
+            Comprobar(r1->q.Partes()[0].estado == EstadoParte::Lista, "conciliar: terminar: la que terminó sin que la cola se enterara queda lista");
+            revisar(a->escrituras.back(), {}, true, "terminar: cierre después");
+        }
+
+        // 5. Saltar (también una que baja el navegador: la del navegador sigue, pero la parte ya no es de la cola)
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(5), parte(6) });
+            int i = a->q.AbrirSiguiente();
+            uint64_t id = a->m->Agregar(descarga(5), true);
+            a->q.Tomar(i, id);
+            int j = a->q.AbrirSiguiente();
+            a->q.EnNavegador(j, tomaDe(6));
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            a->q.Saltar(i);
+            a->q.Saltar(j);
+            a->q.Guardar();
+            unaSola(*a, n0, "saltar");
+            Navegador n{ { tomaDe(6), { "siguiendo", parte(6).url } } };
+            revisar(antes, n, true, "saltar: cierre antes de guardar");
+            revisar(a->escrituras.back(), n, true, "saltar: cierre después");
+        }
+
+        // 6. Pausar: la extensión no pudo cancelar la del navegador ni saber cómo quedó («sin confirmar»)
+        // 7. Reanudar: después supo que la del navegador ya no baja
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(7) });
+            int i = a->q.AbrirSiguiente();
+            uint64_t id = a->m->Agregar(descarga(7), true);
+            a->q.Probar(i, id, tomaDe(7), 1000);
+            a->q.Decidir(i, true);
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            a->m->Pausar(a->q.MarcarSinConfirmar(i));
+            a->q.Guardar();
+            unaSola(*a, n0, "pausar");
+            std::string pausada = a->escrituras.back();
+            Navegador sinConfirmar{ { tomaDe(7), { "sinConfirmar", parte(7).url } } };
+            revisar(antes, sinConfirmar, true, "pausar: cierre antes de guardar; la de Atarraya espera a saber");
+            auto r1 = revisar(pausada, sinConfirmar, true, "pausar: cierre después; sigue en pausa hasta saber");
+            Comprobar(r1->q.Partes()[0].sinConfirmar && !r1->q.Partes()[0].alAbrir && !r1->q.HayRetenidas(),
+                      "conciliar: pausar: si la extensión lo sigue mirando, no vence el minuto (espera lo que diga)");
+            size_t n1 = a->escrituras.size();
+            a->q.Confirmar(i);
+            a->q.Guardar();
+            unaSola(*a, n1, "reanudar");
+            Navegador yaNoBaja;
+            revisar(pausada, yaNoBaja, true, "reanudar: cierre antes de guardar; la extensión ya no la conoce y sigue la de Atarraya");
+            auto r2 = revisar(a->escrituras.back(), yaNoBaja, true, "reanudar: cierre después; sigue la de Atarraya");
+            Foto f;
+            Comprobar(r2->m->Buscar(id, f) && f.datos.estado == Estado::EnCola, "conciliar: reanudar: al abrir se reanuda de verdad");
+        }
+
+        // 8. Seguir en el navegador: Atarraya no pudo (o se le pidió soltarla) y queda la del navegador
+        // 9. El navegador siguió con una que Atarraya ya había tomado
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(8), parte(9) });
+            int i = a->q.AbrirSiguiente();
+            uint64_t id = a->m->Agregar(descarga(8), true);
+            a->q.Probar(i, id, tomaDe(8), 1000);
+            int j = a->q.AbrirSiguiente();
+            uint64_t id2 = a->m->Agregar(descarga(9), true);
+            a->q.Probar(j, id2, tomaDe(9), 1000);
+            a->q.Decidir(j, true);
+            a->q.Guardar();
+            std::string antes = a->escrituras.back();
+            size_t n0 = a->escrituras.size();
+            a->m->Quitar(a->q.Decidir(i, false));
+            a->q.Guardar();
+            unaSola(*a, n0, "seguir en el navegador");
+            std::string despues = a->escrituras.back();
+            size_t n1 = a->escrituras.size();
+            a->m->Quitar(a->q.NavegadorSiguio(j));
+            a->q.Guardar();
+            unaSola(*a, n1, "el navegador siguió");
+            Navegador n{ { tomaDe(8), { "siguiendo", parte(8).url } }, { tomaDe(9), { "siguiendo", parte(9).url } } };
+            revisar(antes, n, true, "seguir en el navegador: cierre antes de guardar");
+            revisar(despues, n, true, "seguir en el navegador: cierre después (y antes de quitar la del navegador siguió)");
+            auto r = revisar(a->escrituras.back(), n, true, "el navegador siguió: cierre después");
+            Comprobar(r->m->Fotos().empty() && r->q.Partes()[1].estado == EstadoParte::Navegador, "conciliar: seguir en el navegador: queda solo la del navegador");
+        }
+
+        // 10. La extensión ya no conoce una descarga del navegador (se borraron sus datos): la parte vuelve a abrirse
+        {
+            auto a = nueva();
+            a->q.Agregar({ parte(10), parte(11) });
+            int i = a->q.AbrirSiguiente();
+            a->q.EnNavegador(i, tomaDe(10));
+            int j = a->q.AbrirSiguiente();
+            a->q.EnNavegador(j, "n11-de-antes");   // de una extensión de antes: no se juzga
+            a->q.Guardar();
+            Navegador nada;
+            auto r = revisar(a->escrituras.back(), nada, true, "una descarga del navegador que ya nadie sigue: la parte vuelve a abrirse");
+            Comprobar(r->q.Partes()[0].estado == EstadoParte::Esperando && r->q.Partes()[0].toma.empty()
+                          && r->q.Partes()[1].estado == EstadoParte::Navegador,
+                      "conciliar: vuelve a la cola para abrirse otra vez (y la de una extensión de antes no se toca)");
+            Informe otra;
+            otra.instancia = "zzzzzzzz9999";
+            auto c = r->q.ConciliarConExtension(otra, r->EnLaListaDe());
+            Comprobar(!c.cambio && c.abrir.empty(), "conciliar: lo que cuenta una extensión no cambia las descargas de otra");
+        }
+
+        // 11. Pasar del recolector: la cola se guarda antes de sacar los enlaces del recolector; si se cierra en el medio y
+        //     la persona los confirma otra vez, no entran dos veces
+        {
+            auto a = nueva();
+            size_t nuevas = 0;
+            a->q.Agregar({ parte(12), parte(13) }, &nuevas);
+            bool primera = nuevas == 2;
+            Comprobar(a->q.Agregar({ parte(12), parte(14), parte(14) }, &nuevas) && nuevas == 1 && a->q.Partes().size() == 3 && primera,
+                      "conciliar: pasar del recolector: una página que ya está en la cola no entra otra vez");
+        }
+
+        // 12. Una retenida al abrir que la extensión después marca «sin confirmar» ya no vence al minuto
+        {
+            DeUnaEnUna q(base + L"\\sola.json");
+            q.Agregar({ parte(15) });
+            int i = q.AbrirSiguiente();
+            q.Probar(i, 99, tomaDe(15), 1000);
+            q.Decidir(i, true);
+            auto c = q.ConciliarAlAbrir([](uint64_t) { EnLaLista r; r.existe = true; r.estado = Estado::EnCola; return r; });
+            Comprobar(c.cambio && q.Partes()[i].sinConfirmar && q.Partes()[i].alAbrir && q.HayRetenidas() && q.MarcarSinConfirmar(i) == 99
+                          && !q.Partes()[i].alAbrir && q.Partes()[i].sinConfirmar && !q.HayRetenidas() && q.SoltarRetenidas().motivos.empty(),
+                      "conciliar: si la extensión avisa que no pudo confirmarlo, la de Atarraya sigue esperando (sin plazo)");
+            q.Guardar();
+            DeUnaEnUna otra(base + L"\\sola.json");
+            otra.Cargar();
+            Comprobar(otra.Partes()[i].sinConfirmar && !otra.Partes()[i].alAbrir, "conciliar: la marca de retenida se guarda");
+        }
+
+        // 13. El archivo de la lista guarda la cola junta; al cerrar, la lista se guarda con la última cola guardada
+        {
+            std::wstring f = base + L"\\anexo.json";
+            {
+                Motor m(f);
+                DeUnaEnUna q(std::wstring{});
+                m.anexo = [&q](nlohmann::json& x) { x = { { "cola", q.ComoJson() } }; };
+                q.guardarJunto = [&m]() { return m.Guardar(); };
+                q.Agregar({ parte(16) });
+                m.anexo = nullptr;   // como al cerrar la ventana
+                q.guardarJunto = nullptr;
+            }   // al cerrar, Motor guarda otra vez: con la última cola guardada
+            Motor m2(f);
+            m2.Cargar();
+            auto j = nlohmann::json::parse(m2.AnexoCargado());
+            DeUnaEnUna q2(std::wstring{});
+            q2.DesdeJson(j["cola"]);
+            Comprobar(q2.Partes().size() == 1 && q2.Partes()[0].url == parte(16).url && InstanciaDeToma(tomaDe(1)) == inst
+                          && InstanciaDeToma("n1-abc").empty() && InstanciaDeToma("iABCDEFGH-n1-x").empty(),
+                      "conciliar: la cola va en el archivo de la lista y sigue ahí después de cerrar");
+        }
+
+        // 14. Atarraya se cerró después de pasar a la carpeta del paquete lo que bajó el navegador y antes de anotarlo: al
+        //     abrir, se encuentra ya movido y se anota igual
+        {
+            std::wstring nav = base + L"\\nav", paq = base + L"\\paq";
+            fs::create_directories(nav, ec);
+            fs::create_directories(paq, ec);
+            {
+                std::ofstream o(nav + L"\\peli.part17.rar", std::ios::binary);
+                o << std::string(3000, 'q');
+            }
+            IdentidadArchivo id;
+            std::string motivo;
+            std::wstring destino;
+            bool leido = LeerArchivoDelNavegador(nav + L"\\peli.part17.rar", id, motivo);
+            bool movida = MoverArchivoDelNavegador(nav + L"\\peli.part17.rar", id, paq, destino, motivo) == Movida::Movida;
+            // Otra vez, como al abrir después del cierre: ya no está donde lo dejó el navegador, pero sí en el paquete
+            std::wstring otraVez;
+            Comprobar(leido && movida && MoverArchivoDelNavegador(nav + L"\\peli.part17.rar", id, paq, otraVez, motivo) == Movida::Movida
+                          && otraVez == destino && ExisteArchivo(paq + L"\\peli.part17.rar"),
+                      "conciliar: lo que el navegador bajó y ya se movió antes del cierre se encuentra en el paquete");
+            // Si en el paquete hay otro archivo con ese nombre (no es el mismo), no se da por movido
+            DeleteFileW((paq + L"\\peli.part17.rar").c_str());
+            {
+                std::ofstream o(paq + L"\\peli.part17.rar", std::ios::binary);
+                o << std::string(3000, 'r');
+            }
+            Comprobar(MoverArchivoDelNavegador(nav + L"\\peli.part17.rar", id, paq, otraVez, motivo) != Movida::Movida,
+                      "conciliar: otro archivo con el mismo nombre en el paquete no cuenta como movido");
+        }
+        fs::remove_all(base, ec);
+    }
+
     void PuertosPruebas()
     {
         Comprobar(ProgramaDeProgId(L"ChromeHTML") == L"chrome.exe" && ProgramaDeProgId(L"MSEdgeHTM") == L"msedge.exe"
@@ -2880,6 +3369,7 @@ int wmain(int argc, wchar_t** argv)
     TomasPruebas();
     AvisoFinalPruebas();
     PuertosPruebas();
+    ConciliarPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

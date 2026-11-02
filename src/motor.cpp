@@ -1075,10 +1075,21 @@ namespace hnd
         }
     }
 
+    struct Motor::Anexo
+    {
+        json valor;
+        bool hay = false;
+    };
+
     Motor::Motor(std::wstring archivoEstado)
-        : m_archivo(std::move(archivoEstado)), m_limitador(std::make_unique<Limitador>())
+        : m_archivo(std::move(archivoEstado)), m_limitador(std::make_unique<Limitador>()), m_anexo(std::make_unique<Anexo>())
     {
         curl_global_init(CURL_GLOBAL_DEFAULT);
+    }
+
+    std::string Motor::AnexoCargado() const
+    {
+        return m_anexo->hay ? m_anexo->valor.dump() : std::string();
     }
 
     Motor::~Motor()
@@ -1523,6 +1534,16 @@ namespace hnd
             }
         }
         json todo = { { "version", 1 }, { "siguienteId", siguiente }, { "descargas", lista } };
+        // La cola, en el mismo archivo y en la misma escritura (fuera del candado de la lista: «anexo» no la toca)
+        if (anexo)
+        {
+            json a;
+            anexo(a);
+            m_anexo->valor = a;
+            m_anexo->hay = true;
+            todo["anexo"] = std::move(a);
+        }
+        else if (m_anexo->hay) todo["anexo"] = m_anexo->valor;
         if (!EscribirSeguro(m_archivo, todo.dump(1, ' ', false, json::error_handler_t::replace))) return false;
         m_sucio = false;
         m_ultimoGuardado = AhoraUnix();
@@ -1536,6 +1557,11 @@ namespace hnd
         try
         {
             json todo = json::parse(texto);
+            if (auto a = todo.find("anexo"); a != todo.end() && a->is_object())
+            {
+                m_anexo->valor = *a;
+                m_anexo->hay = true;
+            }
             std::lock_guard g(m_lista);
             m_siguienteId = todo.value("siguienteId", (uint64_t)1);
             for (auto& j : todo.at("descargas"))

@@ -121,6 +121,13 @@ una parte con Atarraya cerrado, la extensión guarda el aviso y se lo pasa cuand
 la carpeta del paquete y sigue hasta Jícaro. Antes de mover lo que bajó el navegador, Atarraya revisa que sea el
 mismo archivo, sin enlaces en ninguna carpeta, y lo mueve sin pisar nada.
 
+**Aunque Atarraya se cierre de golpe en cualquier momento**, la cola y la lista de descargas se guardan juntas, en un
+solo archivo y de una vez, así que nunca queda una sin la otra. Al abrirlo, y cada vez que la extensión se conecta y
+cuenta qué descargas del navegador conoce, Atarraya junta todo parte por parte: si quedaron dos descargas de la misma
+parte, deja una sola, y si una parte se quedó sin ninguna, vuelve a la cola para abrirse otra vez. Si al cerrarse ya
+había tomado una parte, espera a que tu navegador diga si siguió con la suya antes de seguir con la propia (si en un
+minuto no dice nada, sigue la de Atarraya).
+
 Cuando terminan todas las partes de un paquete, también las que bajó el navegador, Jícaro las descomprime como
 siempre (ver abajo). La extensión no pide permisos nuevos.
 

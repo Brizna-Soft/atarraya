@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include <nlohmann/json_fwd.hpp>
+
 #include "util.hpp"
 
 namespace hnd
@@ -92,6 +94,50 @@ namespace hnd
         // Ya se supo que la del navegador no sigue: Atarraya tiene que reanudar la suya, que había pausado. Se guarda y se
         // intenta hasta que de verdad sigue (si la pausa todavía no había terminado, reanudar no hace nada).
         bool reanudar = false;
+        // «Sin confirmar» desde que se abrió Atarraya (ver ConciliarAlAbrir): la de Atarraya espera a que la extensión
+        // cuente si el navegador siguió con la suya. Si ninguna extensión lo aclara en un minuto, sigue la de Atarraya.
+        // Se guarda.
+        bool alAbrir = false;
+    };
+
+    // --- Conciliar ---------------------------------------------------------------------------------------------------
+    // La cola y la lista de descargas se guardan juntas, en un solo archivo y de una vez (ver Motor::anexo): entre las
+    // dos nunca queda nada a medias, se cierre Atarraya cuando se cierre. Lo único que no puede ir en ese archivo es lo
+    // que sabe la extensión de las descargas del navegador. Por eso, al abrir Atarraya y cada vez que una extensión se
+    // conecta y cuenta lo que sabe, se junta todo, parte por parte:
+    //   - nunca quedan dos descargas activas de la misma parte (la de Atarraya y la del navegador): queda una sola, y en
+    //     cada caso se explica cuál y por qué;
+    //   - una parte que no terminó y se quedó sin ninguna descarga activa vuelve a la cola para abrirse otra vez.
+
+    // Lo que dice la lista de descargas de la descarga de Atarraya de una parte
+    struct EnLaLista
+    {
+        bool existe = false;
+        Estado estado{};
+    };
+    // Lo que cuenta una extensión al conectarse: quién es («instancia»: va al principio de cada «toma» suya) y las
+    // descargas del navegador de la cola que conoce. «estado»: «probando» (todavía decide con Atarraya quién la baja),
+    // «siguiendo» (la baja el navegador y la extensión la sigue), «sinConfirmar» (no pudo cancelarla ni saber cómo
+    // quedó), «completa» (el navegador la terminó y falta que Atarraya confirme el aviso) o «terminada» (falló, se
+    // canceló o ya no baja). «pagina»: la que abrió Atarraya para esa parte.
+    struct TomaInformada
+    {
+        std::string toma, estado, pagina;
+    };
+    struct Informe
+    {
+        std::string instancia;
+        std::vector<TomaInformada> tomas;
+    };
+    // La instancia de una «toma» («i<instancia>-n<descarga>-<hora>»); vacía si es del formato de antes
+    std::string InstanciaDeToma(const std::string& toma);
+    // Lo que hay que hacer en la lista de descargas, y por qué (para el registro, sin direcciones)
+    struct Conciliacion
+    {
+        std::vector<uint64_t> quitar;   // descargas de Atarraya que sobran: queda la del navegador
+        std::vector<int> abrir;         // partes que vuelven a la cola para abrirse otra vez
+        std::vector<std::string> motivos;
+        bool cambio = false;            // cambió la cola: hay que guardarla
     };
 
     // Lo que hay que hacer con la descarga de Atarraya de una parte «sin confirmar» (o que hay que reanudar), según cómo
@@ -134,12 +180,19 @@ namespace hnd
 
         // La cola se guarda en cada cambio: si se cierra Atarraya, sigue donde iba. Al cargar, las saltadas o con
         // error que no llegaron al recolector siguen ahí hasta que lleguen.
+        // En Atarraya va dentro del archivo de la lista de descargas («guardarJunto» guarda las dos, de una vez); sin
+        // «guardarJunto» (las pruebas, o la cola de antes, que se pasa una vez) usa su propio archivo.
         void Cargar();
         bool Guardar() const;
+        std::function<bool()> guardarJunto;
+        nlohmann::json ComoJson() const;
+        void DesdeJson(const nlohmann::json& todo);
 
         // Al final de la cola, y la guarda. Si no se pudo guardar, la cola queda como estaba y devuelve false (así los
-        // enlaces no salen del recolector).
-        bool Agregar(std::vector<Parte> partes);
+        // enlaces no salen del recolector). Una página que ya está en la cola no entra otra vez (por ejemplo, si
+        // Atarraya se cerró de golpe después de pasarla a la cola y antes de sacarla del recolector, y la persona la
+        // confirma de nuevo): así nunca hay dos partes de la misma página. «nuevas»: cuántas entraron.
+        bool Agregar(std::vector<Parte> partes, size_t* nuevas = nullptr);
         // Pasa a «abierta» la siguiente que espera y devuelve su posición (-1 si no queda ninguna)
         int AbrirSiguiente();
         // ¿Esta descarga que pasó el navegador es de una parte? «referer» y «pagina» (la página de la pestaña donde
@@ -180,8 +233,17 @@ namespace hnd
         // la parte pasa a «Navegador» y devuelve la descarga de Atarraya que hay que quitar
         uint64_t Decidir(int i, bool atarraya);
         // Al abrir Atarraya: las que estaban probando quedan para el navegador, que siguió bajando la suya. Devuelve las
-        // descargas de Atarraya que hay que quitar.
+        // descargas de Atarraya que hay que quitar. (Es parte de ConciliarAlAbrir.)
         std::vector<uint64_t> ResolverTomasAlAbrir();
+        // Conciliar (ver arriba). «enLaLista»: lo que dice la lista de descargas de una descarga de Atarraya.
+        //   - Al abrir Atarraya, antes de que arranque nada (todavía no se sabe nada del navegador).
+        //   - Cuando una extensión cuenta lo que sabe (solo se juzgan sus propias «tomas»; una página sin descarga
+        //     activa puede pasar a una descarga del navegador que la cola no conocía).
+        //   - Las retenidas al abrir que ninguna extensión aclaró en «plazo» segundos: sigue la de Atarraya.
+        Conciliacion ConciliarAlAbrir(const std::function<EnLaLista(uint64_t)>& enLaLista);
+        Conciliacion ConciliarConExtension(const Informe& informe, const std::function<EnLaLista(uint64_t)>& enLaLista);
+        Conciliacion SoltarRetenidas();
+        bool HayRetenidas() const;
         // El navegador siguió bajando una que Atarraya ya había tomado (por ejemplo, no se pudo cancelar, o la extensión no
         // supo de Atarraya a tiempo): queda la del navegador. Devuelve la descarga de Atarraya que hay que quitar (0: ninguna).
         uint64_t NavegadorSiguio(int i);
@@ -246,6 +308,9 @@ namespace hnd
         const std::vector<Parte>& Partes() const { return m_partes; }
 
     private:
+        // Sin descarga ni toma, otra vez por abrir (la cola la abre cuando le toca)
+        void VolverALaCola(int i);
+
         std::wstring m_archivo;
         std::vector<Parte> m_partes;
     };

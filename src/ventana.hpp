@@ -125,8 +125,13 @@ private:
     // Las que no bajaron vuelven al recolector sin perder ninguna (primero se guarda el recolector, después la cola).
     // false si el recolector no se pudo guardar: entonces la cola queda como estaba.
     bool DevolverYVaciar(size_t& devueltas);
-    void GuardarCola();                    // y avisa una vez si no se pudo
+    void GuardarCola();                    // con la lista de descargas, de una vez; y avisa una vez si no se pudo
     void RevisarPartes();                  // descargas de partes que la persona quitó de la lista
+    // Conciliar (ver deunaenuna.hpp): lo que dice la lista de la descarga de cada parte, y aplicar lo que resultó
+    // (quitar las que sobran, guardar, anotarlo y, con «avanzar», abrir las que volvieron a la cola)
+    std::function<hnd::EnLaLista(uint64_t)> EnLaListaDe();
+    void AplicarConciliacion(const hnd::Conciliacion& c, bool avanzar);
+    void PedidoSeguidas(const nlohmann::json& j);   // lo que cuenta una extensión al conectarse
     // Enlaces de sitios de descargas agregados a mano o desde una página: de una en una. Si la persona no empieza
     // (por ejemplo, para conectar antes la extensión), quedan en el recolector.
     void MandarDeUnaEnUna(const std::vector<hnd::EnlaceRecolectado>& sitios, const std::wstring& carpeta, bool abrir);
@@ -201,6 +206,7 @@ private:
     };
     std::map<int64_t, PaginaPorAbrir> m_porAbrir;
     int64_t m_ultimaOrden = 0;
+    int64_t m_abiertoDesde = 0;             // cuándo se abrió Atarraya (para soltar las retenidas al abrir)
     bool m_colaSinGuardar = false;          // ya se avisó que la cola no se pudo guardar
     wxString m_resumenSitios;               // cómo terminó la última cola (hasta que la persona lo cierra)
     wxPanel* m_barraSitios = nullptr;

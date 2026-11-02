@@ -46,10 +46,14 @@ function guardarPronto() {
 // el navegador); las descargas que se siguen, en storage.local hasta que Atarraya confirma su aviso final (el navegador
 // recuerda sus descargas aunque se cierre). Este «service worker» se apaga cuando no hace nada.
 const cola = new PestanasDeLaCola();
-// id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde, final }
-// («final»: el aviso final, guardado hasta que Atarraya lo confirma)
+// id de la descarga del navegador -> { toma, pagina, url, referer, ultimoAviso, ultimoBytes, ultimoEstado, desde, final,
+// sinConfirmar, probando } («final»: el aviso final, guardado hasta que Atarraya lo confirma; «probando»: todavía se
+// decide con Atarraya quién la baja, ver decidirToma)
 const seguidas = new Map();
 const entregando = new Set();   // avisos finales que se están mandando ahora
+const decidiendo = new Set();   // descargas cuya toma se está decidiendo ahora
+// Esta extensión en este perfil del navegador (ver nuevaInstancia en cola-navegador.js): va al principio de cada «toma»
+let instancia = "";
 const listoCola = (async () => {
   try {
     if (api.storage.session) cola.cargar((await api.storage.session.get("cola")).cola);
@@ -57,14 +61,23 @@ const listoCola = (async () => {
     // Sin storage.session se recuerda solo mientras el «service worker» está despierto
   }
   try {
-    const g = await api.storage.local.get("seguidas");
+    const g = await api.storage.local.get(["seguidas", "instancia"]);
     for (const [id, s] of seguidasGuardadas(g && g.seguidas, Date.now())) seguidas.set(id, s);
+    if (instanciaValida(g && g.instancia)) instancia = g.instancia;
   } catch (e) {}
+  if (!instancia) {
+    instancia = nuevaInstancia((b) => crypto.getRandomValues(b));
+    api.storage.local.set({ instancia }).catch(() => {});
+  }
   if (seguidas.size) vigilarSeguidas();
 })();
-// Los avisos finales que Atarraya no confirmó (por ejemplo, estaba cerrado): otra vez, cada vez que despierta la extensión
+// Cada vez que despierta la extensión: los avisos finales que Atarraya no confirmó (por ejemplo, estaba cerrado) van
+// otra vez, y lo que se estaba decidiendo cuando se apagó sigue decidiéndose
 listoCola.then(() => {
-  for (const id of [...seguidas.keys()]) entregarFinal(id);
+  for (const [id, s] of [...seguidas]) {
+    if (s.probando) decidirToma(id);
+    else entregarFinal(id);
+  }
 });
 function guardarCola() {
   if (api.storage.session) api.storage.session.set({ cola: cola.exportar() }).catch(() => {});
@@ -91,7 +104,8 @@ function conectarPuerto() {
   puerto = p;
   p.onMessage.addListener((m) => {
     if (!m || typeof m.tipo !== "string") return;
-    if (m.tipo === "listo") alVolverAtarraya();   // Atarraya está abierto: los avisos finales guardados van ya
+    // Atarraya está abierto: los avisos finales guardados van ya, y se le cuenta lo que se sabe de las descargas
+    if (m.tipo === "listo") alVolverAtarraya(true);
     else if (m.tipo === "abrir") abrirParaAtarraya(p, m);
   });
   p.onDisconnect.addListener(() => {
@@ -478,6 +492,7 @@ async function revisarSeguida(id) {
   await listoCola;
   const s = seguidas.get(id);
   if (!s) return;
+  if (s.probando) return;   // todavía se decide quién la baja (ver decidirToma)
   if (s.final) {
     entregarFinal(id);
     return;
@@ -585,17 +600,36 @@ async function entregarFinal(id, ya = false) {
   }
 }
 
-// Atarraya volvió a contestar: los avisos finales guardados (y las partes «sin confirmar» que todavía no sabe) van enseguida
-function alVolverAtarraya() {
+// Atarraya volvió a contestar: los avisos finales guardados (y las partes «sin confirmar» que todavía no sabe) van
+// enseguida, y se le cuenta lo que se sabe de las descargas de la cola. «conecto»: se acaba de abrir el puerto (Atarraya
+// se abrió o volvió); si no, el informe va a lo sumo cada 30 segundos.
+function alVolverAtarraya(conecto = false) {
   listoCola.then(() => {
     for (const [id, s] of [...seguidas]) {
-      if (s.final) entregarFinal(id, true);
+      if (s.probando) decidirToma(id);
+      else if (s.final) entregarFinal(id, true);
       else if (s.sinConfirmar && !s.sinConfirmar.avisado) {
         s.sinConfirmar.intento = 0;
         avisarSinConfirmar(id);
       }
     }
+    enviarInforme(conecto);
   });
+}
+
+// Lo que sabe la extensión de las descargas del navegador de la cola, para que Atarraya lo junte con su cola y su lista
+// (ver informeDeSeguidas en cola-navegador.js): nunca quedan dos descargas de la misma parte ni una parte sin dueño
+let ultimoInforme = 0;
+function enviarInforme(ya) {
+  if (!instancia || (!ya && Date.now() - ultimoInforme < 30000)) return;
+  ultimoInforme = Date.now();
+  hablar(informeDeSeguidas(instancia, [...seguidas]))
+    .then((r) => {
+      if (!r || !r.ok) ultimoInforme = 0;   // Atarraya no estaba: va la próxima vez que conteste
+    })
+    .catch(() => {
+      ultimoInforme = 0;
+    });
 }
 
 // Mientras se sigue alguna, se mira cada 3 segundos (el aviso de cómo va sale cada 5)
@@ -619,7 +653,8 @@ api.downloads.onChanged.addListener((cambio) => {
 
 // Una descarga de una parte de la cola (Atarraya dijo que es suya, sin duda)
 async function descargaDeLaCola(item, datos, r) {
-  const toma = "n" + item.id + "-" + Date.now().toString(36);
+  await listoCola;
+  const toma = tomaNueva(instancia, item.id, Date.now());
   // El sitio no deja que otro programa siga sus descargas (Atarraya lo recuerda), o salió de un formulario y no hubo
   // redirección (esa dirección no se puede pedir otra vez): el navegador la baja y la extensión la sigue
   const sinRedireccion = !item.finalUrl || item.finalUrl === item.url;
@@ -627,6 +662,20 @@ async function descargaDeLaCola(item, datos, r) {
     seguirEnNavegador(item, datos, toma);
     return;
   }
+  // Se anota antes de pasársela a Atarraya (en storage.local): si este «service worker» se apaga o el navegador se cierra
+  // mientras se decide quién la baja, al despertar sigue decidiendo (ver decidirToma) y nunca queda sin dueño
+  seguidas.set(item.id, {
+    toma,
+    pagina: datos.paginaCola || datos.pagina || "",
+    url: datos.url,
+    referer: datos.referer || "",
+    ultimoAviso: 0,
+    ultimoBytes: -1,
+    ultimoEstado: "",
+    desde: Date.now(),
+    probando: { desde: Date.now() },
+  });
+  guardarCola();
   // Atarraya prueba seguirla con una conexión, con las cookies y la página de origen; la del navegador sigue mientras
   let ok = false;
   try {
@@ -638,60 +687,90 @@ async function descargaDeLaCola(item, datos, r) {
     seguirEnNavegador(item, datos, toma);
     return;
   }
-  // Decide Atarraya (ver TomaDelNavegador en cola-navegador.js): nunca quedan las dos descargas
-  const decision = new TomaDelNavegador(Date.now());
-  for (;;) {
-    await esperar(1000);
-    let e = null;
-    try {
-      e = await hablar({ tipo: "toma", toma });
-    } catch (x) {}
-    const accion = decision.paso(e && e.ok ? e.estado : "", Date.now());
-    if (accion === "esperar") continue;
-    if (accion === "soltar") {
-      // Se acabó el plazo: que Atarraya suelte la suya (si todavía no la tomó); su respuesta dice quién la baja
+  await decidirToma(item.id);
+}
+
+// Decide con Atarraya quién baja una parte (ver TomaDelNavegador en cola-navegador.js): nunca quedan las dos descargas.
+// Lo que se está decidiendo queda anotado («probando», con cuándo empezó): si el «service worker» se apaga, al despertar
+// sigue desde donde iba.
+async function decidirToma(id) {
+  await listoCola;
+  const s0 = seguidas.get(id);
+  if (!s0 || !s0.probando || decidiendo.has(id)) return;
+  decidiendo.add(id);
+  const toma = s0.toma;
+  const datosDe = (s) => ({ paginaCola: s.pagina, url: s.url, referer: s.referer });
+  try {
+    const decision = new TomaDelNavegador(Number(s0.probando.desde) || Date.now());
+    // Atarraya tiene la suya en pausa hasta saber (por ejemplo, se cerró en el medio y al abrirse la retuvo)
+    let retenida = false;
+    for (;;) {
+      await esperar(1000);
+      const s = seguidas.get(id);
+      if (!s || s.toma !== toma || !s.probando) return;   // ya se resolvió por otro lado
+      let e = null;
       try {
-        await hablar({ tipo: "soltar", toma });
+        e = await hablar({ tipo: "toma", toma });
       } catch (x) {}
-      continue;
-    }
-    if (accion === "cancelar") {
-      // Atarraya ya recibe el archivo: la del navegador sobra. Si no se pudo cancelar (por ejemplo, el navegador ya la
-      // había terminado), sigue la del navegador y Atarraya quita la suya cuando la extensión le avisa
-      let cancelo = true, consulto = true;
-      try {
-        await api.downloads.cancel(item.id);
-      } catch (x) {
-        cancelo = false;
-      }
-      let ahora = null;
-      try {
-        [ahora] = await api.downloads.search({ id: item.id });
-      } catch (x) {
-        consulto = false;
-      }
-      const r = resultadoCancelar(ahora, cancelo, consulto);
-      if (r === "cancelada") {
+      if (e && e.ok) retenida = e.sinConfirmar === true;
+      const accion = decision.paso(e && e.ok ? e.estado : "", Date.now());
+      if (accion === "esperar") continue;
+      if (accion === "soltar") {
+        // Se acabó el plazo: que Atarraya suelte la suya (si todavía no la tomó); su respuesta dice quién la baja
         try {
-          await api.downloads.erase({ id: item.id });
+          await hablar({ tipo: "soltar", toma });
+        } catch (x) {}
+        continue;
+      }
+      if (accion === "cancelar") {
+        // Atarraya ya recibe el archivo: la del navegador sobra. Si no se pudo cancelar (por ejemplo, el navegador ya la
+        // había terminado), sigue la del navegador y Atarraya quita la suya cuando la extensión le avisa
+        let cancelo = true, consulto = true;
+        try {
+          await api.downloads.cancel(id);
         } catch (x) {
-          // Ya no baja; solo queda en la lista del navegador
+          cancelo = false;
         }
-        return;
+        let ahora = null;
+        try {
+          [ahora] = await api.downloads.search({ id });
+        } catch (x) {
+          consulto = false;
+        }
+        const r = resultadoCancelar(ahora, cancelo, consulto);
+        if (r === "cancelada") {
+          try {
+            await api.downloads.erase({ id });
+          } catch (x) {
+            // Ya no baja; solo queda en la lista del navegador
+          }
+          if (retenida) {
+            // Atarraya espera saberlo para seguir con la suya: se le avisa como un aviso final, hasta que lo confirma
+            delete s.probando;
+            anotarFinal(id, s, { tipo: "confirmada", toma, estado: "cancelada" });
+          } else {
+            seguidas.delete(id);
+            guardarCola();
+          }
+          return;
+        }
+        if (r === "sinConfirmar") {
+          // No se pudo cancelar ni saber cómo quedó: pueden estar bajando las dos. Atarraya pausa la suya y la parte no
+          // sigue hasta saberlo; la extensión lo sigue mirando (ver revisarSeguida)
+          console.warn("Atarraya: no se pudo cancelar ni revisar la descarga del navegador; queda sin confirmar");
+          anotarSinConfirmar({ id }, datosDe(s), toma);
+          return;
+        }
+        console.warn("Atarraya: no se pudo cancelar la descarga del navegador (" + r + (cancelo ? "" : ", con error") + "); sigue esa");
       }
-      if (r === "sinConfirmar") {
-        // No se pudo cancelar ni saber cómo quedó: pueden estar bajando las dos. Atarraya pausa la suya y la parte no
-        // sigue hasta saberlo; la extensión lo sigue mirando (ver revisarSeguida)
-        console.warn("Atarraya: no se pudo cancelar ni revisar la descarga del navegador; queda sin confirmar");
-        anotarSinConfirmar(item, datos, toma);
-        return;
-      }
-      console.warn("Atarraya: no se pudo cancelar la descarga del navegador (" + r + (cancelo ? "" : ", con error") + "); sigue esa");
+      break;
     }
-    break;
+    // La baja el navegador (Atarraya la soltó, no pudo, o no contesta): la extensión la sigue hasta el final
+    const s = seguidas.get(id);
+    if (s && s.toma === toma && s.probando) seguirEnNavegador({ id }, datosDe(s), toma);
+  } finally {
+    decidiendo.delete(id);
   }
-  // La baja el navegador (Atarraya la soltó, no pudo, o no contesta): la extensión la sigue hasta el final
-  seguirEnNavegador(item, datos, toma);
 }
 
 api.downloads.onCreated.addListener(async (item) => {
