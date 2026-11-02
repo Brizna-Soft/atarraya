@@ -161,7 +161,7 @@ namespace hnd
         void CambiarGrupo(uint64_t id, const std::wstring& paquete, const std::string& grupo);
         void UnirGrupos(const std::string& viejo, const std::string& nuevo, const std::wstring& paquete);
         void FijarIdentidad(uint64_t id, const IdentidadArchivo& identidad);
-        void MarcarDescomprimido(uint64_t id);
+        void MarcarDescomprimido(uint64_t id, bool si = true);
 
         // Recoge las conexiones que terminaron (para que la cola compartida vea los estados al día)
         void Recoger();

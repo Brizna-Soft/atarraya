@@ -3,7 +3,8 @@
 // lo que le llegó por la entrada (en hexadecimal), para que las pruebas revisen que la contraseña nunca va en la línea
 // de comandos y que llega entera por la entrada.
 //
-// Códigos de salida, como Jícaro: 0 bien (la contraseña es «buena»), 4 hace falta contraseña, 7 contraseña incorrecta.
+// Códigos de salida, como Jícaro: 0 bien (la contraseña es «buena» o termina en «-buena»), 4 hace falta contraseña,
+// 7 contraseña incorrecta.
 
 #include <windows.h>
 
@@ -47,5 +48,6 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
     }
     if (!conContrasena) return linea.find(L"cifrado") != std::wstring::npos ? 4 : 0;
     if (entrada.empty()) return 4;
-    return entrada == "buena" ? 0 : 7;
+    bool buena = entrada == "buena" || (entrada.size() > 6 && entrada.compare(entrada.size() - 6, 6, "-buena") == 0);
+    return buena ? 0 : 7;
 }

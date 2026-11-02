@@ -642,10 +642,11 @@ std::wstring hnd::jicaro::Texto(Resultado r, const std::wstring& nombre, const s
         return L"A " + n + L" le faltan partes. Jícaro dice cuáles en su ventana: bájalas, ponlas en la misma carpeta y ábrelo otra "
                L"vez con Jícaro.";
     case Resultado::Contrasena:
-        return n + L" tiene contraseña (o un cifrado que Jícaro no abre). Escribe la contraseña del paquete y Atarraya lo descomprime. "
+        return n + L" tiene contraseña (o un cifrado que Jícaro no abre). Pulsa «Escribir la contraseña...» y Atarraya lo descomprime. "
                L"Las partes siguen en su carpeta.";
     case Resultado::ContrasenaIncorrecta:
-        return L"La contraseña de " + n + L" no sirve. Escribe otra y Atarraya lo intenta de nuevo. Las partes siguen en su carpeta.";
+        return L"La contraseña de " + n + L" no sirve. Pulsa «Escribir la contraseña...», escribe otra y Atarraya lo intenta de nuevo. "
+               L"Las partes siguen en su carpeta.";
     case Resultado::JicaroViejo:
         return n + L" tiene contraseña, y para pasársela a Jícaro hace falta Jícaro 0.2.0 o más nuevo. Actualiza Jícaro desde su página "
                L"y vuelve a intentarlo. Las partes siguen en su carpeta.";

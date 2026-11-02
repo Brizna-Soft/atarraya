@@ -1353,13 +1353,13 @@ namespace hnd
         m_sucio = true;
     }
 
-    void Motor::MarcarDescomprimido(uint64_t id)
+    void Motor::MarcarDescomprimido(uint64_t id, bool si)
     {
         std::lock_guard g(m_lista);
         auto x = Encontrar(id);
         if (!x) return;
         std::lock_guard g2(x->m);
-        x->d.descomprimido = true;
+        x->d.descomprimido = si;
         m_sucio = true;
     }
 

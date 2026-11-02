@@ -452,6 +452,8 @@ public:
     explicit Bandeja(VentanaPrincipal* v) : m_v(v)
     {
         Bind(wxEVT_TASKBAR_LEFT_DCLICK, [this](wxTaskBarIconEvent&) { m_v->Mostrar(); });
+        // Al pulsar un aviso (por ejemplo, «la contraseña no sirve»), se ve Atarraya con lo que dice y sus botones
+        Bind(wxEVT_TASKBAR_BALLOON_CLICK, [this](wxTaskBarIconEvent&) { m_v->Mostrar(); });
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->Mostrar(); }, ID_MOSTRAR);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->NuevaDescarga({}, false); }, ID_AGREGAR);
         Bind(wxEVT_MENU, [this](wxCommandEvent&) { m_v->AbrirRecolector(false); }, ID_VARIOS);
@@ -3088,7 +3090,8 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
 
 std::string VentanaPrincipal::ClaveDeContrasena(const DatosDescarga& d) const
 {
-    return d.grupo.empty() ? "d" + std::to_string(d.id) : d.grupo;
+    // «:» no sale nunca en un grupo (son letras y números): no se confunden
+    return d.grupo.empty() ? "descarga:" + std::to_string(d.id) : d.grupo;
 }
 
 void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
@@ -3147,6 +3150,8 @@ void VentanaPrincipal::SiguienteJicaro()
             {
                 contrasenas::Borrar(clave);
                 Registrar("jícaro: el paquete tiene contraseña y Jícaro es anterior a la 0.2.0; no se abrió");
+                // Queda por descomprimir: con un Jícaro nuevo, se intenta otra vez al escribir (o confirmar) la contraseña
+                for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
                 MostrarResultadoJicaro(std::move(t), jicaro::Resultado::JicaroViejo);
                 continue;
             }
@@ -3208,6 +3213,12 @@ void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
             return;
         }
         r = jicaro::Resultado::ContrasenaIncorrecta;
+    }
+    // Sin una contraseña que sirva, el juego queda por descomprimir: en cuanto la persona escriba la del paquete (con el
+    // botón de este aviso o desde el menú del paquete, también después de cerrar Atarraya), Jícaro lo intenta de nuevo
+    if (jicaro::PideContrasena(r))
+    {
+        for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, false);
     }
     MostrarResultadoJicaro(std::move(t), r);
     SiguienteJicaro();
@@ -3398,20 +3409,38 @@ bool VentanaPrincipal::EscribirContrasena(const std::string& clave, const std::w
     GuardarContrasenas();
     contrasenas::Borrar(lista);
     Registrar("contraseñas: se guardó la de un paquete (cifrada)");
-    // Los juegos de ese paquete que esperaban una contraseña: Jícaro sigue con ellos
+    // Los juegos de ese paquete que esperaban una contraseña (o un Jícaro nuevo): Jícaro sigue con ellos, en la misma
+    // carpeta de antes
     size_t otraVez = 0;
     for (auto it = m_resultadosJicaro.begin(); it != m_resultadosJicaro.end();)
     {
-        if (it->t.clave == clave && jicaro::PideContrasena(it->r))
+        if (it->t.clave == clave && (jicaro::PideContrasena(it->r) || it->r == jicaro::Resultado::JicaroViejo))
         {
             TrabajoJicaro t = std::move(it->t);
             t.intento = 0;
             t.conContrasena = false;
+            for (const auto& p : t.partes) m_motor.MarcarDescomprimido(p.descarga, true);
             m_colaJicaro.push_back(std::move(t));
             it = m_resultadosJicaro.erase(it);
             otraVez++;
         }
         else ++it;
+    }
+    // Y los que quedaron por descomprimir sin aviso a la vista (se cerró el aviso, o Atarraya se cerró): se vuelven a mirar
+    // los juegos completos del paquete; los que ya se descomprimieron bien no se tocan
+    const std::string suelta = "descarga:";
+    for (auto it = m_jicaroVistos.begin(); it != m_jicaroVistos.end();)
+    {
+        bool deEste = clave.rfind(suelta, 0) == 0 ? *it == "descarga " + clave.substr(suelta.size()) : it->rfind("juego " + clave + " ", 0) == 0;
+        it = deEste ? m_jicaroVistos.erase(it) : std::next(it);
+    }
+    for (const auto& f : m_motor.Fotos())
+    {
+        if (f.torrent || ClaveDeContrasena(f.datos) != clave || f.datos.estado != Estado::Completada || f.datos.nombre.empty()) continue;
+        auto nuevos = PrepararJicaro(f.datos);
+        otraVez += nuevos.size();
+        EncolarJicaro(std::move(nuevos));
+        break;
     }
     if (otraVez) Registrar("jícaro: " + std::to_string(otraVez) + (otraVez == 1 ? " juego vuelve" : " juegos vuelven") + " a descomprimirse con la contraseña nueva");
     ActualizarBarraJicaro();

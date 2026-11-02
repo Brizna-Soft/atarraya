@@ -167,7 +167,7 @@ private:
     void CrearBarraJicaro(wxWindow* padre);
     void ActualizarBarraJicaro();
     void BorrarPartes();   // solo cuando la persona lo pulsa: a la Papelera
-    // Contraseñas de los paquetes (cifradas). «clave»: el grupo del paquete, o «d<id>» para una descarga suelta.
+    // Contraseñas de los paquetes (cifradas). «clave»: el grupo del paquete, o «descarga:<id>» para una suelta.
     std::string ClaveDeContrasena(const hnd::DatosDescarga& d) const;
     // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue
     bool EscribirContrasena(const std::string& clave, const std::wstring& nombre, bool incorrecta);
