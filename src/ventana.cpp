@@ -635,27 +635,30 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     // las que no bajaron no llegaron al recolector, se intenta otra vez.
     // La cola va en el mismo archivo que la lista de descargas y se guardan juntas, de una vez: entre las dos nunca queda
     // nada a medias. La de antes tenía su propio archivo: se pasa una sola vez y ese archivo se borra.
+    auto origen = m_sitios.CargarAlAbrir(m_motor.AnexoCargado());
+    if (origen != DeUnaEnUna::Origen::NoSePudo)
     {
-        std::string anexo = m_motor.AnexoCargado();
-        nlohmann::json a;
-        try
-        {
-            if (!anexo.empty()) a = nlohmann::json::parse(anexo);
-        }
-        catch (...)
-        {
-        }
-        bool deAntes = !a.is_object() || !a.contains("cola");
-        if (deAntes) m_sitios.Cargar();
-        else m_sitios.DesdeJson(a["cola"]);
         m_motor.anexo = [this](nlohmann::json& x) { x = { { "cola", m_sitios.ComoJson() } }; };
         m_sitios.guardarJunto = [this]() { return m_motor.Guardar(); };
-        if (deAntes && m_motor.Guardar())
+        // La de antes: primero queda guardada en el archivo nuevo y recién después se borra la vieja
+        if (origen == DeUnaEnUna::Origen::DeAntes && m_motor.Guardar())
         {
             std::wstring vieja = hnd::CarpetaDatos() + L"\\de-una-en-una.json";
-            if (GetFileAttributesW(vieja.c_str()) != INVALID_FILE_ATTRIBUTES && DeleteFileW(vieja.c_str()))
-                Registrar("de una en una: la cola pasó al archivo de la lista de descargas");
+            if (DeleteFileW(vieja.c_str())) Registrar("de una en una: la cola pasó al archivo de la lista de descargas");
         }
+    }
+    else
+    {
+        // Hay una cola que no se pudo leer: no se toca nada (ni se escribe la cola nueva ni se borra la vieja) y se intenta
+        // otra vez al abrir. Mientras tanto la cola no acepta páginas: si se guardara una cola nueva, la de antes se perdería.
+        // La lista de descargas se sigue guardando como siempre (sin cola, o con la que tenía, tal cual).
+        m_sitios.guardarJunto = []() { return false; };
+        Registrar("de una en una: no se pudo leer la cola guardada; no se tocó y se intenta otra vez al abrir Atarraya");
+        CallAfter([this]() {
+            Avisar(L"De una en una", L"No se pudo leer la cola de «de una en una» que quedó guardada. Atarraya no la tocó: lo intenta otra "
+                                     L"vez cuando lo vuelvas a abrir. Mientras tanto no se pueden agregar páginas a la cola.",
+                   true);
+        });
     }
     m_sitiosNavegador.Cargar();
     // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola

@@ -187,6 +187,19 @@ function finalEntregado(respuesta, final) {
   return respuesta.espera === false ? "listo" : "repetir";
 }
 
+// Pasa una descarga de la cola (a Atarraya o al navegador) recién cuando quedó guardado (storage.local) quién la baja:
+// si el «service worker» se apaga en el medio, al despertar se sabe y nunca quedan dos. «guardar» devuelve (o promete) si
+// se guardó; si no, no se pasa y se hace «siNo». Devuelve lo que devuelva la que se hizo.
+async function despuesDeGuardar(guardar, pasar, siNo) {
+  let ok = false;
+  try {
+    ok = (await guardar()) === true;
+  } catch (e) {
+    ok = false;
+  }
+  return ok ? pasar() : siNo();
+}
+
 // Cada extensión (en cada perfil de cada navegador) tiene su «instancia», al azar y una sola vez, que va al principio de
 // cada «toma»: así Atarraya sabe de qué extensión es cada descarga del navegador, aunque haya varios navegadores
 // conectados, y solo le cree a esa extensión lo que cuenta de ella. «azar»: una función que llena un Uint8Array.
@@ -242,5 +255,5 @@ function seguidasGuardadas(lista, ahora) {
 if (typeof module !== "undefined") {
   module.exports = { PestanasDeLaCola, paginaPorAbrir, sitioBase, avisoDeSeguimiento, TomaDelNavegador, resultadoCancelar,
                      resolverSinConfirmar, tocaFinal, finalEntregado, seguidasGuardadas, nuevaInstancia, instanciaValida,
-                     tomaNueva, instanciaDeToma, informeDeSeguidas };
+                     tomaNueva, instanciaDeToma, informeDeSeguidas, despuesDeGuardar };
 }

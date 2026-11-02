@@ -201,27 +201,58 @@ bool hnd::GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& reco
 
 hnd::DeUnaEnUna::DeUnaEnUna(std::wstring archivo) : m_archivo(std::move(archivo)) {}
 
-void hnd::DeUnaEnUna::Cargar()
+hnd::DeUnaEnUna::Carga hnd::DeUnaEnUna::Cargar()
 {
     m_partes.clear();
+    if (GetFileAttributesW(m_archivo.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        DWORD e = GetLastError();
+        return e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND ? Carga::NoHay : Carga::NoSePudo;
+    }
     std::string texto;
-    if (!LeerArchivo(m_archivo, texto)) return;
+    if (!LeerArchivo(m_archivo, texto)) return Carga::NoSePudo;   // está, pero no se pudo leer (por ejemplo, otro lo tiene abierto)
     try
     {
-        DesdeJson(json::parse(texto));
+        if (DesdeJson(json::parse(texto))) return Carga::Bien;
     }
     catch (...)
     {
-        m_partes.clear();
-        CopyFileW(m_archivo.c_str(), (m_archivo + L".danado").c_str(), FALSE);
+    }
+    m_partes.clear();
+    CopyFileW(m_archivo.c_str(), (m_archivo + L".danado").c_str(), FALSE);   // una copia para revisarla; el archivo queda igual
+    return Carga::NoSePudo;
+}
+
+hnd::DeUnaEnUna::Origen hnd::DeUnaEnUna::CargarAlAbrir(const std::string& anexo)
+{
+    m_partes.clear();
+    if (!anexo.empty())
+    {
+        try
+        {
+            json a = json::parse(anexo);
+            if (a.is_object() && a.contains("cola")) return DesdeJson(a["cola"]) ? Origen::Bien : Origen::NoSePudo;
+        }
+        catch (...)
+        {
+            m_partes.clear();
+            return Origen::NoSePudo;
+        }
+    }
+    switch (Cargar())
+    {
+    case Carga::NoHay: return Origen::Bien;   // nada que pasar
+    case Carga::Bien: return Origen::DeAntes;
+    default: return Origen::NoSePudo;
     }
 }
 
-void hnd::DeUnaEnUna::DesdeJson(const json& todo)
+bool hnd::DeUnaEnUna::DesdeJson(const json& todo)
 {
     m_partes.clear();
     try
     {
+        if (!todo.is_object() || !todo.contains("partes") || !todo["partes"].is_array()) return false;
         for (auto& j : todo.at("partes"))
         {
             Parte p;
@@ -261,10 +292,12 @@ void hnd::DeUnaEnUna::DesdeJson(const json& todo)
     catch (...)
     {
         m_partes.clear();
+        return false;
     }
     // Si ya no queda nada por hacer ni por devolver, no hay nada que mostrar. Las saltadas o con error se quedan en la
     // cola hasta que lleguen al recolector (por ejemplo, si la última vez no se pudo guardar el recolector).
     if (Terminada() && Sobrantes().empty()) m_partes.clear();
+    return true;
 }
 
 json hnd::DeUnaEnUna::ComoJson() const
