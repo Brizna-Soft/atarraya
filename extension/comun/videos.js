@@ -182,19 +182,33 @@
     const src = srcDe(v);
     mostrarTexto("Enviando a Atarraya...", 15000);
     let r = null;
+    let fallo = null;
     try {
       r = await api.runtime.sendMessage({
         tipo: "bajarVideo",
         src: /^https?:/i.test(src) ? src : "",
         alto: v.videoHeight || 0,
+        // Cuánto dura: en una página con varios videos, distingue la lista de este de las de los otros
+        duracion: Number.isFinite(v.duration) && v.duration > 0 ? v.duration : 0,
         protegido: false,
         marco: urlPropia(),
       });
     } catch (err) {
-      r = null;
+      fallo = err || new Error("");
     }
     if (r && r.ok) mostrarTexto("Enviado a Atarraya", 3000);
-    else mostrarTexto((r && r.texto) || "No se pudo hablar con Atarraya.", 7000);
+    else if (r && r.texto) mostrarTexto(r.texto, 7000);
+    // La extensión no contestó (por ejemplo, se actualizó mientras esta página seguía abierta): eso no es Atarraya
+    else mostrarTexto(textoSinRespuesta(fallo, extensionViva()), 7000);
+  }
+
+  // ¿Este marco todavía habla con la extensión? Si la extensión se actualizó o se recargó, el de antes se queda sin ella
+  function extensionViva() {
+    try {
+      return !!(api.runtime && api.runtime.id);
+    } catch (e) {
+      return false;
+    }
   }
 
   // Antes de mostrar el botón se le pregunta a la extensión si el video viene de YouTube o de un sitio con DRM aunque

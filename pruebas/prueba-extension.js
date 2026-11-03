@@ -10,7 +10,9 @@ const { PestanasDePedidos: Pestanas, paginaDeOrigen: origen } = enNode
 const M = enNode
   ? require("../extension/comun/medios.js")
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
-      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION };
+      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, TEXTO_SIN_HABLAR,
+      TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA, puedeSerLista, formatoPorContenido,
+      puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo, textoSinRespuesta, MAXIMO_MIRADAS };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
@@ -252,6 +254,95 @@ comprobar(M.esSitioProtegido("https://www.netflix.com/watch/1") && M.esSitioProt
     "videos: los sitios de arriba para las cookies partidas de un marco de otro sitio");
 }
 
+// --- Listas que no dicen que lo son (como las de LinkedIn) ------------------------------------------------------------
+// Las direcciones de LinkedIn: sin extensión, con partes numeradas
+const LI = (n) => "https://dms.licdn.com/playlist/vid/v2/D5605AQprueba/hls-2Mbps-premium-quality-analysis/9f8e7d6c5b/" + n
+  + "/1730000000000?e=1730003600&v=beta&t=abc";
+comprobar(c(LI(1), "application/vnd.apple.mpegurl").formato === "hls" && c(LI(1), "application/x-mpegURL").formato === "hls"
+  && c(LI(1), "application/dash+xml").formato === "dash",
+  "videos: una lista sin extensión en la dirección se reconoce por su tipo (mpegurl, x-mpegURL, dash+xml)");
+comprobar(M.puedeSerLista(LI(1), "application/octet-stream", 1382, "GET") && M.puedeSerLista(LI(1), "binary/octet-stream", -1, "GET")
+  && M.puedeSerLista(LI(1), "", 1382, "GET") && M.puedeSerLista(LI(1), "text/plain; charset=utf-8", 1382, undefined)
+  && M.puedeSerLista("https://cdn.ej.org/x/abc", "application/octet-stream", 900000, "GET"),
+  "videos: una respuesta sin extensión y con un tipo que no dice nada puede ser una lista (se anota para mirarla si se pulsa el botón)");
+comprobar(!M.puedeSerLista(LI(1), "application/octet-stream", 1382, "POST") && !M.puedeSerLista(LI(1), "application/json", 1382, "GET")
+  && !M.puedeSerLista(LI(1), "image/gif", 43, "GET") && !M.puedeSerLista("https://ej.org/app.js", "application/octet-stream", 900, "GET")
+  && !M.puedeSerLista("https://ej.org/x/seg-12.ts", "application/octet-stream", 900, "GET")
+  && !M.puedeSerLista("https://ej.org/api/beacon", "text/plain", 20, "GET") && !M.puedeSerLista(LI(1), "application/octet-stream", 50 * 1024 * 1024, "GET")
+  && !M.puedeSerLista("blob:https://ej.org/1", "", 10, "GET") && !M.puedeSerLista("nada", "", 10, "GET"),
+  "videos: nada de lo que no puede ser una lista (otro método, JSON, imágenes, scripts, trozos, texto sin pista de video, muy grande)");
+const listaHls = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.000,\n../2/1730000000000?e=1\n#EXTINF:4.0,\n../3/x\n"
+  + "#EXTINF:3.5,\n../4/x\n#EXT-X-ENDLIST\n";
+const maestra = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\nhls-720/lista?x=1\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nhttps://otro.cdn/480.m3u8\n";
+const mpd = '<?xml version="1.0" encoding="UTF-8"?>\n<!-- hecho a mano -->\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" '
+  + 'mediaPresentationDuration="PT1M3.5S" minBufferTime="PT2S"><Period/></MPD>';
+comprobar(M.formatoPorContenido(listaHls) === "hls" && M.formatoPorContenido("﻿  \r\n#EXTM3U\n") === "hls" && M.formatoPorContenido(mpd) === "dash"
+  && M.formatoPorContenido('<mpd:MPD xmlns:mpd="urn:mpeg:dash:schema:mpd:2011">') === "dash" && M.formatoPorContenido("<html><body>") === ""
+  && M.formatoPorContenido("\u0000\u0000\u0000\u0018ftypiso5") === "" && M.formatoPorContenido("G@\u0011\u0010") === "" && M.formatoPorContenido(null) === ""
+  && M.formatoPorContenido("<?xml version='1.0'?><MPDX/>") === "",
+  "videos: por dentro, una lista HLS empieza con #EXTM3U y un manifiesto DASH es un <MPD> (lo demás no)");
+comprobar(M.puedeSerTextoDeLista("#EXT") && M.puedeSerTextoDeLista("#EXTM3U\n#EXT-X") && M.puedeSerTextoDeLista("  <?xml")
+  && !M.puedeSerTextoDeLista("\u0000\u0000\u0000\u0018ftypiso5") && !M.puedeSerTextoDeLista("{\"a\":1, \"b\": 2}"),
+  "videos: al mirar por dentro, se deja de bajar en cuanto el principio no es de una lista");
+const h1 = M.leerHls(listaHls, LI(1));
+const h2 = M.leerHls(maestra, "https://cdn.ej.org/v/master?id=7");
+const h3 = M.leerHls("#EXTM3U\n#EXTINF:4,\na\n#EXTINF:4,\nb\n", "https://ej.org/vivo");
+comprobar(!h1.maestra && h1.duracion === 11.5 && h2.maestra && h2.primera === "https://cdn.ej.org/v/hls-720/lista?x=1" && h2.duracion === -1
+  && h3.duracion === -1,
+  "videos: una lista HLS dice cuánto dura (la suma de sus partes); la principal, cuál es su primera calidad; en vivo, no se sabe");
+comprobar(M.duracionDash(mpd) === 63.5 && M.duracionDash('<MPD mediaPresentationDuration="PT16S">') === 16
+  && M.duracionDash('<MPD mediaPresentationDuration="P0DT1H0M0S">') === 3600 && M.duracionDash('<MPD type="dynamic">') === -1
+  && M.duracionDash('<MPD mediaPresentationDuration="mucho">') === -1,
+  "videos: un manifiesto DASH dice cuánto dura");
+{
+  const a = { url: "a" }, b = { url: "b" }, v = { url: "v" }, x = { url: "x" };
+  comprobar(M.elegirLista([{ entrada: b, duracion: 24, orden: 2 }, { entrada: a, duracion: 16, orden: 1 }], 0) === a
+    && M.elegirLista([], 16) === null && M.elegirLista(null, 16) === null,
+    "videos: sin la duración del video, la primera lista que pidió el marco (como siempre)");
+  comprobar(M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 24.02) === b
+    && M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 16.4) === a,
+    "videos: con varios videos en la página (como el inicio de LinkedIn), la lista que dura lo mismo que el video pulsado");
+  comprobar(M.elegirLista([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, orden: 1 }], 16) === a,
+    "videos: entre la principal y una de sus calidades, la principal (Atarraya deja elegir la calidad)");
+  comprobar(M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: x, duracion: -1, orden: 3 }], 50) === x
+    && M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 50) === null,
+    "videos: si ninguna dura lo mismo, una que no dice cuánto dura; si todas dicen otra cosa, ninguna (son de otros videos)");
+}
+comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true) === M.TEXTO_EXTENSION_REINICIADA
+  && M.textoSinRespuesta(null, false) === M.TEXTO_EXTENSION_REINICIADA
+  && M.textoSinRespuesta(new Error("Could not establish connection. Receiving end does not exist."), true) === M.TEXTO_EXTENSION_CALLADA
+  && M.textoSinRespuesta(null, true) === M.TEXTO_EXTENSION_CALLADA,
+  "videos: si la extensión no contesta, el botón dice por qué (se reinició: recargar la página), no que falló Atarraya");
+comprobar([M.TEXTO_SIN_ARCHIVO, M.TEXTO_FALLO_EXTENSION, M.TEXTO_EXTENSION_REINICIADA, M.TEXTO_EXTENSION_CALLADA, M.TEXTO_SIN_TRANSMISION]
+    .every((t) => typeof t === "string" && t.length > 10 && !/hablar con Atarraya/.test(t))
+  && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video." && /^No se pudo hablar con Atarraya/.test(M.TEXTO_SIN_HABLAR),
+  "videos: «No se pudo hablar con Atarraya» es solo para cuando falló hablar con el programa");
+{
+  // Las respuestas dudosas: por marco, sin repetir, con tope, y se olvidan con su marco o su pestaña
+  const m = new M.MediosPorPestana(4);
+  m.dudosa(5, { url: LI(1), frameId: 0, tamano: 1382, tipoMime: "application/octet-stream" }, 10);
+  m.dudosa(5, { url: LI(1), frameId: 0, tamano: 1382 }, 11);
+  m.dudosa(5, { url: "https://otro.net/p/1", frameId: 2, tamano: -1 }, 12);
+  m.dudosa(5, { url: "https://r1---sn.googlevideo.com/videoplayback", frameId: 0 }, 13);
+  comprobar(m.dudosasDe(5, 0).length === 1 && m.dudosasDe(5, 0)[0].cuando === 11 && m.dudosasDe(5, 2).length === 1 && m.dudosasDe(9, 0).length === 0
+    && m.lista(5).length === 0,
+    "videos: una respuesta dudosa se anota por marco (una vez, nada de YouTube) y no sale en la ventanita");
+  for (let i = 2; i <= 6; i++) m.dudosa(5, { url: LI(i), frameId: 0, tamano: 300000 }, 20 + i);
+  comprobar(m.dudosasDe(5, 0).length + m.dudosasDe(5, 2).length === 4 && !m.dudosasDe(5, 0).some((d) => d.url === LI(1)),
+    "videos: hay un tope de respuestas dudosas por pestaña (se van las más viejas)");
+  const otra = new M.MediosPorPestana(4);
+  otra.cargar(JSON.parse(JSON.stringify(m.exportar())));
+  comprobar(otra.dudosasDe(5, 0).length === m.dudosasDe(5, 0).length,
+    "videos: las respuestas dudosas se guardan y vuelven aunque el «service worker» se apague");
+  m.sinDudas(5, LI(6));
+  m.borrarMarco(5, 2);
+  comprobar(!m.dudosasDe(5, 0).some((d) => d.url === LI(6)) && m.dudosasDe(5, 2).length === 0,
+    "videos: una respuesta que ya se miró no se vuelve a mirar; un marco que cambia de página olvida las suyas");
+  m.bloquearMarco(5, 0, "youtube");
+  m.dudosa(5, { url: LI(9), frameId: 0 }, 99);
+  comprobar(m.dudosasDe(5, 0).length === 0, "videos: un marco bloqueado (YouTube o DRM) no guarda respuestas dudosas");
+}
+
 // background.js nunca pregunta por la pestaña activa ni por la última ventana, y solo mira (no bloquea nada).
 // Los dos manifiestos: el botón sobre los videos va en todos los marcos, pero nunca en YouTube.
 if (enNode) {
@@ -268,8 +359,19 @@ if (enNode) {
     "extensión: el botón solo responde a un clic de la persona, no aparece en YouTube y no usa innerHTML");
   comprobar(/tipo: "revisarVideo"/.test(videos) && /case "revisarVideo"/.test(fondo) && /onBeforeRedirect/.test(fondo) && /bloquearMarco/.test(fondo),
     "extensión: antes de mostrar el botón pregunta si el video viene de YouTube (también por una redirección o por su marco)");
-  comprobar(/if \(!entrada\) return \{ ok: false, texto: TEXTO_SIN_TRANSMISION \}/.test(fondo) && !/flujos\[0\]/.test(leer("../extension/comun/medios.js")),
-    "extensión: el botón de un «blob:» sin lista en su marco no manda nada a Atarraya");
+  comprobar(/return \{ ok: false, texto: algo \? TEXTO_SIN_ARCHIVO : TEXTO_SIN_TRANSMISION \}/.test(fondo) && !/flujos\[0\]/.test(leer("../extension/comun/medios.js")),
+    "extensión: el botón de un «blob:» sin lista en su marco no manda nada a Atarraya (y dice si el video está pero su lista no)");
+  // «No se pudo hablar con Atarraya» solo cuando falló hablar con el programa: ni en un error de la extensión ni cuando
+  // la extensión no contesta
+  const popupJs = leer("../extension/comun/popup.js");
+  comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/TEXTO_SIN_HABLAR/g) || []).length === 1
+    && /catch \(e\) \{\s*\/\/[^\n]*\n\s*console\.warn\("Atarraya: no se pudo pasar el video al programa", e\);\s*return \{ ok: false, texto: TEXTO_SIN_HABLAR \};/.test(fondo)
+    && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, extensionViva\(\)\)/.test(videos),
+    "extensión: «No se pudo hablar con Atarraya» es solo para cuando falló el pedido al programa; un error de la extensión lo dice así");
+  comprobar(/anotarFallo\("botón «Descargar este video»", e\)/.test(fondo) && /hablar\(\{ tipo: "registro", texto \}\)/.test(fondo)
+    && /duracion: Number\.isFinite\(v\.duration\)/.test(videos) && /puedeSerLista\(d\.url, cab\["content-type"\], tamano, d\.method\)/.test(fondo)
+    && /listaDelVideo\(medios, tabId, frameId,/.test(fondo),
+    "extensión: un error del botón queda en el registro de Atarraya; el botón manda la duración del video; las listas dudosas se anotan y se miran al pulsar");
   const popup = leer("../extension/comun/popup.js");
   comprobar(!/innerHTML/.test(popup), "extensión: la ventanita muestra los nombres como texto (sin innerHTML)");
   for (const nav of ["chrome", "firefox"]) {
@@ -579,6 +681,83 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
   const r4 = await C.despuesDeGuardar(() => tarde("sí"), () => "pasada", () => "no");   // solo «true» cuenta
   comprobar(bienOrden && r2 === "no" && JSON.stringify(pasos2) === JSON.stringify(["no"]) && r3 === "no" && r4 === "no",
     "duplicados: la descarga se le pasa a Atarraya recién cuando storage.local confirmó que guardó la decisión; si no, no se pasa");
+
+  // --- El botón de un video «blob:»: su lista, también si no dice que lo es (LinkedIn) --------------------------------
+  {
+    // Como LinkedIn: la parte 1 es la lista (1382 bytes, «application/octet-stream»), las partes 2 a 6 son el video
+    const m = new M.MediosPorPestana();
+    m.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382, tipoMime: "application/octet-stream" }, 100);
+    for (let i = 2; i <= 6; i++) m.dudosa(4, { url: LI(i), frameId: 0, tamano: 300000 + i * 230000, tipoMime: "application/octet-stream" }, 100 + i);
+    const leidas = [];
+    const leer = async (u) => {
+      leidas.push(u);
+      return u === LI(1) ? listaHls : "";
+    };
+    const e = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    comprobar(e && e.url === LI(1) && e.formato === "hls" && leidas[0] === LI(1) && m.transmisionDe(4, 0) === e && m.dudosasDe(4, 0).length === 0
+      && m.lista(4).some((x) => x.url === LI(1)),
+      "LinkedIn: al pulsar el botón, la lista sin extensión ni tipo se reconoce por dentro y pasa a la lista de videos");
+    const otraVez = [];
+    const e2 = await M.listaDelVideo(m, 4, 0, 0, async (u) => { otraVez.push(u); return null; });
+    comprobar(e2 === e && otraVez.length === 0, "LinkedIn: después ya se sabe cuál es (sin la duración, no se pide nada otra vez)");
+  }
+  {
+    // El inicio de LinkedIn: dos videos en el mismo marco, cada uno con su lista; se pulsa el segundo (24 s)
+    const m = new M.MediosPorPestana();
+    const A = (n) => LI(n), B = (n) => LI(n).replace("D5605AQprueba", "D5605AQotro");
+    const lista24 = "#EXTM3U\n#EXTINF:6,\nb2\n#EXTINF:6,\nb3\n#EXTINF:6,\nb4\n#EXTINF:6,\nb5\n#EXT-X-ENDLIST\n";
+    m.dudosa(4, { url: A(1), frameId: 0, tamano: 1382 }, 100);
+    m.dudosa(4, { url: A(2), frameId: 0, tamano: 400000 }, 101);
+    m.dudosa(4, { url: B(1), frameId: 0, tamano: 1500 }, 200);
+    m.dudosa(4, { url: B(2), frameId: 0, tamano: 500000 }, 201);
+    const leer = async (u) => (u === A(1) ? listaHls : u === B(1) ? lista24 : "");
+    const e = await M.listaDelVideo(m, 4, 0, 24, leer);
+    comprobar(e && e.url === B(1), "LinkedIn (inicio con varios videos): el botón de un video baja ese video, no el primero de la página");
+    // Pulsar ahora el primero: ya están las dos en la lista; se elige por su duración
+    const e2 = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    comprobar(e2 && e2.url === A(1), "LinkedIn (inicio con varios videos): y el otro video, su propia lista");
+    // Un video que no es ninguno de los dos: ninguna
+    comprobar((await M.listaDelVideo(m, 4, 0, 90, leer)) === null, "videos: si ninguna lista es la del video, no se manda una de otro video");
+  }
+  {
+    // Una lista que se reconoció por su tipo, pero es de un video de antes (la página cambió sin recargarse); la de
+    // este video llegó como dudosa
+    const m = new M.MediosPorPestana();
+    m.anotar(4, { url: "https://cdn.ej.org/viejo/master.m3u8", formato: "hls", frameId: 0 }, 50);
+    m.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382 }, 100);
+    const leer = async (u) => (u === LI(1) ? listaHls : u.includes("viejo") ? "#EXTM3U\n#EXTINF:30,\na\n#EXT-X-ENDLIST\n" : "");
+    const e = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    comprobar(e && e.url === LI(1), "videos: una lista vieja de otro video no gana a la de este video");
+    // La principal con sus calidades: la principal, aunque la calidad también esté
+    const p = new M.MediosPorPestana();
+    const principal = "https://cdn.ej.org/v/principal";
+    p.dudosa(4, { url: principal, frameId: 0, tamano: 300 }, 10);
+    p.dudosa(4, { url: "https://cdn.ej.org/v/hls-720/lista?x=1", frameId: 0, tamano: 900 }, 11);
+    const leerP = async (u) => (u === principal ? maestra.replace("hls-720/lista?x=1", "https://cdn.ej.org/v/hls-720/lista?x=1")
+      : u === "https://cdn.ej.org/v/hls-720/lista?x=1" ? listaHls : "");
+    const ep = await M.listaDelVideo(p, 4, 0, 11.5, leerP);
+    comprobar(ep && ep.url === principal, "videos: la lista principal (con las calidades) antes que una de sus calidades");
+    // DASH que no dice que lo es
+    const d = new M.MediosPorPestana();
+    d.dudosa(4, { url: "https://cdn.ej.org/d/1/x", frameId: 3, tamano: 800 }, 10);
+    const ed = await M.listaDelVideo(d, 4, 3, 63.5, async () => mpd);
+    comprobar(ed && ed.formato === "dash" && ed.frameId === 3, "videos: un manifiesto DASH sin extensión ni tipo, por dentro");
+    // Una que no se pudo leer (sin conexión, por ejemplo) se vuelve a mirar en el próximo clic; una que no es lista, no
+    const n = new M.MediosPorPestana();
+    n.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382 }, 10);
+    n.dudosa(4, { url: LI(2), frameId: 0, tamano: 400000 }, 11);
+    const en = await M.listaDelVideo(n, 4, 0, 11.5, async (u) => (u === LI(1) ? null : ""));
+    comprobar(en === null && n.dudosasDe(4, 0).length === 1 && n.dudosasDe(4, 0)[0].url === LI(1),
+      "videos: lo que no se pudo leer se vuelve a probar; lo que no es una lista se olvida");
+    // Como mucho MAXIMO_MIRADAS por clic, las más chicas primero
+    const t = new M.MediosPorPestana(100);
+    for (let i = 0; i < 40; i++) t.dudosa(4, { url: "https://cdn.ej.org/p/" + i, frameId: 0, tamano: i === 33 ? 1000 : 600000 }, i);
+    const vistas = [];
+    await M.listaDelVideo(t, 4, 0, 11.5, async (u) => { vistas.push(u); return ""; });
+    comprobar(vistas.length === M.MAXIMO_MIRADAS && vistas[0] === "https://cdn.ej.org/p/33",
+      "videos: en cada clic se miran pocas respuestas dudosas, las más chicas primero (una lista es chica)");
+  }
+
   decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");
   if (enNode) process.exitCode = fallas ? 1 : 0;
 })();

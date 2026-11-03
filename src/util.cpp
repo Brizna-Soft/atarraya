@@ -238,24 +238,114 @@ std::string hnd::NuevoId()
     return r;
 }
 
+namespace
+{
+    // Agrega «texto» al final de un archivo (lo crea si no está). Si no se puede abrir o escribir, false y el código de
+    // error de Windows en «error». Un archivo que otro programa tiene abierto un momento (un antivirus, el indexador de
+    // Windows) se prueba otra vez.
+    bool AgregarAlFinal(const std::wstring& ruta, const std::string& texto, DWORD& error)
+    {
+        if (hnd::TamanoArchivo(ruta) > 512 * 1024)
+            MoveFileExW(ruta.c_str(), (ruta + L".anterior").c_str(), MOVEFILE_REPLACE_EXISTING);
+        HANDLE h = INVALID_HANDLE_VALUE;
+        for (int intento = 0; intento < 2; intento++)
+        {
+            h = CreateFileW(ruta.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+                            OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (h != INVALID_HANDLE_VALUE) break;
+            error = GetLastError();
+            if (error != ERROR_SHARING_VIOLATION && error != ERROR_LOCK_VIOLATION && error != ERROR_ACCESS_DENIED) return false;
+            if (intento == 0) Sleep(25);
+        }
+        if (h == INVALID_HANDLE_VALUE) return false;
+        DWORD escritos = 0;
+        bool ok = WriteFile(h, texto.data(), (DWORD)texto.size(), &escritos, nullptr) != FALSE && escritos == texto.size();
+        if (!ok)
+        {
+            error = GetLastError();
+            if (error == ERROR_SUCCESS) error = ERROR_WRITE_FAULT;
+        }
+        CloseHandle(h);
+        return ok;
+    }
+
+    std::string Hora()
+    {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        char hora[32];
+        snprintf(hora, sizeof(hora), "%04d-%02d-%02d %02d:%02d:%02d ", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        return hora;
+    }
+
+    // Donde va el registro si tampoco se puede escribir en la carpeta de datos: la carpeta temporal de Windows (la copia
+    // de prueba, dentro de su propia carpeta)
+    std::wstring CarpetaDelRespaldo()
+    {
+#ifdef ATARRAYA_PRUEBAS
+        std::wstring r = hnd::CarpetaDePrueba() + L"\\temporal";
+        CreateDirectoryW(r.c_str(), nullptr);
+        return r;
+#else
+        wchar_t t[MAX_PATH + 1] = {};
+        DWORD n = GetTempPathW(MAX_PATH + 1, t);
+        std::wstring r(t, n <= MAX_PATH ? n : 0);
+        while (!r.empty() && (r.back() == L'\\' || r.back() == L'/')) r.pop_back();
+        return r;
+#endif
+    }
+}
+
 void hnd::Registrar(const std::string& texto)
 {
     static std::mutex m;
+    static int perdidas = 0;        // líneas que no llegaron a registro.txt desde la última que sí
+    static DWORD errorPerdidas = 0;
     std::lock_guard g(m);
-    std::wstring ruta = CarpetaDatos() + L"\\registro.txt";
-    if (TamanoArchivo(ruta) > 512 * 1024)
-        MoveFileExW(ruta.c_str(), (ruta + L".anterior").c_str(), MOVEFILE_REPLACE_EXISTING);
-    HANDLE h = CreateFileW(ruta.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
-                           FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (h == INVALID_HANDLE_VALUE) return;
-    SYSTEMTIME t;
-    GetLocalTime(&t);
-    char hora[32];
-    snprintf(hora, sizeof(hora), "%04d-%02d-%02d %02d:%02d:%02d ", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-    std::string linea = hora + texto + "\r\n";
-    DWORD escritos = 0;
-    WriteFile(h, linea.data(), (DWORD)linea.size(), &escritos, nullptr);
-    CloseHandle(h);
+    std::wstring carpeta = CarpetaDatos();
+    std::string linea = Hora() + texto + "\r\n";
+    // Si antes no se pudo, primero se dice cuántas líneas faltan aquí, por qué y dónde quedaron
+    std::string antes;
+    if (perdidas > 0)
+        antes = Hora() + "(faltan " + std::to_string(perdidas) + " líneas: registro.txt no se pudo escribir, error de Windows "
+              + std::to_string(errorPerdidas) + "; quedaron en " + RegistroRespaldo + " o en %TEMP%\\" + RegistroTemporal + ")\r\n";
+    DWORD error = 0;
+    if (AgregarAlFinal(carpeta + L"\\registro.txt", antes + linea, error))
+    {
+        perdidas = 0;
+        return;
+    }
+    // No se pudo: la línea va a otro archivo, con el código de error, para que quede rastro. Primero en la misma carpeta
+    // (si el problema es solo registro.txt) y, si tampoco, en la carpeta temporal.
+    perdidas++;
+    errorPerdidas = error;
+    std::string conError = Hora() + "[registro.txt: error de Windows " + std::to_string(error) + "] " + texto + "\r\n";
+    DWORD otro = 0;
+    if (AgregarAlFinal(carpeta + L"\\" + Ancho(RegistroRespaldo), conError, otro)) return;
+    std::wstring temporal = CarpetaDelRespaldo();
+    if (!temporal.empty())
+    {
+        std::string conLosDos = Hora() + "[registro.txt: error de Windows " + std::to_string(error) + "; " + RegistroRespaldo
+                              + ": error " + std::to_string(otro) + "] " + texto + "\r\n";
+        AgregarAlFinal(temporal + L"\\" + Ancho(RegistroTemporal), conLosDos, otro);
+    }
+}
+
+std::string hnd::LineaDeRegistro(const std::string& texto, size_t maximo)
+{
+    std::string r = texto.substr(0, maximo);
+    // Sin cortar una letra por la mitad (UTF-8: los bytes 10xxxxxx siguen a otro)
+    if (r.size() < texto.size())
+    {
+        size_t fin = r.size();
+        while (fin > 0 && ((unsigned char)texto[fin] & 0xC0) == 0x80) fin--;
+        r.resize(fin);
+    }
+    for (auto& c : r)
+    {
+        if ((unsigned char)c < 0x20 || c == 0x7F) c = ' ';   // una sola línea, sin caracteres de control
+    }
+    return r;
 }
 
 std::string hnd::SoloSitio(const std::string& url)

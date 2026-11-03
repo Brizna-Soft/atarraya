@@ -58,7 +58,14 @@ namespace hnd
     std::string NuevoId();
 
     // Registro corto para ayudar a encontrar fallas (%LOCALAPPDATA%\Atarraya\registro.txt).
-    // No guarda direcciones completas: solo el sitio.
+    // No guarda direcciones completas: solo el sitio. Nunca falla en silencio: si registro.txt no se puede abrir o
+    // escribir, la línea va con el código de error de Windows a «registro-respaldo.txt» (en la misma carpeta) o, si
+    // tampoco, a «Atarraya-registro.txt» en la carpeta temporal; cuando registro.txt vuelve a andar, dice cuántas faltan.
     void Registrar(const std::string& texto);
+    inline constexpr const char* RegistroRespaldo = "registro-respaldo.txt";
+    inline constexpr const char* RegistroTemporal = "Atarraya-registro.txt";
+    // Un texto de otro programa para el registro: una sola línea, sin caracteres de control y con «maximo» bytes como
+    // mucho (sin cortar una letra por la mitad)
+    std::string LineaDeRegistro(const std::string& texto, size_t maximo);
     std::string SoloSitio(const std::string& url);
 }

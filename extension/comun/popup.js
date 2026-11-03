@@ -137,7 +137,8 @@ async function mostrarVideos() {
         resultado.textContent = "Enviado a Atarraya: ahí eliges la calidad y la carpeta.";
         resultado.className = "resultado bien";
       } else {
-        resultado.textContent = (respuesta && respuesta.texto) || "No se pudo hablar con Atarraya.";
+        // Sin respuesta de la extensión (no de Atarraya)
+        resultado.textContent = (respuesta && respuesta.texto) || "La extensión de Atarraya no respondió. Vuelve a intentar.";
         resultado.className = "resultado mal";
         boton.disabled = false;
       }
