@@ -247,8 +247,20 @@ async function observar(d) {
   const motivo = (porCadena && porCadena.motivo) || motivoBloqueo([d.url, d.documentUrl, d.originUrl, d.initiator]);
   const cab = cabecerasDe(d.responseHeaders);
   const c = clasificar(d.url, cab["content-type"]);
-  if (!c) return;
   const frameId = d.frameId >= 0 ? d.frameId : 0;
+  if (!c) {
+    // ¿Una lista HLS o DASH que no dice que lo es (sin extensión y con un tipo que no dice nada, como en LinkedIn)? Solo
+    // se anota: se mira por dentro si la persona pulsa el botón de un video «blob:» de este marco
+    if (motivo || (d.statusCode !== 200 && d.statusCode !== 206)) return;
+    const tamano = tamanoDe(d.statusCode, cab);
+    if (!puedeSerLista(d.url, cab["content-type"], tamano, d.method)) return;
+    await listo;
+    if (d.documentUrl) medios.marco(d.tabId, frameId, d.documentUrl);
+    medios.muestra(d.tabId, frameId, d.url);
+    medios.dudosa(d.tabId, { url: d.url, frameId, tamano, tipoMime: cab["content-type"] || "" });
+    guardarPronto();
+    return;
+  }
   if (motivo) {
     // Un marco que reproduce videos de YouTube (o de un sitio con DRM): nada de ese marco va a la lista ni lleva botón
     await listo;
@@ -397,17 +409,64 @@ async function enviarVideo(tabId, entrada) {
     return { ok: false, texto: "No encuentro Atarraya. Ábrelo y pulsa «Navegadores» → «Conectar»." };
   const cookies = await cookiesDeMarco([entrada.url, marco, ...medios.muestrasDeMarco(tabId, entrada.frameId)], pagina);
   const pedido = pedidoDeVideo(entrada, pagina, pestana ? pestana.title : "", marco, cookies, navigator.userAgent);
+  let r = null;
   try {
-    const r = await hablar(pedido);
-    if (r && r.ok) return { ok: true, texto: "Enviado a Atarraya" };
-    return { ok: false, texto: "Atarraya no lo aceptó." };
+    r = await hablar(pedido);
   } catch (e) {
-    return { ok: false, texto: "No se pudo hablar con Atarraya." };
+    // Lo único que es «no se pudo hablar»: Atarraya contestó la prueba, pero el pedido no llegó (el puente falló)
+    console.warn("Atarraya: no se pudo pasar el video al programa", e);
+    return { ok: false, texto: TEXTO_SIN_HABLAR };
+  }
+  if (r && r.ok) return { ok: true, texto: "Enviado a Atarraya" };
+  return { ok: false, texto: "Atarraya no lo aceptó." };
+}
+
+// Un error de la misma extensión (no de Atarraya ni de la conexión): a la consola y, si Atarraya está abierto, a su
+// registro (registro.txt), para saber qué pasó. Sin direcciones completas (solo su sitio); nada sale de esta PC.
+function anotarFallo(donde, e) {
+  const detalle = e && e.stack ? String(e.stack) : String(e);
+  const texto = (donde + ": " + detalle)
+    .replace(/\b(https?:\/\/[^/\s'"]+)[^\s'"]*/gi, "$1/...")
+    .replace(/\s+/g, " ")
+    .slice(0, 1000);
+  console.warn("Atarraya:", texto);
+  try {
+    Promise.resolve(hablar({ tipo: "registro", texto })).catch(() => {});
+  } catch (x) {}
+}
+
+// El principio de una respuesta, como texto, para ver si es una lista HLS o DASH: el texto si lo es, "" si no lo es (se
+// deja de bajar en cuanto se nota) y null si no se pudo pedir. Solo después de que la persona pulsó el botón.
+async function leerLista(url) {
+  const control = new AbortController();
+  const reloj = setTimeout(() => control.abort(), 8000);
+  try {
+    const r = await fetch(url, { credentials: "include", signal: control.signal });
+    if (!r.ok || !r.body) return null;
+    const lector = r.body.getReader();
+    const decodificador = new TextDecoder();
+    let texto = "";
+    let bytes = 0;
+    for (;;) {
+      const { done, value } = await lector.read();
+      if (done) break;
+      bytes += value.length;
+      if (bytes > 2 * 1024 * 1024) return "";   // demasiado para ser una lista
+      texto += decodificador.decode(value, { stream: true });
+      if (!puedeSerTextoDeLista(texto.slice(0, 64))) return "";
+    }
+    texto += decodificador.decode();
+    return formatoPorContenido(texto) ? texto : "";
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(reloj);
+    control.abort();   // lo que falta de una respuesta que no es una lista no se baja
   }
 }
 
 // El botón «Descargar este video» de un marco: el archivo del video o, si se reproduce desde un «blob:», la
-// transmisión HLS o DASH que pidió ese marco
+// transmisión HLS o DASH de ese video (de su marco)
 async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
   await listo;
   if (urlDelMarco) medios.marco(tabId, frameId, urlDelMarco);
@@ -430,11 +489,19 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
       });
     }
   } else {
-    // Un video «blob:»: solo la transmisión que pidió su propio marco
-    entrada = medios.transmisionDe(tabId, frameId);
+    // Un video «blob:»: la lista de este video entre las que pidió su propio marco (también las que no dicen que lo son).
+    // Su duración la distingue de las de otros videos de la página.
+    const duracion = Number(mensaje.duracion);
+    entrada = await listaDelVideo(medios, tabId, frameId, Number.isFinite(duracion) && duracion > 0 && duracion < 1e7 ? duracion : 0, leerLista);
+    if (!entrada) {
+      guardarPronto();
+      // Si el marco ya pidió partes del video (o listas de otros videos), el video está ahí pero su lista no
+      const algo = medios.muestrasDeMarco(tabId, frameId).length || medios.dudosasDe(tabId, frameId).length
+        || medios.transmisionesDe(tabId, frameId).length;
+      return { ok: false, texto: algo ? TEXTO_SIN_ARCHIVO : TEXTO_SIN_TRANSMISION };
+    }
   }
   guardarPronto();
-  if (!entrada) return { ok: false, texto: TEXTO_SIN_TRANSMISION };
   return enviarVideo(tabId, entrada);
 }
 
@@ -990,7 +1057,11 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
       const frameId = typeof remitente.frameId === "number" ? remitente.frameId : 0;
       bajarVideoDeMarco(remitente.tab.id, frameId, mensaje, mensaje.marco || remitente.url || "")
         .then(responder)
-        .catch(() => responder({ ok: false, texto: "No se pudo hablar con Atarraya." }));
+        .catch((e) => {
+          // Un error de la extensión, no de la conexión con Atarraya: se dice así y queda anotado
+          anotarFallo("botón «Descargar este video»", e);
+          responder({ ok: false, texto: TEXTO_FALLO_EXTENSION });
+        });
       return true;
     }
 
@@ -1026,7 +1097,10 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
           return enviarVideo(tabId, entrada);
         })
         .then(responder)
-        .catch(() => responder({ ok: false, texto: "No se pudo hablar con Atarraya." }));
+        .catch((e) => {
+          anotarFallo("«Bajar» de la ventanita", e);
+          responder({ ok: false, texto: TEXTO_FALLO_EXTENSION });
+        });
       return true;
     }
   }

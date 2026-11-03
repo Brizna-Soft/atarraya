@@ -4043,6 +4043,72 @@ namespace
         std::filesystem::remove_all(carpeta, ec);
         WSACleanup();
     }
+
+    // El registro nunca falla en silencio: si registro.txt no se puede abrir (otro programa lo tiene tomado), la línea va
+    // con el código de error a registro-respaldo.txt; si tampoco, a la carpeta temporal (la de la copia de prueba, dentro
+    // de su carpeta). Cuando vuelve a andar, registro.txt dice cuántas faltan y dónde quedaron.
+    void RegistroPruebas()
+    {
+        wchar_t temporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, temporal);
+        std::wstring carpeta = std::wstring(temporal) + L"atarraya-prueba-registro-" + std::to_wstring(GetCurrentProcessId());
+        std::error_code ec;
+        std::filesystem::remove_all(carpeta, ec);
+        CreateDirectoryW(carpeta.c_str(), nullptr);
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", carpeta.c_str());
+        const std::wstring registro = carpeta + L"\\registro.txt";
+        const std::wstring respaldo = carpeta + L"\\registro-respaldo.txt";
+        const std::wstring enTemporal = carpeta + L"\\temporal\\Atarraya-registro.txt";
+        auto leer = [](const std::wstring& ruta) {
+            std::string d;
+            LeerArchivo(ruta, d);
+            return d;
+        };
+        // Como otro programa que lo abre sin dejar escribir a nadie más
+        auto tomar = [](const std::wstring& ruta) {
+            return CreateFileW(ruta.c_str(), GENERIC_READ, 0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        };
+
+        Registrar("registro: primera linea");
+        Comprobar(leer(registro).find("registro: primera linea\r\n") != std::string::npos && !ExisteArchivo(respaldo),
+                  "registro: una línea va a registro.txt");
+
+        HANDLE h = tomar(registro);
+        Registrar("registro: con el archivo tomado");
+        std::string r1 = leer(respaldo);
+        Comprobar(h != INVALID_HANDLE_VALUE && r1.find("[registro.txt: error de Windows 32] registro: con el archivo tomado\r\n") != std::string::npos,
+                  "registro: si registro.txt está tomado, la línea va a registro-respaldo.txt con el código de error (32)");
+
+        HANDLE h2 = tomar(respaldo);
+        Registrar("registro: los dos tomados");
+        std::string t1 = leer(enTemporal);
+        Comprobar(h2 != INVALID_HANDLE_VALUE
+                      && t1.find("[registro.txt: error de Windows 32; registro-respaldo.txt: error 32] registro: los dos tomados") != std::string::npos,
+                  "registro: si tampoco se puede en la misma carpeta, va a la carpeta temporal con los dos errores");
+        CloseHandle(h2);
+        CloseHandle(h);
+
+        Registrar("registro: otra vez bien");
+        std::string r2 = leer(registro);
+        size_t aviso = r2.find("(faltan 2 líneas: registro.txt no se pudo escribir, error de Windows 32; quedaron en registro-respaldo.txt o en %TEMP%\\Atarraya-registro.txt)");
+        size_t linea = r2.find("registro: otra vez bien\r\n");
+        Comprobar(aviso != std::string::npos && linea != std::string::npos && aviso < linea && r2.find("con el archivo tomado") == std::string::npos,
+                  "registro: cuando registro.txt vuelve a andar, dice cuántas líneas faltan, por qué y dónde quedaron");
+        Registrar("registro: y sigue");
+        std::string r3 = leer(registro);
+        Comprobar(r3.find("registro: y sigue\r\n") != std::string::npos && r3.find("(faltan") == r3.rfind("(faltan"),
+                  "registro: el aviso de las que faltan va una sola vez");
+
+        // Lo que manda la extensión (un error suyo): una sola línea, sin caracteres de control, sin cortar una letra
+        std::string largo = "a\r\nb\tc" + std::string(10, 'x') + "\xC3\xB1";   // termina en «ñ» (2 bytes)
+        Comprobar(LineaDeRegistro(largo, 1000) == "a  b c" + std::string(10, 'x') + "\xC3\xB1"
+                      && LineaDeRegistro(largo, largo.size() - 1) == "a  b c" + std::string(10, 'x')
+                      && LineaDeRegistro("", 10).empty() && LineaDeRegistro(std::string("x\0y", 3), 10) == "x y",
+                  "registro: un texto de la extensión queda en una línea y no corta una letra por la mitad");
+
+        SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
+        std::filesystem::remove_all(carpeta, ec);
+    }
 }
 
 int wmain(int argc, wchar_t** argv)
@@ -4084,6 +4150,7 @@ int wmain(int argc, wchar_t** argv)
     JuegosEnPartesPruebas();
     ContrasenasPruebas();
     ConciliarPruebas();
+    RegistroPruebas();
     printf(fallas ? "\n%d FALLAS\n" : "\nTODO BIEN\n", fallas);
     return fallas ? 1 : 0;
 }

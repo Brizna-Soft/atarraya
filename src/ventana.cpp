@@ -1576,6 +1576,13 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     std::string urlPedido = campo("url");
     Registrar("pedido: " + tipo + (urlPedido.empty() ? std::string() : " " + (enlaces::EsMagnet(urlPedido) ? std::string("(magnet)") : SoloSitio(urlPedido))));
     if (tipo == "mostrar") { Mostrar(); return; }
+    if (tipo == "registro")
+    {
+        // Un error de la extensión del navegador (por ejemplo, del botón «Descargar este video»): solo va al registro
+        std::string t = LineaDeRegistro(campo("texto"), 1500);
+        if (!t.empty()) Registrar("extensión: " + t);
+        return;
+    }
     if (tipo == "torrent")
     {
         // Otra copia del programa abierta con un .torrent
