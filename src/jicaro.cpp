@@ -626,6 +626,16 @@ std::wstring hnd::jicaro::ParteAjena(const Juego& j, const std::vector<std::wstr
     return ajena;
 }
 
+std::wstring hnd::jicaro::ParteAjenaDe(const std::wstring& primera, const std::vector<std::wstring>& delPaquete)
+{
+    Pieza p;
+    if (!PiezaDe(primera, p)) return {};
+    Juego j;
+    j.clave = p.clave;
+    j.carpeta = CarpetaDe(primera);
+    return ParteAjena(j, delPaquete);
+}
+
 std::vector<uint64_t> hnd::jicaro::PorRetomar(const std::vector<Foto>& descargas)
 {
     std::vector<uint64_t> r;

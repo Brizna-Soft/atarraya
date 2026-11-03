@@ -35,6 +35,9 @@ namespace hnd::contrasenas
     // pudo cifrar. Descifrar devuelve vacío si no se puede (otro usuario, otra PC o un texto cambiado).
     std::string Cifrar(const std::vector<std::string>& lista);
     std::vector<std::string> Descifrar(const std::string& cifrado);
+    // ¿Se puede leer? Falso si no se puede descifrar (otra cuenta u otra PC) o tiene otro formato (el de antes, en JSON).
+    // Lo descifrado se borra antes de soltarlo.
+    bool Legible(const std::string& cifrado);
 
     // Borra de la memoria (antes de soltarla)
     void Borrar(std::string& s);
@@ -62,6 +65,9 @@ namespace hnd::contrasenas
         bool Tiene(const std::string& grupo) const;
         // Se quedan solo las de estos paquetes (los que siguen en la lista)
         void QuedarseCon(const std::set<std::string>& grupos);
+        // Quita las que no se pueden leer (por ejemplo, las del formato de antes): su paquete pide la contraseña otra
+        // vez. Devuelve cuántas quitó (las recordadas cuentan como una). Hay que guardar después.
+        size_t QuitarIlegibles();
 
         // Para otros paquetes (solo si la persona lo encendió): la más nueva primero, sin repetir, como mucho 20
         void Recordar(const std::vector<std::string>& lista);

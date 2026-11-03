@@ -661,16 +661,32 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
         });
     }
     m_sitiosNavegador.Cargar();
-    // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola
+    // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola. Si la
+    // cola no se pudo leer, no se quita ninguna (podrían ser de sus partes).
     m_contrasenas.Cargar();
     {
-        std::set<std::string> vivos;
-        for (const auto& f : m_motor.Fotos()) vivos.insert(ClaveDeContrasena(f.datos));
-        for (const auto& p : m_sitios.Partes())
+        // Las que no se pueden leer (el formato de las versiones de prueba anteriores) se quitan: esos paquetes piden su
+        // contraseña otra vez. Lo descifrado se borra antes de soltarlo; nada queda a medias.
+        size_t ilegibles = m_contrasenas.QuitarIlegibles();
+        if (ilegibles)
+            Registrar("contraseñas: " + std::to_string(ilegibles) + (ilegibles == 1 ? " no se podía leer" : " no se podían leer")
+                      + " (de una versión anterior): se piden otra vez");
+        std::vector<uint64_t> recolectadas;
+        for (const auto& e : m_recolector.Lista())
         {
-            if (!p.grupo.empty()) vivos.insert(p.grupo);
+            if (!e.contrasenas.empty() && !contrasenas::Legible(e.contrasenas)) recolectadas.push_back(e.id);
         }
-        m_contrasenas.QuedarseCon(vivos);
+        if (!recolectadas.empty()) m_recolector.FijarContrasenas(recolectadas, "");
+        if (origen != DeUnaEnUna::Origen::NoSePudo)
+        {
+            std::set<std::string> vivos;
+            for (const auto& f : m_motor.Fotos()) vivos.insert(ClaveDeContrasena(f.datos));
+            for (const auto& p : m_sitios.Partes())
+            {
+                if (!p.grupo.empty()) vivos.insert(p.grupo);
+            }
+            m_contrasenas.QuedarseCon(vivos);
+        }
         GuardarContrasenas();
     }
     // Antes de que arranque nada: se junta lo que dicen la cola y la lista (ver Conciliar en deunaenuna.hpp). Lo que
@@ -3367,6 +3383,24 @@ void VentanaPrincipal::SiguienteJicaro()
         {
             hnd::Foto f;
             if (m_motor.Buscar(p.descarga, f)) p.identidad = f.datos.identidad;
+        }
+        // Mientras esperaba su turno pudieron aparecer en su carpeta partes con el mismo nombre que no son de su paquete
+        // (Jícaro las juntaría): se revisa otra vez justo antes de abrirlo, también en cada reintento (que pasa por aquí)
+        if (!t.clave.empty() && t.clave.rfind("descarga:", 0) != 0)
+        {
+            std::vector<std::wstring> delPaquete;
+            for (const auto& f : m_motor.Fotos())
+            {
+                if (!f.torrent && f.datos.grupo == t.clave && !f.datos.nombre.empty()) delPaquete.push_back(f.datos.carpeta + L"\\" + f.datos.nombre);
+            }
+            if (!jicaro::ParteAjenaDe(t.primera, delPaquete).empty())
+            {
+                Registrar("jícaro: aparecieron en su carpeta partes de otro paquete mientras esperaba; no se abrió");
+                for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::Pendiente);
+                AnotarJicaro();
+                MostrarResultadoJicaro(std::move(t), jicaro::Resultado::PartesAjenas);
+                continue;
+            }
         }
         // La contraseña del paquete (la que toca, en orden): se descifra recién ahora y se borra apenas se le pasa
         std::vector<std::string> claves = t.clave.empty() ? std::vector<std::string>() : m_contrasenas.Leer(t.clave);

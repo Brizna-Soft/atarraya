@@ -135,6 +135,9 @@ namespace hnd::jicaro
     // de este paquete («delPaquete»: las rutas de todas sus descargas). Vacío si no hay: así Jícaro nunca junta partes
     // de dos paquetes que quedaron en la misma carpeta.
     std::wstring ParteAjena(const Juego& j, const std::vector<std::wstring>& delPaquete);
+    // Lo mismo para un juego que ya espera a Jícaro, por la parte que lo abre: se revisa otra vez justo antes de abrir
+    // Jícaro (y en cada reintento), porque mientras espera pueden aparecer partes ajenas en la carpeta
+    std::wstring ParteAjenaDe(const std::wstring& primera, const std::vector<std::wstring>& delPaquete);
     // Al abrir Atarraya: las descargas cuyo juego quedó «en curso» (se le había pasado a Jícaro y no terminó bien), una
     // por paquete (o la suelta), para pasárselo otra vez
     std::vector<uint64_t> PorRetomar(const std::vector<Foto>& descargas);

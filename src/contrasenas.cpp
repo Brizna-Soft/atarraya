@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <string_view>
 
 #pragma comment(lib, "crypt32.lib")
 
@@ -19,7 +20,8 @@ namespace
     // Con esta «entropía», solo Atarraya descifra lo que cifró (otro programa de la misma cuenta necesitaría saberla)
     const char Entropia[] = "Atarraya.contrasenas.1";
 
-    bool Utf8Valido(const std::string& s)
+    // Sobre el mismo texto, sin copiarlo (cada copia sería otra contraseña en la memoria que alguien tendría que borrar)
+    bool Utf8Valido(std::string_view s)
     {
         size_t i = 0;
         while (i < s.size())
@@ -36,7 +38,7 @@ namespace
         return true;
     }
 
-    std::string Recortar(const std::string& s)
+    std::string_view Recortar(std::string_view s)
     {
         size_t a = 0, b = s.size();
         while (a < b && (s[a] == ' ' || s[a] == '\t')) a++;
@@ -83,9 +85,12 @@ namespace
         return Base64(cifrado);
     }
 
-    std::vector<std::string> DescifrarLista(const std::string& cifrado, size_t maximo)
+    // «legible»: se pudo descifrar y tiene la forma de ahora. Si no (otra cuenta u otra PC, o el formato de antes, en
+    // JSON), la lista queda vacía y el bloque descifrado se borra igual antes de soltarlo: nada queda a medias.
+    std::vector<std::string> DescifrarLista(const std::string& cifrado, size_t maximo, bool* legible = nullptr)
     {
         std::vector<std::string> r;
+        if (legible) *legible = false;
         std::vector<BYTE> datos = DeBase64(cifrado);
         if (datos.empty()) return r;
         DATA_BLOB entrada = { (DWORD)datos.size(), datos.data() };
@@ -93,9 +98,10 @@ namespace
         DATA_BLOB salida = {};
         if (!CryptUnprotectData(&entrada, nullptr, &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &salida)) return r;
         // Directo del bloque descifrado a cada contraseña (sin otra copia), y el bloque se borra antes de soltarlo
-        hnd::contrasenas::Desempaquetar(reinterpret_cast<const char*>(salida.pbData), salida.cbData, maximo, r);
+        bool bien = hnd::contrasenas::Desempaquetar(reinterpret_cast<const char*>(salida.pbData), salida.cbData, maximo, r);
         SecureZeroMemory(salida.pbData, salida.cbData);
         LocalFree(salida.pbData);
+        if (legible) *legible = bien;
         return r;
     }
 
@@ -152,17 +158,19 @@ std::vector<std::string> hnd::contrasenas::DeTexto(const std::string& texto)
 {
     std::vector<std::string> r;
     r.reserve(Maximo);   // las listas de contraseñas nunca se agrandan: al agrandarse dejarían copias sin borrar
+    // Cada una se revisa sobre el mismo texto (sin copias temporales) y solo la que sirve se copia, una vez, a su lugar
+    std::string_view todo(texto);
     size_t i = 0;
-    while (i <= texto.size() && r.size() < Maximo)
+    while (i <= todo.size() && r.size() < Maximo)
     {
-        size_t fin = texto.find_first_of("\r\n", i);
-        if (fin == std::string::npos) fin = texto.size();
-        std::string c = Recortar(texto.substr(i, fin - i));
+        size_t fin = todo.find_first_of("\r\n", i);
+        if (fin == std::string_view::npos) fin = todo.size();
+        std::string_view c = Recortar(todo.substr(i, fin - i));
         bool control = std::any_of(c.begin(), c.end(), [](char ch) { return (unsigned char)ch < 0x20 || ch == 0x7F; });
-        if (!c.empty() && c.size() <= MaximoLargo && !control && Utf8Valido(c) && std::find(r.begin(), r.end(), c) == r.end())
-            r.push_back(c);
-        Borrar(c);
-        if (fin >= texto.size()) break;
+        if (!c.empty() && c.size() <= MaximoLargo && !control && Utf8Valido(c)
+            && std::none_of(r.begin(), r.end(), [&](const std::string& x) { return std::string_view(x) == c; }))
+            r.emplace_back(c);
+        if (fin >= todo.size()) break;
         i = fin + 1;
     }
     return r;
@@ -195,6 +203,14 @@ std::string hnd::contrasenas::Cifrar(const std::vector<std::string>& lista)
 std::vector<std::string> hnd::contrasenas::Descifrar(const std::string& cifrado)
 {
     return DescifrarLista(cifrado, Maximo);
+}
+
+bool hnd::contrasenas::Legible(const std::string& cifrado)
+{
+    bool legible = false;
+    auto lista = DescifrarLista(cifrado, MaximoRecordadas, &legible);
+    Borrar(lista);
+    return legible;
 }
 
 void hnd::contrasenas::Borrar(std::string& s)
@@ -267,6 +283,30 @@ bool hnd::contrasenas::Guardadas::Tiene(const std::string& grupo) const
     return m_paquetes.count(grupo) > 0;
 }
 
+size_t hnd::contrasenas::Guardadas::QuitarIlegibles()
+{
+    // Las que no se pueden leer (el formato de antes, en JSON, de las versiones de prueba de la 0.4.1; o de otra cuenta u
+    // otra PC) se quitan: su paquete pide la contraseña otra vez. Lo descifrado ya se borró al leerlas.
+    size_t quitadas = 0;
+    for (auto it = m_paquetes.begin(); it != m_paquetes.end();)
+    {
+        if (Legible(it->second))
+        {
+            ++it;
+            continue;
+        }
+        Borrar(it->second);
+        it = m_paquetes.erase(it);
+        quitadas++;
+    }
+    if (!m_recordadas.empty() && !Legible(m_recordadas))
+    {
+        Borrar(m_recordadas);
+        quitadas++;
+    }
+    return quitadas;
+}
+
 void hnd::contrasenas::Guardadas::QuedarseCon(const std::set<std::string>& grupos)
 {
     for (auto it = m_paquetes.begin(); it != m_paquetes.end();)
@@ -290,6 +330,8 @@ void hnd::contrasenas::Guardadas::Recordar(const std::vector<std::string>& lista
     {
         if (std::find(nuevas.begin(), nuevas.end(), c) == nuevas.end()) nuevas.push_back(c);
     }
+    // Las que sobran se borran antes de soltarlas (soltarlas sin borrar dejaría copias en la memoria)
+    for (size_t i = MaximoRecordadas; i < nuevas.size(); i++) Borrar(nuevas[i]);
     if (nuevas.size() > MaximoRecordadas) nuevas.resize(MaximoRecordadas);
     std::string cifrado = CifrarLista(nuevas);
     if (!cifrado.empty()) m_recordadas = cifrado;

@@ -21,12 +21,15 @@
 #include <vector>
 
 #include <bcrypt.h>
+#include <wincrypt.h>
 #include <winioctl.h>
 
 #include <deque>
 #include <fstream>
+#include <malloc.h>
 #include <map>
 #include <memory>
+#include <new>
 
 #include <nlohmann/json.hpp>
 #include <shellapi.h>
@@ -45,6 +48,72 @@
 
 using namespace hnd;
 using namespace hnd::enlaces;
+
+// Para revisar que las contraseñas no dejan copias sin borrar en la memoria: mientras se busca un texto, cada bloque que
+// se suelta (con delete) se revisa antes de soltarlo; si todavía tiene ese texto, es una copia que nadie borró.
+namespace secretos
+{
+    std::atomic<bool> buscando{ false };
+    char texto[128] = {};
+    size_t largo = 0;
+    std::atomic<int> sinBorrar{ 0 };
+
+    void Revisar(void* p) noexcept
+    {
+        if (!buscando || !p || largo == 0) return;
+        size_t n = _msize(p);
+        const char* b = static_cast<const char*>(p);
+        for (size_t i = 0; i + largo <= n; i++)
+        {
+            if (memcmp(b + i, texto, largo) == 0)
+            {
+                sinBorrar++;
+                return;
+            }
+        }
+    }
+
+    void Buscar(const char* t)
+    {
+        largo = std::min(strlen(t), sizeof(texto));
+        memcpy(texto, t, largo);
+        sinBorrar = 0;
+        buscando = true;
+    }
+
+    int Dejar()
+    {
+        buscando = false;
+        return sinBorrar;
+    }
+}
+
+void* operator new(size_t n)
+{
+    if (void* p = malloc(n ? n : 1)) return p;
+    throw std::bad_alloc();
+}
+void* operator new[](size_t n)
+{
+    return operator new(n);
+}
+void operator delete(void* p) noexcept
+{
+    secretos::Revisar(p);
+    free(p);
+}
+void operator delete[](void* p) noexcept
+{
+    operator delete(p);
+}
+void operator delete(void* p, size_t) noexcept
+{
+    operator delete(p);
+}
+void operator delete[](void* p, size_t) noexcept
+{
+    operator delete(p);
+}
 
 namespace
 {
@@ -1199,6 +1268,23 @@ namespace
                           && avisos[1].r == 0,
                       "jícaro: al escribir la contraseña desde un aviso, siguen todos los de ese paquete (la clave se copia antes de moverlos)");
         }
+        // Mientras un juego espera su turno pueden aparecer partes ajenas en su carpeta: se revisa otra vez justo antes de
+        // abrir Jícaro (por la parte que lo abre), también en cada reintento
+        {
+            std::wstring primera = escribir(L"espera.part1.rar", "1");
+            escribir(L"espera.part2.rar", "2");
+            std::vector<std::wstring> propias = { dir + L"\\espera.part1.rar", dir + L"\\espera.part2.rar" };
+            bool alPrepararlo = ParteAjenaDe(primera, propias).empty();
+            escribir(L"espera.part3.rar", "de otro paquete, mientras esperaba");
+            std::wstring zip = escribir(L"zz.zip", "z");
+            escribir(L"zz.z01", "1");
+            std::vector<std::wstring> delZip = { dir + L"\\zz.zip", dir + L"\\zz.z01" };
+            bool zipBien = ParteAjenaDe(zip, delZip).empty();
+            escribir(L"zz.z02", "ajena");
+            Comprobar(alPrepararlo && ParteAjenaDe(primera, propias) == L"espera.part3.rar" && zipBien && ParteAjenaDe(zip, delZip) == L"zz.z02"
+                          && ParteAjenaDe(dir + L"\\leeme.txt", propias).empty(),
+                      "juegos en partes: las partes ajenas se revisan otra vez justo antes de abrir Jícaro (pueden aparecer mientras espera)");
+        }
         fs::remove_all(dir, ec);
     }
 
@@ -1225,6 +1311,85 @@ namespace
             hnd::contrasenas::Borrar(bloque);
             hnd::contrasenas::Borrar(vuelta);
             hnd::contrasenas::Borrar(dos);
+        }
+        wchar_t carpetaTemporal[MAX_PATH] = {};
+        GetTempPathW(MAX_PATH, carpetaTemporal);
+        const std::wstring tmp = std::wstring(carpetaTemporal) + L"atarraya-prueba-claves2-" + std::to_wstring(GetCurrentProcessId());
+        {
+            std::error_code ec2;
+            std::filesystem::create_directories(tmp, ec2);
+        }
+        // Lo temporal y lo que se descarta también se borra: ninguna copia de una contraseña se suelta sin borrar
+        {
+            const char* marca = "contrasena-que-no-debe-quedar-0123456789";
+            std::string texto = std::string("   ") + marca + "  \r\n" + marca + "-2\n\t" + marca + "-3\t\nok";
+            std::vector<std::string> muchas;
+            muchas.reserve(25);
+            for (int i = 0; i < 25; i++) muchas.push_back(std::string(marca) + "-" + std::to_string(i));
+            hnd::contrasenas::Guardadas g(tmp + L"\\recordadas.json");
+            // Primero, que la revisión sí ve una copia que se suelta sin borrar
+            secretos::Buscar(marca);
+            {
+                std::string copia = std::string(marca) + "-control";
+                (void)copia;
+            }
+            int control = secretos::Dejar();
+            secretos::Buscar(marca);
+            std::vector<std::string> lista = hnd::contrasenas::DeTexto(texto);
+            size_t leidas = lista.size();
+            hnd::contrasenas::Borrar(lista);
+            int deTexto = secretos::Dejar();
+            secretos::Buscar(marca);
+            g.Recordar(muchas);   // más de 20: las que sobran se descartan
+            int alRecordar = secretos::Dejar();
+            auto vuelta = g.Recordadas();
+            bool veinte = vuelta.size() == 20 && vuelta.front() == std::string(marca) + "-0";
+            hnd::contrasenas::Borrar(vuelta);
+            hnd::contrasenas::Borrar(muchas);
+            hnd::contrasenas::Borrar(texto);
+            Comprobar(control >= 1 && leidas == 4 && deTexto == 0 && alRecordar == 0 && veinte,
+                      "contraseñas: lo temporal y lo que se descarta se borra antes de soltarlo (ninguna copia queda en la memoria)");
+        }
+        // El formato de antes (JSON, de las versiones de prueba): no se lee, se quita borrado y el paquete la pide otra vez
+        {
+            auto cifrarComoAntes = [](const std::string& claro) {
+                const char entropia[] = "Atarraya.contrasenas.1";
+                DATA_BLOB entrada = { (DWORD)claro.size(), (BYTE*)claro.data() };
+                DATA_BLOB extra = { (DWORD)(sizeof(entropia) - 1), (BYTE*)entropia };
+                DATA_BLOB salida = {};
+                if (!CryptProtectData(&entrada, L"Atarraya", &extra, nullptr, nullptr, CRYPTPROTECT_UI_FORBIDDEN, &salida)) return std::string();
+                DWORD n = 0;
+                CryptBinaryToStringA(salida.pbData, salida.cbData, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &n);
+                std::string r(n, '\0');
+                CryptBinaryToStringA(salida.pbData, salida.cbData, CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, r.data(), &n);
+                r.resize(n);
+                while (!r.empty() && r.back() == '\0') r.pop_back();
+                LocalFree(salida.pbData);
+                return r;
+            };
+            std::string vieja = cifrarComoAntes("[\"clave-vieja-de-prueba\"]");
+            std::string nueva = hnd::contrasenas::Cifrar({ "clave-nueva-de-prueba" });
+            std::wstring f = tmp + L"\\formato-viejo.json";
+            nlohmann::json j = { { "version", 1 }, { "paquetes", { { "viejo", vieja }, { "nuevo", nueva } } }, { "recordadas", vieja } };
+            EscribirSeguro(f, j.dump());
+            hnd::contrasenas::Guardadas g(f);
+            g.Cargar();
+            bool antes = g.Tiene("viejo") && g.HayRecordadas() && g.Leer("viejo").empty() && g.Recordadas().empty();
+            size_t quitadas = g.QuitarIlegibles();
+            auto lee = g.Leer("nuevo");
+            bool bien = quitadas == 2 && !g.Tiene("viejo") && g.Tiene("nuevo") && lee == std::vector<std::string>{ "clave-nueva-de-prueba" }
+                && !g.HayRecordadas() && g.QuitarIlegibles() == 0;
+            hnd::contrasenas::Borrar(lee);
+            g.Guardar();
+            std::string guardado;
+            LeerArchivo(f, guardado);
+            Comprobar(!vieja.empty() && antes && bien && guardado.find(vieja) == std::string::npos && guardado.find(nueva) != std::string::npos
+                          && !hnd::contrasenas::Legible(vieja) && hnd::contrasenas::Legible(nueva) && !hnd::contrasenas::Legible("no es base64 !!"),
+                      "contraseñas: las del formato de antes no se leen: se quitan (borradas) y su paquete la pide otra vez; las de ahora siguen");
+        }
+        {
+            std::error_code ec2;
+            std::filesystem::remove_all(tmp, ec2);
         }
         using hnd::contrasenas::DeTexto;
         using Lista = std::vector<std::string>;
