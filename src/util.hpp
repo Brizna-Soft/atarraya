@@ -61,11 +61,18 @@ namespace hnd
     // No guarda direcciones completas: solo el sitio. Nunca falla en silencio: si registro.txt no se puede abrir o
     // escribir, la línea va con el código de error de Windows a «registro-respaldo.txt» (en la misma carpeta) o, si
     // tampoco, a «Atarraya-registro.txt» en la carpeta temporal; cuando registro.txt vuelve a andar, dice cuántas faltan.
+    // Ninguno pasa del tope: el que lo pasa se renombra a «.anterior» o, si no se puede, se corta a la mitad; si tampoco,
+    // no se escribe más en él (la línea va al siguiente).
     void Registrar(const std::string& texto);
     inline constexpr const char* RegistroRespaldo = "registro-respaldo.txt";
     inline constexpr const char* RegistroTemporal = "Atarraya-registro.txt";
+    inline constexpr int64_t TopeRegistro = 512 * 1024;
     // Un texto de otro programa para el registro: una sola línea, sin caracteres de control y con «maximo» bytes como
     // mucho (sin cortar una letra por la mitad)
     std::string LineaDeRegistro(const std::string& texto, size_t maximo);
+    // Sin datos de la persona (como limpiarParaRegistro en la extensión): de cada dirección queda solo el sitio, sin
+    // «usuario:clave@», sin correos, sin el valor de parámetros ni de cookies («nombre=…») y sin cadenas largas que
+    // parezcan claves; las direcciones de la extensión (chrome-extension://) quedan con su archivo y su línea
+    std::string SinDatosPrivados(const std::string& texto);
     std::string SoloSitio(const std::string& url);
 }

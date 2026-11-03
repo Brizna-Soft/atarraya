@@ -25,6 +25,8 @@ const TEXTO_SIN_TRANSMISION = "No encontré este video todavía: dale play y vue
 // falló hablar con el programa; nunca para lo demás.
 // Un video «blob:» cuyo marco pidió partes del video, pero ninguna lista que sea la de este video
 const TEXTO_SIN_ARCHIVO = "No encontré el archivo completo de este video.";
+// Hay listas, pero no se pudo comprobar cuál es la de este video (no se manda una que podría ser de otro)
+const TEXTO_CUAL_VIDEO = "No encontré cuál de los videos de la página es este.";
 const TEXTO_SIN_HABLAR = "No se pudo hablar con Atarraya. Vuelve a intentar.";
 // Un error de la misma extensión (queda en el registro de Atarraya, si está abierto)
 const TEXTO_FALLO_EXTENSION = "Algo falló en la extensión al buscar este video. Vuelve a intentar.";
@@ -162,7 +164,7 @@ function puedeSerLista(url, tipoMime, tamano, metodo) {
 
 // Qué es un texto por dentro: «hls» (empieza con #EXTM3U), «dash» (su elemento principal es <MPD>) o "" (otra cosa)
 function formatoPorContenido(texto) {
-  const t = String(texto || "").replace(/^﻿/, "").replace(/^\s+/, "");
+  const t = String(texto || "").replace(/^\uFEFF/, "").replace(/^\s+/, "");
   if (t.startsWith("#EXTM3U")) return "hls";
   const sinPrologo = t.replace(/^<\?xml[\s\S]*?\?>\s*/, "").replace(/^(<!--[\s\S]*?-->\s*)+/, "");
   return /^<([A-Za-z_][\w.-]*:)?MPD[\s>/]/.test(sinPrologo) ? "dash" : "";
@@ -170,15 +172,16 @@ function formatoPorContenido(texto) {
 
 // Mientras se baja el principio de una respuesta: ¿todavía puede ser una lista? (si no, se deja de bajar)
 function puedeSerTextoDeLista(principio) {
-  const t = String(principio || "").replace(/^﻿/, "").replace(/^\s+/, "");
+  const t = String(principio || "").replace(/^\uFEFF/, "").replace(/^\s+/, "");
   return t.length < 7 || t.startsWith("#EXTM3U") || t.startsWith("<");
 }
 
-// Lo que dice una lista HLS: si es la principal (trae calidades), la dirección completa de su primera calidad, y cuánto
-// dura (la suma de sus #EXTINF; -1 si es la principal, si sigue en vivo, sin #EXT-X-ENDLIST, o si no se sabe)
+// Lo que dice una lista HLS: si es la principal (trae calidades), las direcciones completas de sus calidades (y la
+// primera), y cuánto dura (la suma de sus #EXTINF; -1 si es la principal, si sigue en vivo, sin #EXT-X-ENDLIST, o si no
+// se sabe)
 function leerHls(texto, base) {
   let maestra = false;
-  let primera = "";
+  const calidades = [];
   let segundos = 0;
   let partes = 0;
   let fin = false;
@@ -198,9 +201,9 @@ function leerHls(texto, base) {
     } else if (l.startsWith("#EXT-X-ENDLIST")) {
       fin = true;
     } else if (!l.startsWith("#")) {
-      if (esperaCalidad && !primera) {
+      if (esperaCalidad && calidades.length < 100) {
         try {
-          primera = new URL(l, base).href;
+          calidades.push(new URL(l, base).href);
         } catch (e) {
           // una dirección que no se entiende: se sigue sin ella
         }
@@ -208,7 +211,7 @@ function leerHls(texto, base) {
       esperaCalidad = false;
     }
   }
-  return { maestra, primera, duracion: !maestra && fin && partes ? segundos : -1 };
+  return { maestra, calidades, primera: calidades[0] || "", duracion: !maestra && fin && partes ? segundos : -1 };
 }
 
 // Cuánto dura un manifiesto DASH (su mediaPresentationDuration, como «PT1M3.5S»); -1 si no lo dice
@@ -220,30 +223,36 @@ function duracionDash(texto) {
   return Number(d[1] || 0) * 86400 + Number(d[2] || 0) * 3600 + Number(d[3] || 0) * 60 + Number(d[4] || 0);
 }
 
-// Cuál de las listas de un marco es la del video que pulsó la persona. «listas»: [{ entrada, duracion (-1 si no se
-// sabe), maestra, orden }] («orden»: cuándo la pidió el marco). «duracion»: la del video (0 si no se sabe).
-//  - Sin la duración del video: la primera que pidió el marco (suele ser la principal), como siempre.
-//  - Con ella: la que dura lo mismo (la principal antes que una de sus calidades; entre iguales, la más nueva). En una
-//    página con varios videos (el inicio de LinkedIn, por ejemplo) cada uno tiene su lista. Si ninguna dura lo mismo, la
-//    primera que no dice cuánto dura; si todas dicen otra cosa, ninguna: son de otros videos.
+// Cuál de las listas de un marco es la del video que pulsó la persona: { entrada, motivo }. «listas»: [{ entrada,
+// duracion (-1 si no se sabe), maestra, orden }] («orden»: cuándo la pidió el marco). «duracion»: la del video (0 si
+// no se sabe). Nunca una sin comprobar que sea la de este video; si no hay, «motivo» dice por qué: «ninguna» (el marco
+// no pidió listas), «otros» (todas son de otros videos) o «cual» (no se pudo saber cuál es la de este video).
+//  - Con la duración del video: la que dura lo mismo (la principal antes que una de sus calidades; entre iguales, la más
+//    nueva). En una página con varios videos (el inicio de LinkedIn, por ejemplo) cada uno tiene su lista.
+//  - Sin ella (un video en vivo, por ejemplo): la primera, solo si todas son del mismo video (la principal y las que el
+//    reproductor pidió enseguida: sus calidades y su audio).
 function elegirLista(listas, duracion) {
   const porOrden = (listas || []).filter((l) => l && l.entrada).sort((a, b) => a.orden - b.orden);
-  if (!porOrden.length) return null;
-  if (!(duracion > 0 && Number.isFinite(duracion))) return porOrden[0].entrada;
+  if (!porOrden.length) return { entrada: null, motivo: "ninguna" };
+  if (!(duracion > 0 && Number.isFinite(duracion))) {
+    const unSoloVideo = porOrden.every((l) => l.orden - porOrden[0].orden <= VENTANA_LISTAS);
+    return unSoloVideo ? { entrada: porOrden[0].entrada, motivo: "" } : { entrada: null, motivo: "cual" };
+  }
   const igual = (d) => d >= 0 && Math.abs(d - duracion) <= Math.max(1.5, duracion * 0.02);
   const iguales = porOrden.filter((l) => igual(l.duracion));
   if (iguales.length) {
     iguales.sort((a, b) => (b.maestra ? 1 : 0) - (a.maestra ? 1 : 0) || b.orden - a.orden);
-    return iguales[0].entrada;
+    return { entrada: iguales[0].entrada, motivo: "" };
   }
-  const sinSaber = porOrden.find((l) => !(l.duracion >= 0));
-  return sinSaber ? sinSaber.entrada : null;
+  // Ninguna dura lo mismo. Si de alguna no se pudo saber cuánto dura, no se sabe cuál es la de este video.
+  return { entrada: null, motivo: porOrden.some((l) => !(l.duracion >= 0)) ? "cual" : "otros" };
 }
 
 // Qué lista es una dirección y cuánto dura, según lo que dice por dentro: { formato, duracion, maestra }, null si se leyó
 // y no es una lista, undefined si no se pudo leer. «leer(url)» trae el texto de una lista ("" si se leyó y no es una
-// lista, null si no se pudo). De una lista principal se lee también su primera calidad, que dice cuánto dura.
-async function revisarLista(url, leer) {
+// lista, null si no se pudo). De una lista principal se lee también una de sus calidades, que dice cuánto dura, pero
+// solo una que el reproductor ya pidió («vista»): nunca se sigue lo que dice una lista hacia otras direcciones.
+async function revisarLista(url, leer, vista = () => false) {
   const texto = await leer(url);
   if (texto === null || texto === undefined) return undefined;
   const formato = formatoPorContenido(texto);
@@ -251,23 +260,32 @@ async function revisarLista(url, leer) {
   if (formato !== "hls") return null;
   const h = leerHls(texto, url);
   if (!h.maestra) return { formato, duracion: h.duracion, maestra: false };
-  if (!h.primera) return { formato, duracion: -1, maestra: true };
-  const calidad = await leer(h.primera);
-  const c = formatoPorContenido(calidad) === "hls" ? leerHls(calidad, h.primera) : null;
+  const calidad = h.calidades.find((c) => vista(c));
+  if (!calidad) return { formato, duracion: -1, maestra: true };
+  const t = await leer(calidad);
+  const c = formatoPorContenido(t) === "hls" ? leerHls(t, calidad) : null;
   return { formato, duracion: c && !c.maestra ? c.duracion : -1, maestra: true };
 }
 
 const MAXIMO_MIRADAS = 16;   // respuestas dudosas que se miran por dentro en cada clic
 
-// La lista (HLS o DASH) de un video «blob:» de un marco, cuando la persona pulsó su botón: entre las que ese marco pidió
-// con su tipo y sus respuestas dudosas (que se miran por dentro ahora, las más chicas primero). Con la duración del video
-// se elige la suya (ver elegirLista). Las dudosas que resultan ser listas pasan a la lista de videos de la pestaña; las
-// que no, se olvidan. Devuelve la entrada elegida o null.
+// La lista (HLS o DASH) de un video «blob:» de un marco, cuando la persona pulsó su botón: { entrada, motivo } (ver
+// elegirLista). Entre las que ese marco pidió con su tipo y sus respuestas dudosas (que se miran por dentro ahora, las
+// más chicas primero). Solo se vuelve a pedir lo que el reproductor de esa pestaña y ese marco pidió («leer» nunca recibe
+// otra dirección). Las dudosas que resultan ser listas pasan a la lista de videos de la pestaña; las que no, se olvidan.
 async function listaDelVideo(medios, tabId, frameId, duracion, leer, enParalelo = 4) {
   const conDuracion = duracion > 0 && Number.isFinite(duracion);
   const conocidas = medios.transmisionesDe(tabId, frameId);
-  // Sin la duración del video, como siempre: la primera que pidió el marco (no hace falta mirar nada)
-  if (conocidas.length && !conDuracion) return conocidas[0];
+  // Sin la duración del video no hace falta mirar nada: la primera, si todas son del mismo video
+  if (conocidas.length && !conDuracion)
+    return elegirLista(conocidas.map((e) => ({ entrada: e, duracion: -1, maestra: false, orden: e.cuando })), 0);
+  const vista = (u) => medios.vista(tabId, frameId, u);
+  const pedidas = new Map();   // cada dirección se pide una sola vez por clic
+  const leerVista = (u) => {
+    if (!vista(u)) return Promise.resolve(null);
+    if (!pedidas.has(u)) pedidas.set(u, Promise.resolve().then(() => leer(u)));
+    return pedidas.get(u);
+  };
   const grupo = (d) => (d.tamano >= 0 && d.tamano <= 256 * 1024 ? 0 : d.tamano < 0 ? 1 : 2);
   const dudosas = medios
     .dudosasDe(tabId, frameId)
@@ -275,18 +293,18 @@ async function listaDelVideo(medios, tabId, frameId, duracion, leer, enParalelo 
     .slice(0, MAXIMO_MIRADAS);
   const tareas = [
     ...conocidas.map((e) => async () => {
-      const r = await revisarLista(e.url, leer);
+      const r = await revisarLista(e.url, leerVista, vista);
       // Una conocida que no se pudo leer sigue siendo una lista: no se sabe cuánto dura
       return { entrada: e, duracion: r ? r.duracion : -1, maestra: !!(r && r.maestra), orden: e.cuando };
     }),
     ...dudosas.map((d) => async () => {
-      const r = await revisarLista(d.url, leer);
+      const r = await revisarLista(d.url, leerVista, vista);
       if (!r) {
         if (r === null) medios.sinDudas(tabId, d.url);   // no es una lista: no se vuelve a mirar (si no se pudo leer, sí)
         return null;
       }
       const entrada = medios.anotar(tabId, { url: d.url, formato: r.formato, clase: "video", tipoMime: d.tipoMime || "",
-        nombre: nombreDeMedio(d.url, ""), frameId }, d.cuando);
+        nombre: nombreDeMedio(d.url, ""), frameId, vista: true }, d.cuando);
       medios.sinDudas(tabId, d.url);
       return entrada ? { entrada, duracion: r.duracion, maestra: r.maestra, orden: d.cuando } : null;
     }),
@@ -301,6 +319,34 @@ async function listaDelVideo(medios, tabId, frameId, duracion, leer, enParalelo 
   };
   await Promise.all(Array.from({ length: Math.min(enParalelo, tareas.length) }, trabajar));
   return elegirLista(listas, conDuracion ? duracion : 0);
+}
+
+// Un error de la extensión para el registro de Atarraya, sin datos de la persona: de cada dirección queda solo el sitio
+// (sin usuario ni contraseña, sin ruta ni parámetros); sin «usuario:clave@», sin correos, sin el valor de parámetros ni
+// de cookies («nombre=…») y sin cadenas largas que parezcan claves. Las direcciones de la misma extensión
+// (chrome-extension://, moz-extension://) quedan con su archivo y su línea, sin parámetros: dicen dónde falló.
+function limpiarParaRegistro(texto) {
+  let t = String(texto === undefined || texto === null ? "" : texto).replace(/\u0000/g, " ");
+  // Primero las direcciones (ya limpias, se apartan para que lo demás no las toque)
+  const direcciones = [];
+  t = t.replace(/\b([a-z][a-z0-9+.-]*):\/\/([^\s/?#'"<>()]*)([^\s'"<>()]*)/gi, (todo, esquema, autoridad, resto) => {
+    const e = esquema.toLowerCase();
+    let limpia;
+    if ((e === "chrome-extension" || e === "moz-extension") && !autoridad.includes("@"))
+      limpia = e + "://" + autoridad + resto.replace(/[?#].*$/, "");
+    else limpia = e + "://" + autoridad.replace(/^.*@/, "") + (resto ? "/…" : "");
+    direcciones.push(limpia);
+    return "\u0000" + (direcciones.length - 1) + "\u0000";
+  });
+  t = t
+    .replace(/[^\s/:@'"<>()\u0000]+:[^\s/@'"<>()\u0000]*@/g, "")   // usuario:clave@ suelto
+    .replace(/[\w.%+-]+@[\w-]+(?:\.[\w-]+)+/g, "(correo)")         // correos (y usuario@sitio)
+    .replace(/=\s*"[^"]*"/g, '="…"')                                // valores entre comillas
+    .replace(/=\s*'[^']*'/g, "='…'")
+    .replace(/=[^\s;&,'"<>()\u0000]+/g, "=…")                       // valores de parámetros y de cookies
+    .replace(/[A-Za-z0-9+/_.%-]{20,}/g, (x) => (/\d/.test(x) && /[A-Za-z]/.test(x) ? "…" : x));   // claves sueltas
+  t = t.replace(/\u0000(\d+)\u0000/g, (todo, i) => direcciones[Number(i)] || "");
+  return t.replace(/\s+/g, " ").trim();
 }
 
 // El botón no recibió respuesta de la extensión. Si este marco quedó hablando con una extensión que ya no está (se
@@ -451,7 +497,8 @@ class MediosPorPestana {
   }
 
   // Un video, una lista o un archivo de audio de un marco. «entrada»: { url, formato, clase, tamano, tipoMime, nombre,
-  // frameId, alto, protegido }. Una dirección que ya estaba se junta con la anterior.
+  // frameId, alto, protegido, vista }. «vista»: la extensión vio al navegador pedirla para ese marco (no la contó la
+  // página): solo esas se pueden volver a pedir. Una dirección que ya estaba se junta con la anterior.
   anotar(tabId, entrada, ahora = Date.now()) {
     if (!entrada || !entrada.url || !entrada.formato || cadenaBloqueada([entrada.url])) return null;
     const p = this.pestana(tabId);
@@ -470,7 +517,17 @@ class MediosPorPestana {
     if (entrada.nombre && !e.nombre) e.nombre = entrada.nombre;
     if (entrada.alto > 0) e.alto = entrada.alto;
     if (entrada.protegido || p.protegidos.includes(frameId)) e.protegido = true;
+    if (entrada.vista && e.frameId === frameId) e.vista = true;
     return e;
+  }
+
+  // ¿El navegador pidió esta dirección para el reproductor de esa pestaña y ese marco? (la vio la extensión: una lista o
+  // una respuesta dudosa). Solo esas se pueden volver a pedir con cookies.
+  vista(tabId, frameId, url) {
+    const p = this.pestana(tabId, false);
+    if (!p || !url) return false;
+    return p.medios.some((e) => e.frameId === frameId && e.vista === true && e.url === url)
+      || p.dudosas.some((d) => d.frameId === frameId && d.url === url);
   }
 
   // El marco tiene un video protegido (DRM): sus listas HLS y DASH también lo están
@@ -642,5 +699,5 @@ if (typeof module !== "undefined")
     cabecerasDe, MediosPorPestana, pedidoDeVideo, sitiosDeArriba, hostDe,
     TEXTO_SIN_ARCHIVO, TEXTO_SIN_HABLAR, TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA,
     puedeSerLista, formatoPorContenido, puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo,
-    textoSinRespuesta, MAXIMO_MIRADAS,
+    textoSinRespuesta, MAXIMO_MIRADAS, TEXTO_CUAL_VIDEO, limpiarParaRegistro,
   };

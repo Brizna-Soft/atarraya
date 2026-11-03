@@ -234,11 +234,12 @@ Desde la 0.3.0, la extensión encuentra los videos de la página que estás vien
   de ella hasta que pulsas un botón. Entonces se lo pasa a Atarraya como cualquier descarga, con las cookies y la
   página del marco donde está el video.
 - **Sitios que no dicen cuál es la lista del video** (LinkedIn, por ejemplo, la pide sin `.m3u8` en la dirección):
-  cuando pulsas el botón, la extensión vuelve a pedir el principio de lo que el reproductor ya pidió, a los mismos
-  servidores, para reconocer la lista por dentro. Si en la página hay varios videos, elige la lista que dura lo mismo
-  que el video que pulsaste.
+  cuando pulsas el botón, la extensión vuelve a pedir el principio de lo que el reproductor de ese video ya pidió, y
+  nada más: ni lo que diga una lista ni otro servidor, y no sigue redirecciones. Si en la página hay varios videos,
+  elige la lista que dura lo mismo que el video que pulsaste; si no puede comprobarlo, no manda ninguna.
 - **Si no se puede, el botón dice por qué:** que todavía no encontró el video (dale play), que no encontró su archivo
-  completo, que la extensión se reinició (recarga la página) o que no pudo hablar con Atarraya.
+  completo, que no encontró cuál de los videos de la página es, que la extensión se reinició (recarga la página) o que
+  no pudo hablar con Atarraya.
 
 Qué hace Atarraya con cada uno:
 
@@ -316,7 +317,8 @@ Lo que no baja:
 esperabas. Si puedes, adjunta el archivo `%LOCALAPPDATA%\Atarraya\registro.txt`. Solo anota el nombre de los
 sitios, no las direcciones completas ni los nombres de lo que bajas. Si Atarraya no pudo escribir ahí, lo anota
 (con el motivo) en `registro-respaldo.txt`, en la misma carpeta, o en `Atarraya-registro.txt`, en la carpeta temporal
-(`%TEMP%`).
+(`%TEMP%`). Ninguno pasa de 512 KB. Los errores de la extensión llegan ahí sin direcciones completas, sin cookies,
+sin correos y sin contraseñas.
 
 ## Apoyar
 

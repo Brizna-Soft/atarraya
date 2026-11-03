@@ -4106,6 +4106,79 @@ namespace
                       && LineaDeRegistro("", 10).empty() && LineaDeRegistro(std::string("x\0y", 3), 10) == "x y",
                   "registro: un texto de la extensión queda en una línea y no corta una letra por la mitad");
 
+        // El tope (512 KB): un registro que lo pasa y no se puede renombrar a «.anterior» se corta a la mitad (queda lo
+        // más nuevo); si tampoco se puede cortar, no se escribe más en él. Los respaldos, igual.
+        auto llenar = [](const std::wstring& ruta, size_t bytes) {
+            std::string d;
+            while (d.size() < bytes) d += "2026-11-02 00:00:00 una linea vieja del registro, para llenarlo\r\n";
+            HANDLE f = CreateFileW(ruta.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            DWORD n = 0;
+            WriteFile(f, d.data(), (DWORD)d.size(), &n, nullptr);
+            CloseHandle(f);
+        };
+        auto terminaCon = [](const std::string& s, const std::string& fin) {
+            return s.size() >= fin.size() && s.compare(s.size() - fin.size(), fin.size(), fin) == 0;
+        };
+        const size_t mitad = (size_t)TopeRegistro / 2;
+        llenar(registro, 600 * 1024);
+        // Otro programa lo tiene abierto sin dejar renombrarlo (no comparte «borrar»)
+        HANDLE sinRenombrar = CreateFileW(registro.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL, nullptr);
+        Registrar("registro: despues de cortar");
+        CloseHandle(sinRenombrar);
+        std::string c1 = leer(registro);
+        Comprobar(sinRenombrar != INVALID_HANDLE_VALUE && c1.size() <= mitad + 200 && c1.find("(registro cortado a la mitad") == 20
+                      && terminaCon(c1, "registro: despues de cortar\r\n") && c1.find("una linea vieja") != std::string::npos
+                      && !ExisteArchivo(registro + L".anterior"),
+                  "registro: si al pasar el tope no se puede renombrar, se corta a la mitad (queda lo más nuevo y sigue)");
+
+        llenar(registro, 600 * 1024);
+        CreateDirectoryW((registro + L".anterior").c_str(), nullptr);   // el «.anterior» no se puede reemplazar
+        Registrar("registro: con el anterior ocupado");
+        std::string c2 = leer(registro);
+        Comprobar(c2.size() <= mitad + 200 && terminaCon(c2, "registro: con el anterior ocupado\r\n"),
+                  "registro: si el «.anterior» no se puede reemplazar, también se corta a la mitad");
+        RemoveDirectoryW((registro + L".anterior").c_str());
+
+        // Ni renombrar ni cortar (otro programa no deja escribir): no se escribe más en él; la línea va al respaldo
+        llenar(registro, 600 * 1024);
+        const int64_t lleno = TamanoArchivo(registro);
+        DeleteFileW(respaldo.c_str());
+        HANDLE soloLeer = CreateFileW(registro.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        Registrar("registro: sin poder cortar");
+        CloseHandle(soloLeer);
+        Comprobar(soloLeer != INVALID_HANDLE_VALUE && lleno > TopeRegistro && TamanoArchivo(registro) == lleno
+                      && leer(respaldo).find("] registro: sin poder cortar") != std::string::npos,
+                  "registro: si no se puede ni renombrar ni cortar, no se escribe más en él (la línea va al respaldo)");
+
+        // El respaldo tampoco pasa del tope
+        DeleteFileW((respaldo + L".anterior").c_str());
+        HANDLE tomado = tomar(registro);
+        llenar(respaldo, 600 * 1024);
+        Registrar("registro: al respaldo lleno");
+        CloseHandle(tomado);
+        Comprobar(TamanoArchivo(respaldo) < 4096 && TamanoArchivo(respaldo + L".anterior") >= 600 * 1024
+                      && terminaCon(leer(respaldo), "registro: al respaldo lleno\r\n"),
+                  "registro: el respaldo tampoco pasa del tope");
+
+        // Lo que manda la extensión, sin datos de la persona (como limpiarParaRegistro en medios.js)
+        std::string s1 = SinDatosPrivados("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
+        std::string s2 = SinDatosPrivados("TypeError at f (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57?x=1)");
+        std::string s3 = SinDatosPrivados("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org "
+                                          "con ftp usuario:secreto@archivos.org/x");
+        std::string s4 = SinDatosPrivados("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
+        auto no = [](const std::string& s, const char* x) { return s.find(x) == std::string::npos; };
+        Comprobar(s1 == "Error: falló https://cdn.ejemplo.org:8443/… en algo",
+                  "registro: de una dirección queda solo el sitio (sin usuario ni contraseña, sin ruta ni parámetros)");
+        Comprobar(s2 == "TypeError at f (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57)",
+                  "registro: las direcciones de la extensión quedan con su archivo y su línea (sin parámetros)");
+        Comprobar(no(s3, "AQEDAR") && no(s3, "5551234") && no(s3, "persona.real") && no(s3, "correo-ejemplo") && no(s3, "secreto") && no(s3, "usuario:")
+                      && !no(s3, "li_at=…") && !no(s3, "(correo)") && !no(s3, "archivos.org"),
+                  "registro: sin valores de cookies ni de parámetros, sin correos y sin «usuario:clave@»");
+        Comprobar(s4 == "clave suelta … y un nombreMuyLargoDeFuncionSinNumeros" && SinDatosPrivados("").empty()
+                      && SoloSitio("https://ana:p@ss@sitio.org/x") == "sitio.org",
+                  "registro: sin cadenas largas que parecen claves; el sitio de una dirección nunca lleva la contraseña");
+
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         std::filesystem::remove_all(carpeta, ec);
     }
