@@ -4,11 +4,15 @@
 #include <bcrypt.h>
 #include <shlobj.h>
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <regex>
 #include <vector>
 
 std::wstring hnd::Ancho(const std::string& utf8)
@@ -240,13 +244,65 @@ std::string hnd::NuevoId()
 
 namespace
 {
-    // Agrega «texto» al final de un archivo (lo crea si no está). Si no se puede abrir o escribir, false y el código de
+    std::string Hora()
+    {
+        SYSTEMTIME t;
+        GetLocalTime(&t);
+        char hora[32];
+        snprintf(hora, sizeof(hora), "%04d-%02d-%02d %02d:%02d:%02d ", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
+        return hora;
+    }
+
+    // Deja solo la mitad más nueva de un registro (desde una línea entera), con una línea que lo dice
+    bool CortarALaMitad(const std::wstring& ruta)
+    {
+        HANDLE h = CreateFileW(ruta.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h == INVALID_HANDLE_VALUE) return false;
+        LARGE_INTEGER tam = {};
+        bool ok = GetFileSizeEx(h, &tam) != FALSE;
+        const int64_t guardar = hnd::TopeRegistro / 2;
+        if (ok && tam.QuadPart > guardar)
+        {
+            std::string cola((size_t)guardar, '\0');
+            LARGE_INTEGER desde = {};
+            desde.QuadPart = tam.QuadPart - guardar;
+            DWORD leidos = 0;
+            ok = SetFilePointerEx(h, desde, nullptr, FILE_BEGIN) && ReadFile(h, cola.data(), (DWORD)guardar, &leidos, nullptr);
+            if (ok)
+            {
+                cola.resize(leidos);
+                size_t salto = cola.find('\n');
+                if (salto != std::string::npos) cola.erase(0, salto + 1);
+                std::string nuevo = Hora() + "(registro cortado a la mitad: no se pudo renombrar a .anterior)\r\n" + cola;
+                LARGE_INTEGER cero = {};
+                DWORD escritos = 0;
+                ok = SetFilePointerEx(h, cero, nullptr, FILE_BEGIN) && WriteFile(h, nuevo.data(), (DWORD)nuevo.size(), &escritos, nullptr)
+                  && escritos == nuevo.size() && SetEndOfFile(h);
+            }
+        }
+        CloseHandle(h);
+        return ok;
+    }
+
+    // Un registro no pasa del tope: el que lo pasa se renombra a «.anterior» (reemplaza al de antes). Si no se puede (otro
+    // programa lo tiene abierto, por ejemplo), se corta a la mitad. Si tampoco, false y no se escribe más en él.
+    bool RespetarTope(const std::wstring& ruta, DWORD& error)
+    {
+        if (hnd::TamanoArchivo(ruta) <= hnd::TopeRegistro) return true;
+        if (MoveFileExW(ruta.c_str(), (ruta + L".anterior").c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
+        DWORD alRenombrar = GetLastError();
+        if (CortarALaMitad(ruta)) return true;
+        error = alRenombrar != ERROR_SUCCESS ? alRenombrar : ERROR_FILE_TOO_LARGE;
+        return false;
+    }
+
+    // Agrega «texto» al final de un archivo (lo crea si no está), sin pasar del tope. Si no se puede, false y el código de
     // error de Windows en «error». Un archivo que otro programa tiene abierto un momento (un antivirus, el indexador de
     // Windows) se prueba otra vez.
     bool AgregarAlFinal(const std::wstring& ruta, const std::string& texto, DWORD& error)
     {
-        if (hnd::TamanoArchivo(ruta) > 512 * 1024)
-            MoveFileExW(ruta.c_str(), (ruta + L".anterior").c_str(), MOVEFILE_REPLACE_EXISTING);
+        if (!RespetarTope(ruta, error)) return false;
         HANDLE h = INVALID_HANDLE_VALUE;
         for (int intento = 0; intento < 2; intento++)
         {
@@ -267,15 +323,6 @@ namespace
         }
         CloseHandle(h);
         return ok;
-    }
-
-    std::string Hora()
-    {
-        SYSTEMTIME t;
-        GetLocalTime(&t);
-        char hora[32];
-        snprintf(hora, sizeof(hora), "%04d-%02d-%02d %02d:%02d:%02d ", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond);
-        return hora;
     }
 
     // Donde va el registro si tampoco se puede escribir en la carpeta de datos: la carpeta temporal de Windows (la copia
@@ -348,12 +395,106 @@ std::string hnd::LineaDeRegistro(const std::string& texto, size_t maximo)
     return r;
 }
 
+namespace
+{
+    std::string SinDatosPrivadosSinCuidar(const std::string& texto)
+    {
+        // Lo mismo que limpiarParaRegistro en la extensión (medios.js). Las direcciones, ya limpias, se apartan (\x01n\x01)
+        // para que lo demás no las toque.
+        std::string t = texto;
+        for (auto& c : t)
+        {
+            if (c == '\x01') c = ' ';
+        }
+        static const std::regex direccion(R"(\b([A-Za-z][A-Za-z0-9+.\-]*)://([^\s/?#'"<>()]*)([^\s'"<>()]*))");
+        std::vector<std::string> direcciones;
+        std::string r;
+        size_t desde = 0;
+        for (auto it = std::sregex_iterator(t.begin(), t.end(), direccion); it != std::sregex_iterator(); ++it)
+        {
+            const std::smatch& m = *it;
+            r.append(t, desde, (size_t)m.position() - desde);
+            std::string esquema = m[1].str();
+            for (auto& c : esquema) c = (char)tolower((unsigned char)c);
+            std::string autoridad = m[2].str(), resto = m[3].str();
+            std::string limpia;
+            if ((esquema == "chrome-extension" || esquema == "moz-extension") && autoridad.find('@') == std::string::npos)
+                limpia = esquema + "://" + autoridad + resto.substr(0, resto.find_first_of("?#"));
+            else
+            {
+                size_t arroba = autoridad.rfind('@');
+                limpia = esquema + "://" + (arroba == std::string::npos ? autoridad : autoridad.substr(arroba + 1)) + (resto.empty() ? "" : "/…");
+            }
+            direcciones.push_back(limpia);
+            r += "\x01" + std::to_string(direcciones.size() - 1) + "\x01";
+            desde = (size_t)(m.position() + m.length());
+        }
+        r.append(t, desde, std::string::npos);
+        static const std::regex usuarioClave(R"([^\s/:@'"<>()\x01]+:[^\s/@'"<>()\x01]*@)");
+        static const std::regex correo(R"([\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+)");
+        static const std::regex entreComillas(R"(=\s*"[^"]*")");
+        static const std::regex entreApostrofos(R"(=\s*'[^']*')");
+        static const std::regex valor(R"(=[^\s;&,'"<>()\x01]+)");
+        r = std::regex_replace(r, usuarioClave, "");
+        r = std::regex_replace(r, correo, "(correo)");
+        r = std::regex_replace(r, entreComillas, "=\"…\"");
+        r = std::regex_replace(r, entreApostrofos, "='…'");
+        r = std::regex_replace(r, valor, "=…");
+        // Cadenas largas con letras y números: parecen claves
+        static const std::regex larga(R"([A-Za-z0-9+/_.%\-]{20,})");
+        std::string sinClaves;
+        desde = 0;
+        for (auto it = std::sregex_iterator(r.begin(), r.end(), larga); it != std::sregex_iterator(); ++it)
+        {
+            const std::smatch& m = *it;
+            std::string x = m.str();
+            bool numero = x.find_first_of("0123456789") != std::string::npos;
+            bool letra = std::any_of(x.begin(), x.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); });
+            sinClaves.append(r, desde, (size_t)m.position() - desde);
+            sinClaves += numero && letra ? std::string("…") : x;
+            desde = (size_t)(m.position() + m.length());
+        }
+        sinClaves.append(r, desde, std::string::npos);
+        // Las direcciones vuelven a su lugar
+        std::string fin;
+        for (size_t i = 0; i < sinClaves.size(); i++)
+        {
+            if (sinClaves[i] == '\x01')
+            {
+                size_t cierre = sinClaves.find('\x01', i + 1);
+                if (cierre != std::string::npos)
+                {
+                    size_t n = (size_t)std::strtoul(sinClaves.substr(i + 1, cierre - i - 1).c_str(), nullptr, 10);
+                    if (n < direcciones.size()) fin += direcciones[n];
+                    i = cierre;
+                    continue;
+                }
+            }
+            fin += sinClaves[i];
+        }
+        return fin;
+    }
+}
+
+std::string hnd::SinDatosPrivados(const std::string& texto)
+{
+    try
+    {
+        return SinDatosPrivadosSinCuidar(texto);
+    }
+    catch (...)
+    {
+        // Si las expresiones no pudieran con el texto, no se anota nada de él
+        return "(un texto que no se pudo revisar; no se anota)";
+    }
+}
+
 std::string hnd::SoloSitio(const std::string& url)
 {
     auto esquema = url.find("://");
     if (esquema == std::string::npos) return "?";
     auto fin = url.find_first_of("/?#", esquema + 3);
     std::string sitio = url.substr(esquema + 3, fin == std::string::npos ? std::string::npos : fin - esquema - 3);
-    auto arroba = sitio.find('@');   // sin usuario ni contraseña
+    auto arroba = sitio.rfind('@');   // sin usuario ni contraseña (que puede traer otra @)
     return arroba == std::string::npos ? sitio : sitio.substr(arroba + 1);
 }

@@ -281,6 +281,7 @@ async function observar(d) {
       tipoMime: cab["content-type"] || "",
       nombre: nombreDeMedio(d.url, cab["content-disposition"]),
       frameId,
+      vista: true,   // la pidió el navegador para este marco: se puede volver a pedir si la persona pulsa el botón
     });
   }
   guardarPronto();
@@ -422,27 +423,41 @@ async function enviarVideo(tabId, entrada) {
 }
 
 // Un error de la misma extensión (no de Atarraya ni de la conexión): a la consola y, si Atarraya está abierto, a su
-// registro (registro.txt), para saber qué pasó. Sin direcciones completas (solo su sitio); nada sale de esta PC.
+// registro (registro.txt), para saber qué pasó. Sin datos de la persona (ver limpiarParaRegistro); nada sale de esta PC.
 function anotarFallo(donde, e) {
-  const detalle = e && e.stack ? String(e.stack) : String(e);
-  const texto = (donde + ": " + detalle)
-    .replace(/\b(https?:\/\/[^/\s'"]+)[^\s'"]*/gi, "$1/...")
-    .replace(/\s+/g, " ")
-    .slice(0, 1000);
-  console.warn("Atarraya:", texto);
+  anotarEnRegistro(donde + ": " + (e && e.stack ? String(e.stack) : String(e)));
+}
+
+function anotarEnRegistro(texto) {
+  const limpio = limpiarParaRegistro(texto).slice(0, 1000);
+  console.warn("Atarraya:", limpio);
   try {
-    Promise.resolve(hablar({ tipo: "registro", texto })).catch(() => {});
+    Promise.resolve(hablar({ tipo: "registro", texto: limpio })).catch(() => {});
   } catch (x) {}
 }
 
 // El principio de una respuesta, como texto, para ver si es una lista HLS o DASH: el texto si lo es, "" si no lo es (se
-// deja de bajar en cuanto se nota) y null si no se pudo pedir. Solo después de que la persona pulsó el botón.
-async function leerLista(url) {
+// deja de bajar en cuanto se nota) y null si no se pudo pedir. Solo después de que la persona pulsó el botón, y solo
+// direcciones que el reproductor ya pidió (ver listaDelVideo). No sigue redirecciones: si el servidor manda a otro lado,
+// no se lee (así nunca llega a otro servidor, ni a YouTube). «fallas» junta el sitio y el motivo de lo que no se pudo leer.
+async function leerLista(url, fallas = []) {
+  const falla = (motivo) => {
+    if (fallas.length < 5) fallas.push(hostDe(url) + ": " + motivo);
+    return null;
+  };
+  if (!/^https?:/i.test(url) || motivoDeUrl(url)) return falla("no se puede pedir");
   const control = new AbortController();
   const reloj = setTimeout(() => control.abort(), 8000);
   try {
-    const r = await fetch(url, { credentials: "include", signal: control.signal });
-    if (!r.ok || !r.body) return null;
+    let r;
+    try {
+      r = await fetch(url, { credentials: "include", redirect: "error", signal: control.signal });
+    } catch (e) {
+      return falla(control.signal.aborted ? "no contestó a tiempo" : "redirige a otro lado o no se pudo conectar");
+    }
+    // Lo mismo que se pidió, sin redirecciones, y nada de YouTube ni de sitios con DRM
+    if (r.redirected || hostDe(r.url || url) !== hostDe(url) || motivoBloqueo([r.url])) return falla("redirige a otro lado");
+    if (!r.ok || !r.body) return falla("HTTP " + r.status);
     const lector = r.body.getReader();
     const decodificador = new TextDecoder();
     let texto = "";
@@ -458,7 +473,7 @@ async function leerLista(url) {
     texto += decodificador.decode();
     return formatoPorContenido(texto) ? texto : "";
   } catch (e) {
-    return null;
+    return falla("se cortó");
   } finally {
     clearTimeout(reloj);
     control.abort();   // lo que falta de una respuesta que no es una lista no se baja
@@ -492,9 +507,15 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
     // Un video «blob:»: la lista de este video entre las que pidió su propio marco (también las que no dicen que lo son).
     // Su duración la distingue de las de otros videos de la página.
     const duracion = Number(mensaje.duracion);
-    entrada = await listaDelVideo(medios, tabId, frameId, Number.isFinite(duracion) && duracion > 0 && duracion < 1e7 ? duracion : 0, leerLista);
+    const fallas = [];
+    const r = await listaDelVideo(medios, tabId, frameId, Number.isFinite(duracion) && duracion > 0 && duracion < 1e7 ? duracion : 0,
+      (u) => leerLista(u, fallas));
+    entrada = r.entrada;
     if (!entrada) {
       guardarPronto();
+      // Lo que no se pudo leer queda en el registro de Atarraya (solo el sitio y el motivo), para saber por qué
+      if (fallas.length) anotarEnRegistro("botón «Descargar este video»: no se pudo leer " + fallas.join("; "));
+      if (r.motivo === "cual") return { ok: false, texto: TEXTO_CUAL_VIDEO };
       // Si el marco ya pidió partes del video (o listas de otros videos), el video está ahí pero su lista no
       const algo = medios.muestrasDeMarco(tabId, frameId).length || medios.dudosasDe(tabId, frameId).length
         || medios.transmisionesDe(tabId, frameId).length;

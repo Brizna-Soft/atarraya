@@ -276,7 +276,7 @@ const listaHls = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXTINF:4.
 const maestra = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720\nhls-720/lista?x=1\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nhttps://otro.cdn/480.m3u8\n";
 const mpd = '<?xml version="1.0" encoding="UTF-8"?>\n<!-- hecho a mano -->\n<MPD xmlns="urn:mpeg:dash:schema:mpd:2011" type="static" '
   + 'mediaPresentationDuration="PT1M3.5S" minBufferTime="PT2S"><Period/></MPD>';
-comprobar(M.formatoPorContenido(listaHls) === "hls" && M.formatoPorContenido("﻿  \r\n#EXTM3U\n") === "hls" && M.formatoPorContenido(mpd) === "dash"
+comprobar(M.formatoPorContenido(listaHls) === "hls" && M.formatoPorContenido("\uFEFF  \r\n#EXTM3U\n") === "hls" && M.formatoPorContenido(mpd) === "dash"
   && M.formatoPorContenido('<mpd:MPD xmlns:mpd="urn:mpeg:dash:schema:mpd:2011">') === "dash" && M.formatoPorContenido("<html><body>") === ""
   && M.formatoPorContenido("\u0000\u0000\u0000\u0018ftypiso5") === "" && M.formatoPorContenido("G@\u0011\u0010") === "" && M.formatoPorContenido(null) === ""
   && M.formatoPorContenido("<?xml version='1.0'?><MPDX/>") === "",
@@ -296,17 +296,44 @@ comprobar(M.duracionDash(mpd) === 63.5 && M.duracionDash('<MPD mediaPresentation
   "videos: un manifiesto DASH dice cuánto dura");
 {
   const a = { url: "a" }, b = { url: "b" }, v = { url: "v" }, x = { url: "x" };
-  comprobar(M.elegirLista([{ entrada: b, duracion: 24, orden: 2 }, { entrada: a, duracion: 16, orden: 1 }], 0) === a
-    && M.elegirLista([], 16) === null && M.elegirLista(null, 16) === null,
-    "videos: sin la duración del video, la primera lista que pidió el marco (como siempre)");
-  comprobar(M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 24.02) === b
-    && M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 16.4) === a,
+  const el = (listas, d) => M.elegirLista(listas, d);
+  const sin = (r, motivo) => r.entrada === null && r.motivo === motivo;
+  comprobar(el([{ entrada: b, duracion: -1, orden: 1200 }, { entrada: a, duracion: -1, orden: 1000 }], 0).entrada === a
+    && sin(el([], 16), "ninguna") && sin(el(null, 16), "ninguna"),
+    "videos: sin la duración del video, la primera lista que pidió el marco si todas son del mismo video");
+  comprobar(sin(el([{ entrada: a, duracion: -1, orden: 1000 }, { entrada: b, duracion: -1, orden: 60000 }], 0), "cual"),
+    "videos: sin la duración del video y con listas de varios videos, ninguna (no se sabe cuál es)");
+  comprobar(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 24.02).entrada === b
+    && el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 16.4).entrada === a,
     "videos: con varios videos en la página (como el inicio de LinkedIn), la lista que dura lo mismo que el video pulsado");
-  comprobar(M.elegirLista([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, orden: 1 }], 16) === a,
+  comprobar(el([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, orden: 1 }], 16).entrada === a,
     "videos: entre la principal y una de sus calidades, la principal (Atarraya deja elegir la calidad)");
-  comprobar(M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: x, duracion: -1, orden: 3 }], 50) === x
-    && M.elegirLista([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 50) === null,
-    "videos: si ninguna dura lo mismo, una que no dice cuánto dura; si todas dicen otra cosa, ninguna (son de otros videos)");
+  comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: x, duracion: -1, orden: 3 }], 50), "cual")
+    && sin(el([{ entrada: x, duracion: -1, orden: 3 }], 50), "cual"),
+    "videos: si no se pudo saber cuánto dura una lista, no se elige ninguna sin comprobar (dice que no sabe cuál es)");
+  comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 50), "otros"),
+    "videos: si todas dicen otra duración, ninguna (son de otros videos)");
+}
+comprobar(M.TEXTO_CUAL_VIDEO === "No encontré cuál de los videos de la página es este.",
+  "videos: el motivo cuando no se sabe cuál de las listas es la del video");
+// Lo que va al registro de Atarraya desde la extensión: sin datos de la persona
+{
+  const L = M.limpiarParaRegistro;
+  const t1 = L("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
+  const t2 = L("TypeError at bajarVideoDeMarco (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57?x=1) "
+    + "y bajar@moz-extension://1234-abcd/background.js:10:5");
+  const t3 = L("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org con ftp usuario:secreto@archivos.org/x");
+  const t4 = L("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
+  comprobar(t1 === "Error: falló https://cdn.ejemplo.org:8443/… en algo" && !/clave123|token|abc123|lista|ana/.test(t1),
+    "registro: de una dirección queda solo el sitio (sin usuario ni contraseña, sin ruta ni parámetros)");
+  comprobar(t2.includes("chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57") && !t2.includes("?x=1")
+    && t2.includes("bajar@moz-extension://1234-abcd/background.js:10:5"),
+    "registro: las direcciones de la misma extensión quedan con su archivo y su línea (sin parámetros)");
+  comprobar(!/AQEDAR|5551234|persona\.real|correo-ejemplo|secreto|usuario:/.test(t3) && t3.includes("li_at=…") && t3.includes("(correo)")
+    && t3.includes("archivos.org"),
+    "registro: sin valores de cookies ni de parámetros, sin correos y sin «usuario:clave@»");
+  comprobar(!/eyJ/.test(t4) && t4.includes("nombreMuyLargoDeFuncionSinNumeros") && L(null) === "" && L("  a\n\tb ") === "a b",
+    "registro: sin cadenas largas que parecen claves (los nombres sin números quedan); una sola línea");
 }
 comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true) === M.TEXTO_EXTENSION_REINICIADA
   && M.textoSinRespuesta(null, false) === M.TEXTO_EXTENSION_REINICIADA
@@ -368,7 +395,14 @@ if (enNode) {
     && /catch \(e\) \{\s*\/\/[^\n]*\n\s*console\.warn\("Atarraya: no se pudo pasar el video al programa", e\);\s*return \{ ok: false, texto: TEXTO_SIN_HABLAR \};/.test(fondo)
     && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, extensionViva\(\)\)/.test(videos),
     "extensión: «No se pudo hablar con Atarraya» es solo para cuando falló el pedido al programa; un error de la extensión lo dice así");
-  comprobar(/anotarFallo\("botón «Descargar este video»", e\)/.test(fondo) && /hablar\(\{ tipo: "registro", texto \}\)/.test(fondo)
+  comprobar(/fetch\(url, \{ credentials: "include", redirect: "error", signal: control\.signal \}\)/.test(fondo)
+    && /if \(!\/\^https\?:\/i\.test\(url\) \|\| motivoDeUrl\(url\)\) return falla/.test(fondo)
+    && /if \(r\.redirected \|\| hostDe\(r\.url \|\| url\) !== hostDe\(url\) \|\| motivoBloqueo\(\[r\.url\]\)\) return falla/.test(fondo)
+    && (fondo.match(/fetch\(/g) || []).length === 1,
+    "extensión: al mirar una lista no se sigue ninguna redirección, y nunca se pide nada de YouTube ni de un sitio con DRM");
+  comprobar(/const limpio = limpiarParaRegistro\(texto\)/.test(fondo) && /if \(r\.motivo === "cual"\) return \{ ok: false, texto: TEXTO_CUAL_VIDEO \}/.test(fondo),
+    "extensión: lo que va al registro pasa por limpiarParaRegistro; si no se sabe cuál es la lista, lo dice");
+  comprobar(/anotarFallo\("botón «Descargar este video»", e\)/.test(fondo) && /hablar\(\{ tipo: "registro", texto: limpio \}\)/.test(fondo)
     && /duracion: Number\.isFinite\(v\.duration\)/.test(videos) && /puedeSerLista\(d\.url, cab\["content-type"\], tamano, d\.method\)/.test(fondo)
     && /listaDelVideo\(medios, tabId, frameId,/.test(fondo),
     "extensión: un error del botón queda en el registro de Atarraya; el botón manda la duración del video; las listas dudosas se anotan y se miran al pulsar");
@@ -693,13 +727,51 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
       leidas.push(u);
       return u === LI(1) ? listaHls : "";
     };
-    const e = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    const e = (await M.listaDelVideo(m, 4, 0, 11.5, leer)).entrada;
     comprobar(e && e.url === LI(1) && e.formato === "hls" && leidas[0] === LI(1) && m.transmisionDe(4, 0) === e && m.dudosasDe(4, 0).length === 0
-      && m.lista(4).some((x) => x.url === LI(1)),
+      && m.lista(4).some((x) => x.url === LI(1)) && m.vista(4, 0, LI(1)),
       "LinkedIn: al pulsar el botón, la lista sin extensión ni tipo se reconoce por dentro y pasa a la lista de videos");
     const otraVez = [];
-    const e2 = await M.listaDelVideo(m, 4, 0, 0, async (u) => { otraVez.push(u); return null; });
+    const e2 = (await M.listaDelVideo(m, 4, 0, 0, async (u) => { otraVez.push(u); return null; })).entrada;
     comprobar(e2 === e && otraVez.length === 0, "LinkedIn: después ya se sabe cuál es (sin la duración, no se pide nada otra vez)");
+  }
+  {
+    // Solo se vuelve a pedir lo que el reproductor de ESA pestaña y ESE marco pidió: nunca lo que dice una lista
+    const m = new M.MediosPorPestana();
+    const principal = "https://cdn.ej.org/v/principal";
+    const maestraAfuera = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nhttps://rr1---sn-abc.googlevideo.com/videoplayback?id=1\n"
+      + "#EXT-X-STREAM-INF:BANDWIDTH=2\nhttps://otro-servidor.net/720.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3\nhttps://cdn.ej.org/v/no-pedida\n";
+    m.dudosa(4, { url: principal, frameId: 0, tamano: 300 }, 10);
+    m.dudosa(5, { url: "https://otro-servidor.net/720.m3u8", frameId: 0, tamano: 300 }, 11);   // en otra pestaña
+    m.dudosa(4, { url: "https://cdn.ej.org/v/no-pedida", frameId: 2, tamano: 300 }, 12);         // en otro marco
+    m.anotar(4, { url: "https://cdn.ej.org/la-pagina-dice.m3u8", formato: "hls", frameId: 0 }, 13);   // la contó la página
+    const leidas = [];
+    const r = await M.listaDelVideo(m, 4, 0, 11.5, async (u) => { leidas.push(u); return u === principal ? maestraAfuera : "#EXTM3U\n"; });
+    comprobar(JSON.stringify(leidas) === JSON.stringify([principal]) && r.entrada === null && r.motivo === "cual"
+      && !m.vista(4, 0, "https://cdn.ej.org/la-pagina-dice.m3u8") && !m.vista(4, 0, "https://cdn.ej.org/v/no-pedida")
+      && !m.vista(4, 0, "https://otro-servidor.net/720.m3u8") && m.vista(4, 2, "https://cdn.ej.org/v/no-pedida"),
+      "videos: solo se vuelve a pedir lo que el reproductor de esa pestaña y ese marco pidió (nada de lo que dice una lista, ni googlevideo.com)");
+    // Una calidad que el reproductor sí pidió en ese marco se puede leer para saber cuánto dura
+    m.dudosa(4, { url: "https://cdn.ej.org/v/no-pedida", frameId: 0, tamano: 900 }, 14);
+    const leidas2 = [];
+    const r2 = await M.listaDelVideo(m, 4, 0, 11.5, async (u) => {
+      leidas2.push(u);
+      return u === principal ? maestraAfuera : u === "https://cdn.ej.org/v/no-pedida" ? listaHls : "";
+    });
+    comprobar(r2.entrada && r2.entrada.url === principal && !leidas2.some((u) => /googlevideo|otro-servidor|la-pagina-dice/.test(u)),
+      "videos: de una lista principal se lee solo una calidad que el reproductor pidió, y así se sabe cuánto dura");
+  }
+  {
+    // Si no se pudo leer cuánto dura (el servidor no contestó), no se elige ninguna: puede ser de otro video
+    const m = new M.MediosPorPestana();
+    m.anotar(4, { url: "https://cdn.ej.org/hls/master.m3u8", formato: "hls", frameId: 0, vista: true }, 10);
+    const r = await M.listaDelVideo(m, 4, 0, 30, async () => null);
+    comprobar(r.entrada === null && r.motivo === "cual",
+      "videos: si no se pudo leer la duración de la lista, no se manda (dice que no sabe cuál de los videos es este)");
+    // Sin la duración del video y con listas de dos videos (pedidas con más de 15 s de diferencia): tampoco
+    m.anotar(4, { url: "https://cdn.ej.org/hls2/master.m3u8", formato: "hls", frameId: 0, vista: true }, 60000);
+    const r2 = await M.listaDelVideo(m, 4, 0, 0, async () => null);
+    comprobar(r2.entrada === null && r2.motivo === "cual", "videos: sin la duración del video y con listas de varios videos, ninguna");
   }
   {
     // El inicio de LinkedIn: dos videos en el mismo marco, cada uno con su lista; se pulsa el segundo (24 s)
@@ -711,22 +783,23 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
     m.dudosa(4, { url: B(1), frameId: 0, tamano: 1500 }, 200);
     m.dudosa(4, { url: B(2), frameId: 0, tamano: 500000 }, 201);
     const leer = async (u) => (u === A(1) ? listaHls : u === B(1) ? lista24 : "");
-    const e = await M.listaDelVideo(m, 4, 0, 24, leer);
+    const e = (await M.listaDelVideo(m, 4, 0, 24, leer)).entrada;
     comprobar(e && e.url === B(1), "LinkedIn (inicio con varios videos): el botón de un video baja ese video, no el primero de la página");
     // Pulsar ahora el primero: ya están las dos en la lista; se elige por su duración
-    const e2 = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    const e2 = (await M.listaDelVideo(m, 4, 0, 11.5, leer)).entrada;
     comprobar(e2 && e2.url === A(1), "LinkedIn (inicio con varios videos): y el otro video, su propia lista");
     // Un video que no es ninguno de los dos: ninguna
-    comprobar((await M.listaDelVideo(m, 4, 0, 90, leer)) === null, "videos: si ninguna lista es la del video, no se manda una de otro video");
+    const r3 = await M.listaDelVideo(m, 4, 0, 90, leer);
+    comprobar(r3.entrada === null && r3.motivo === "otros", "videos: si ninguna lista es la del video, no se manda una de otro video");
   }
   {
     // Una lista que se reconoció por su tipo, pero es de un video de antes (la página cambió sin recargarse); la de
     // este video llegó como dudosa
     const m = new M.MediosPorPestana();
-    m.anotar(4, { url: "https://cdn.ej.org/viejo/master.m3u8", formato: "hls", frameId: 0 }, 50);
+    m.anotar(4, { url: "https://cdn.ej.org/viejo/master.m3u8", formato: "hls", frameId: 0, vista: true }, 50);
     m.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382 }, 100);
     const leer = async (u) => (u === LI(1) ? listaHls : u.includes("viejo") ? "#EXTM3U\n#EXTINF:30,\na\n#EXT-X-ENDLIST\n" : "");
-    const e = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    const e = (await M.listaDelVideo(m, 4, 0, 11.5, leer)).entrada;
     comprobar(e && e.url === LI(1), "videos: una lista vieja de otro video no gana a la de este video");
     // La principal con sus calidades: la principal, aunque la calidad también esté
     const p = new M.MediosPorPestana();
@@ -735,19 +808,19 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
     p.dudosa(4, { url: "https://cdn.ej.org/v/hls-720/lista?x=1", frameId: 0, tamano: 900 }, 11);
     const leerP = async (u) => (u === principal ? maestra.replace("hls-720/lista?x=1", "https://cdn.ej.org/v/hls-720/lista?x=1")
       : u === "https://cdn.ej.org/v/hls-720/lista?x=1" ? listaHls : "");
-    const ep = await M.listaDelVideo(p, 4, 0, 11.5, leerP);
+    const ep = (await M.listaDelVideo(p, 4, 0, 11.5, leerP)).entrada;
     comprobar(ep && ep.url === principal, "videos: la lista principal (con las calidades) antes que una de sus calidades");
     // DASH que no dice que lo es
     const d = new M.MediosPorPestana();
     d.dudosa(4, { url: "https://cdn.ej.org/d/1/x", frameId: 3, tamano: 800 }, 10);
-    const ed = await M.listaDelVideo(d, 4, 3, 63.5, async () => mpd);
+    const ed = (await M.listaDelVideo(d, 4, 3, 63.5, async () => mpd)).entrada;
     comprobar(ed && ed.formato === "dash" && ed.frameId === 3, "videos: un manifiesto DASH sin extensión ni tipo, por dentro");
     // Una que no se pudo leer (sin conexión, por ejemplo) se vuelve a mirar en el próximo clic; una que no es lista, no
     const n = new M.MediosPorPestana();
     n.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382 }, 10);
     n.dudosa(4, { url: LI(2), frameId: 0, tamano: 400000 }, 11);
     const en = await M.listaDelVideo(n, 4, 0, 11.5, async (u) => (u === LI(1) ? null : ""));
-    comprobar(en === null && n.dudosasDe(4, 0).length === 1 && n.dudosasDe(4, 0)[0].url === LI(1),
+    comprobar(en.entrada === null && n.dudosasDe(4, 0).length === 1 && n.dudosasDe(4, 0)[0].url === LI(1),
       "videos: lo que no se pudo leer se vuelve a probar; lo que no es una lista se olvida");
     // Como mucho MAXIMO_MIRADAS por clic, las más chicas primero
     const t = new M.MediosPorPestana(100);
