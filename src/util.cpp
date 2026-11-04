@@ -374,91 +374,72 @@ void hnd::Registrar(const std::string& texto)
     }
 }
 
-std::string hnd::LineaDeRegistro(const std::string& texto, size_t maximo)
+namespace
 {
-    std::string r = texto.substr(0, maximo);
-    // Sin cortar una letra por la mitad (UTF-8: los bytes 10xxxxxx siguen a otro)
-    if (r.size() < texto.size())
+    // Los códigos que la extensión puede anotar (lista cerrada, la misma que CODIGOS_REGISTRO en medios.js), los tipos
+    // de error y los archivos de la extensión
+    const char* const CodigosFijos[] = { "video:sin-lista", "video:sin-leer", "video:varias-listas", "video:otros-videos",
+                                         "video:no-permitida", "video:sin-respuesta", "video:sin-conexion", "video:redirige",
+                                         "video:cortada" };
+    const char* const TiposDeError[] = { "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError",
+                                         "EvalError", "AggregateError", "DOMException", "AbortError", "NotAllowedError",
+                                         "NotFoundError", "NetworkError", "SecurityError", "InvalidStateError",
+                                         "QuotaExceededError", "DataCloneError", "TimeoutError" };
+    const char* const ArchivosExtension[] = { "background.js", "medios.js", "origen.js", "cola-navegador.js", "esperas.js",
+                                              "cola.js", "videos.js", "popup.js" };
+
+    template <size_t N>
+    bool EnLista(const std::string& x, const char* const (&lista)[N])
     {
-        size_t fin = r.size();
-        while (fin > 0 && ((unsigned char)texto[fin] & 0xC0) == 0x80) fin--;
-        r.resize(fin);
+        for (const char* l : lista)
+        {
+            if (x == l) return true;
+        }
+        return false;
     }
-    for (auto& c : r)
+
+    bool SoloDigitos(const std::string& x)
     {
-        if ((unsigned char)c < 0x20 || c == 0x7F) c = ' ';   // una sola línea, sin caracteres de control
+        if (x.empty()) return false;
+        for (char c : x)
+        {
+            if (c < '0' || c > '9') return false;
+        }
+        return true;
     }
-    return r;
 }
 
-std::string hnd::SinDatosPrivados(const std::string& texto)
+std::string hnd::CodigoDeRegistro(const std::string& codigo)
 {
-    // Lo mismo que limpiarParaRegistro en la extensión (medios.js). No intenta reconocer contraseñas: se revisa palabra
-    // por palabra (lo que hay entre espacios), y de una palabra con «@» no queda nada; de una dirección queda solo su
-    // sitio (sin usuario, clave, puerto, ruta ni parámetros); de lo demás se quitan los parámetros («?…»), los valores
-    // («nombre=…») y las cadenas largas con letras y números (parecen claves).
-    auto espacio = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; };
-    auto letra = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
-    auto digito = [](char c) { return c >= '0' && c <= '9'; };
-    auto deSitio = [&](char c) { return letra(c) || digito(c) || c == '.' || c == '-'; };
-    auto deClave = [&](char c) { return letra(c) || digito(c) || c == '+' || c == '/' || c == '_' || c == '.' || c == '%' || c == '-'; };
-    std::string r;
-    size_t i = 0;
-    while (i < texto.size())
+    if (EnLista(codigo, CodigosFijos)) return codigo;
+    // «video:http-NNN»: lo que contestó el servidor
+    if (codigo.size() == 14 && codigo.rfind("video:http-", 0) == 0 && SoloDigitos(codigo.substr(11)) && codigo[11] >= '1'
+        && codigo[11] <= '5')
+        return codigo;
+    // «extension:Tipo» o «extension:Tipo@archivo.js:línea»: un error de la extensión
+    if (codigo.rfind("extension:", 0) == 0)
     {
-        while (i < texto.size() && espacio(texto[i])) i++;
-        size_t j = i;
-        while (j < texto.size() && !espacio(texto[j])) j++;
-        if (j == i) break;
-        std::string p = texto.substr(i, j - i);
-        i = j;
-        std::string limpia;
-        size_t sep = p.find("://");
-        if (p.find('@') != std::string::npos) limpia = "(…)";
-        else if (sep != std::string::npos)
-        {
-            // El esquema: las letras justo antes de «://» (empieza con una letra); el sitio: lo que sigue, mientras sea
-            // de un nombre de sitio
-            size_t ini = sep;
-            while (ini > 0 && (deSitio(p[ini - 1]) || p[ini - 1] == '+')) ini--;
-            while (ini < sep && !letra(p[ini])) ini++;
-            std::string esquema = p.substr(ini, sep - ini);
-            for (auto& c : esquema) c = (char)((c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c);
-            size_t fin = sep + 3;
-            while (fin < p.size() && deSitio(p[fin])) fin++;
-            limpia = (esquema.empty() ? std::string() : esquema + "://") + p.substr(sep + 3, fin - sep - 3);
-        }
-        else
-        {
-            std::string q = p.substr(0, p.find('?'));
-            size_t igual = q.find('=');
-            if (igual != std::string::npos) q = q.substr(0, igual + 1) + "…";
-            // Las cadenas largas con letras y números
-            size_t k = 0;
-            while (k < q.size())
-            {
-                if (!deClave(q[k]))
-                {
-                    limpia += q[k++];
-                    continue;
-                }
-                size_t m = k;
-                bool conLetra = false, conNumero = false;
-                while (m < q.size() && deClave(q[m]))
-                {
-                    conLetra = conLetra || letra(q[m]);
-                    conNumero = conNumero || digito(q[m]);
-                    m++;
-                }
-                limpia += m - k >= 20 && conLetra && conNumero ? std::string("…") : q.substr(k, m - k);
-                k = m;
-            }
-        }
-        if (limpia.empty()) continue;
-        if (!r.empty()) r += ' ';
-        r += limpia;
+        std::string resto = codigo.substr(10);
+        size_t arroba = resto.find('@');
+        if (!EnLista(resto.substr(0, arroba), TiposDeError)) return "otro";
+        if (arroba == std::string::npos) return codigo;
+        std::string lugar = resto.substr(arroba + 1);
+        size_t dos = lugar.find(':');
+        if (dos == std::string::npos) return "otro";
+        std::string linea = lugar.substr(dos + 1);
+        if (EnLista(lugar.substr(0, dos), ArchivosExtension) && SoloDigitos(linea) && linea.size() <= 6 && linea[0] != '0') return codigo;
     }
-    return r;
+    return "otro";
+}
+
+std::string hnd::SitioDeRegistro(const std::string& sitio)
+{
+    if (sitio.empty() || sitio.size() > 253) return "";
+    for (char c : sitio)
+    {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '-')) return "";
+    }
+    return sitio;
 }
 
 std::string hnd::SoloSitio(const std::string& url)

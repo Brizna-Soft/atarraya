@@ -9,7 +9,7 @@
 // los avisos («navegador»: cómo va una descarga que sigue la extensión, «espera»: la página pide esperar, «soltar»: que
 // siga el navegador, «sinConfirmar» y «confirmada»: si la del navegador sigue después de no poder cancelarla,
 // «seguidas»: lo que sabe la extensión de esas descargas, al conectarse) nunca abren Atarraya. Tampoco «registro»: un
-// error de la extensión, que Atarraya anota en su registro si está abierto.
+// código de la extensión (de una lista cerrada, con el sitio), que Atarraya anota en su registro si está abierto.
 //
 // El «puerto»: si lo primero que llega es «hola», la extensión deja este puente abierto mientras Atarraya está abierto
 // (si no lo está, contesta «adios» y termina). El puente crea una ventana invisible donde Atarraya le deja sus órdenes
@@ -199,7 +199,8 @@ namespace
         texto("estado", 32);         // «bajando», «completa», «fallo» o «cancelada»
         texto("clase", 16);          // espera: «limite» (entre descargas) o «pagina» (la cuenta regresiva de la página)
         texto("ruta", 32768);        // dónde dejó el archivo el navegador
-        texto("texto", 4096);        // registro: un error de la extensión
+        texto("codigo", 100);        // registro: un código de la lista cerrada (Atarraya lo revisa)
+        texto("sitio", 253);         // registro: el sitio
         auto numero = [&](const char* campo) {
             auto it = j.find(campo);
             if (it != j.end() && it->is_number_integer()) r[campo] = it->get<int64_t>();
@@ -440,7 +441,7 @@ int main()
             }
             else if (tipo == "registro")
             {
-                // Un error de la extensión, para el registro de Atarraya: solo si está abierto (no se abre por esto)
+                // Un código de la extensión, para el registro de Atarraya: solo si está abierto (no se abre por esto)
                 HWND h = BuscarPrograma();
                 respuesta = { { "ok", h != nullptr && Enviar(h, SoloLoPermitido(j).dump()) } };
             }

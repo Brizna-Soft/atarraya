@@ -423,30 +423,31 @@ async function enviarVideo(tabId, entrada) {
 }
 
 // Un error de la misma extensión (no de Atarraya ni de la conexión): a la consola y, si Atarraya está abierto, a su
-// registro (registro.txt), para saber qué pasó. Solo el tipo de error, dónde pasó en la extensión y el sitio (ver
-// resumenDeFallo): nunca el mensaje del error. Nada sale de esta PC.
+// registro (registro.txt), para saber qué pasó: solo su código (su tipo y dónde pasó en la extensión, ver codigoDeFallo)
+// y el sitio. Nada sale de esta PC.
 function anotarFallo(donde, e, sitio = "") {
   console.warn("Atarraya:", donde, e);
-  anotarEnRegistro(resumenDeFallo(donde, e, sitio));
+  anotarEnRegistro(codigoDeFallo(e), sitio);
 }
 
-function anotarEnRegistro(texto) {
-  const limpio = limpiarParaRegistro(texto).slice(0, 1000);
+// Al registro de Atarraya solo va un código de la lista cerrada (ver codigoDeRegistro) y un sitio: ningún texto
+function anotarEnRegistro(codigo, sitio = "") {
   try {
-    Promise.resolve(hablar({ tipo: "registro", texto: limpio })).catch(() => {});
+    Promise.resolve(hablar({ tipo: "registro", codigo: codigoDeRegistro(codigo), sitio: sitioDeRegistro(sitio) })).catch(() => {});
   } catch (x) {}
 }
 
 // El principio de una respuesta, como texto, para ver si es una lista HLS o DASH: el texto si lo es, "" si no lo es (se
 // deja de bajar en cuanto se nota) y null si no se pudo pedir. Solo después de que la persona pulsó el botón, y solo
 // direcciones que el reproductor ya pidió (ver listaDelVideo). No sigue redirecciones: si el servidor manda a otro lado,
-// no se lee (así nunca llega a otro servidor, ni a YouTube). «fallas» junta el sitio y el motivo de lo que no se pudo leer.
+// no se lee (así nunca llega a otro servidor, ni a YouTube). «fallas» junta el código y el sitio de lo que no se pudo
+// leer.
 async function leerLista(url, fallas = []) {
-  const falla = (motivo) => {
-    if (fallas.length < 5) fallas.push(hostDe(url) + ": " + motivo);
+  const falla = (codigo) => {
+    if (fallas.length < 5) fallas.push({ codigo, sitio: hostDe(url) });
     return null;
   };
-  if (!/^https?:/i.test(url) || motivoDeUrl(url)) return falla("no se puede pedir");
+  if (!/^https?:/i.test(url) || motivoDeUrl(url)) return falla("video:no-permitida");
   const control = new AbortController();
   const reloj = setTimeout(() => control.abort(), 8000);
   try {
@@ -454,11 +455,12 @@ async function leerLista(url, fallas = []) {
     try {
       r = await fetch(url, { credentials: "include", redirect: "error", signal: control.signal });
     } catch (e) {
-      return falla(control.signal.aborted ? "no contestó a tiempo" : "redirige a otro lado o no se pudo conectar");
+      // Sin conexión, o el servidor mandó a otro lado (no se sigue)
+      return falla(control.signal.aborted ? "video:sin-respuesta" : "video:sin-conexion");
     }
     // Lo mismo que se pidió, sin redirecciones, y nada de YouTube ni de sitios con DRM
-    if (r.redirected || hostDe(r.url || url) !== hostDe(url) || motivoBloqueo([r.url])) return falla("redirige a otro lado");
-    if (!r.ok || !r.body) return falla("HTTP " + r.status);
+    if (r.redirected || hostDe(r.url || url) !== hostDe(url) || motivoBloqueo([r.url])) return falla("video:redirige");
+    if (!r.ok || !r.body) return falla("video:http-" + r.status);
     const lector = r.body.getReader();
     const decodificador = new TextDecoder();
     let texto = "";
@@ -474,7 +476,7 @@ async function leerLista(url, fallas = []) {
     texto += decodificador.decode();
     return formatoPorContenido(texto) ? texto : "";
   } catch (e) {
-    return falla("se cortó");
+    return falla("video:cortada");
   } finally {
     clearTimeout(reloj);
     control.abort();   // lo que falta de una respuesta que no es una lista no se baja
@@ -514,8 +516,16 @@ async function bajarVideoDeMarco(tabId, frameId, mensaje, urlDelMarco) {
     entrada = r.entrada;
     if (!entrada) {
       guardarPronto();
-      // Lo que no se pudo leer queda en el registro de Atarraya (solo el sitio y el motivo), para saber por qué
-      if (fallas.length) anotarEnRegistro("botón «Descargar este video»: no se pudo leer " + fallas.join("; "));
+      // Por qué no, al registro de Atarraya (solo códigos y sitios), para saberlo
+      const porQue = { "sin-leer": "video:sin-leer", cual: "video:varias-listas", otros: "video:otros-videos" }[r.motivo];
+      if (porQue) anotarEnRegistro(porQue, hostDe(urlDelMarco));
+      const vistos = new Set();
+      for (const f of fallas) {
+        if (vistos.has(f.codigo + " " + f.sitio) || vistos.size >= 3) continue;
+        vistos.add(f.codigo + " " + f.sitio);
+        anotarEnRegistro(f.codigo, f.sitio);
+      }
+      if (r.motivo === "sin-leer") return { ok: false, texto: TEXTO_SIN_LEER };
       if (r.motivo === "cual") return { ok: false, texto: TEXTO_CUAL_VIDEO };
       // Si el marco ya pidió partes del video (o listas de otros videos), el video está ahí pero su lista no
       const algo = medios.muestrasDeMarco(tabId, frameId).length || medios.dudosasDe(tabId, frameId).length
