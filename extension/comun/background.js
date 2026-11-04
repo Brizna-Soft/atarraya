@@ -408,8 +408,12 @@ async function enviarVideo(tabId, entrada) {
   if (entrada.protegido) return { ok: false, texto: TEXTO_PROTEGIDO };
   if (!(await programaListo()))
     return { ok: false, texto: "No encuentro Atarraya. Ábrelo y pulsa «Navegadores» → «Conectar»." };
-  // Solo las cookies del servidor del video y de la página, con un tope (si se pasan, se recortan y se anota)
-  const { cookies, recortadas } = recortarCookies(await cookiesDeMarco([entrada.url, marco], pagina), TOPE_COOKIES);
+  // Las cookies del servidor del video y de los servidores de sus fragmentos (los que pidió el reproductor de ese marco:
+  // pueden pedir sesión), y después las de la página. Con tope: si se pasan, quedan afuera las de la página primero, y
+  // se anota.
+  const delVideo = await cookiesDeMarco([entrada.url, ...medios.muestrasDeMarco(tabId, entrada.frameId)], pagina);
+  const deLaPagina = await cookiesDeMarco([marco], pagina);
+  const { cookies, recortadas } = juntarCookies([delVideo, deLaPagina], TOPE_COOKIES);
   if (recortadas) anotarEnRegistro("video:cookies-recortadas", hostDe(entrada.url));
   const pedido = pedidoDeVideo(entrada, pagina, pestana ? pestana.title : "", marco, cookies, navigator.userAgent);
   // Su tamaño: con las cookies recortadas, unos cientos de KB como mucho
