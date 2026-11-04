@@ -70,9 +70,9 @@ namespace hnd
     // Un texto de otro programa para el registro: una sola línea, sin caracteres de control y con «maximo» bytes como
     // mucho (sin cortar una letra por la mitad)
     std::string LineaDeRegistro(const std::string& texto, size_t maximo);
-    // Sin datos de la persona (como limpiarParaRegistro en la extensión): de cada dirección queda solo el sitio, sin
-    // «usuario:clave@», sin correos, sin el valor de parámetros ni de cookies («nombre=…») y sin cadenas largas que
-    // parezcan claves; las direcciones de la extensión (chrome-extension://) quedan con su archivo y su línea
+    // Sin datos de la persona (como limpiarParaRegistro en la extensión), palabra por palabra: una con «@» se quita
+    // entera; de una dirección queda solo su sitio; de lo demás se quitan los parámetros, los valores («nombre=…») y las
+    // cadenas largas con letras y números
     std::string SinDatosPrivados(const std::string& texto);
     std::string SoloSitio(const std::string& url);
 }

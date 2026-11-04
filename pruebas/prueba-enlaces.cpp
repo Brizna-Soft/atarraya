@@ -4161,23 +4161,24 @@ namespace
                       && terminaCon(leer(respaldo), "registro: al respaldo lleno\r\n"),
                   "registro: el respaldo tampoco pasa del tope");
 
-        // Lo que manda la extensión, sin datos de la persona (como limpiarParaRegistro en medios.js)
+        // Lo que manda la extensión, sin datos de la persona (como limpiarParaRegistro en medios.js): palabra por palabra
         std::string s1 = SinDatosPrivados("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
-        std::string s2 = SinDatosPrivados("TypeError at f (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57?x=1)");
+        std::string s2 = SinDatosPrivados("visita https://cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123 y (https://otro.org/x?y=1) también");
         std::string s3 = SinDatosPrivados("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org "
                                           "con ftp usuario:secreto@archivos.org/x");
         std::string s4 = SinDatosPrivados("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
-        auto no = [](const std::string& s, const char* x) { return s.find(x) == std::string::npos; };
-        Comprobar(s1 == "Error: falló https://cdn.ejemplo.org:8443/… en algo",
-                  "registro: de una dirección queda solo el sitio (sin usuario ni contraseña, sin ruta ni parámetros)");
-        Comprobar(s2 == "TypeError at f (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57)",
-                  "registro: las direcciones de la extensión quedan con su archivo y su línea (sin parámetros)");
-        Comprobar(no(s3, "AQEDAR") && no(s3, "5551234") && no(s3, "persona.real") && no(s3, "correo-ejemplo") && no(s3, "secreto") && no(s3, "usuario:")
-                      && !no(s3, "li_at=…") && !no(s3, "(correo)") && !no(s3, "archivos.org"),
-                  "registro: sin valores de cookies ni de parámetros, sin correos y sin «usuario:clave@»");
+        std::string s5 = SinDatosPrivados("con paréntesis usuario:cla(ve)@sitio.org https://u:p(a)ss@sitio.org/x pagina?clave=se(cre)to y a=b(c)d");
+        std::string s6 = SinDatosPrivados("botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)");
+        Comprobar(s1 == "Error: falló (…) en algo" && s2 == "visita https://cdn.ejemplo.org y https://otro.org también",
+                  "registro: de una dirección queda solo su sitio; si trae usuario o clave, nada");
+        Comprobar(s3 == "Cookie: li_at=… JSESSIONID=… de (…) con ftp (…)",
+                  "registro: sin valores de cookies ni de parámetros, sin correos y sin nada con «@»");
+        Comprobar(s5 == "con paréntesis (…) (…) pagina y a=…",
+                  "registro: tampoco pasan claves con paréntesis (en «usuario:clave@», en direcciones o en parámetros)");
         Comprobar(s4 == "clave suelta … y un nombreMuyLargoDeFuncionSinNumeros" && SinDatosPrivados("").empty()
+                      && s6 == "botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)"
                       && SoloSitio("https://ana:p@ss@sitio.org/x") == "sitio.org",
-                  "registro: sin cadenas largas que parecen claves; el sitio de una dirección nunca lleva la contraseña");
+                  "registro: sin cadenas largas que parecen claves; lo que manda la extensión pasa igual; el sitio nunca lleva la contraseña");
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         std::filesystem::remove_all(carpeta, ec);
