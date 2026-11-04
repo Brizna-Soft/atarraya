@@ -104,9 +104,16 @@
     b.margin = "0";
     b.cursor = "pointer";
     b.boxShadow = "0 2px 8px rgba(0, 0, 0, 0.35)";
-    b.maxWidth = "280px";
+    // El texto se parte en varias líneas (nunca se corta): como mucho 280 px de ancho, y menos si la ventana es angosta
+    b.display = "block";
+    b.boxSizing = "border-box";
+    b.maxWidth = "min(280px, calc(100vw - 16px))";
+    b.height = "auto";
+    b.overflow = "visible";
     b.textAlign = "left";
     b.whiteSpace = "normal";
+    b.overflowWrap = "anywhere";
+    b.wordBreak = "normal";
     raiz.append(boton);
     // Los clics en el botón no llegan al reproductor (no lo pausan ni lo ponen en pantalla completa)
     for (const tipo of ["mousedown", "mouseup", "pointerdown", "pointerup", "click", "dblclick", "contextmenu"]) {
@@ -136,15 +143,20 @@
     }, ms + 50);
   }
 
-  // Arriba a la derecha, dentro del video: los controles del reproductor van abajo. El ancho visible sin la barra de
-  // desplazamiento (si no, el botón queda debajo de ella y se parte en dos líneas)
+  // Arriba a la derecha, dentro del video: los controles del reproductor van abajo. Siempre entero dentro de la ventana
+  // (con el ancho y el alto visibles, sin las barras de desplazamiento), para que su texto nunca quede cortado.
   function colocar(v) {
     const r = v.getBoundingClientRect();
     anfitrion.style.setProperty("display", "block", "important");
+    // Primero a la izquierda, para medirlo sin que el borde de la ventana lo achique
+    anfitrion.style.setProperty("left", "0px", "important");
     const ancho = boton.offsetWidth || 160;
+    const alto = boton.offsetHeight || 30;
     const visible = (document.documentElement && document.documentElement.clientWidth) || window.innerWidth;
-    const arriba = Math.max(r.top, 0) + 8;
-    const izquierda = Math.max(Math.min(r.right, visible) - ancho - 8, r.left + 4, 0);
+    const visibleAlto = (document.documentElement && document.documentElement.clientHeight) || window.innerHeight;
+    let izquierda = Math.max(Math.min(r.right, visible) - ancho - 8, r.left + 4);
+    izquierda = Math.max(Math.min(izquierda, visible - ancho - 4), 4);
+    const arriba = Math.max(Math.min(Math.max(r.top, 0) + 8, visibleAlto - alto - 4), 4);
     anfitrion.style.setProperty("top", Math.round(arriba) + "px", "important");
     anfitrion.style.setProperty("left", Math.round(izquierda) + "px", "important");
   }

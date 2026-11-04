@@ -67,12 +67,14 @@ namespace hnd
     inline constexpr const char* RegistroRespaldo = "registro-respaldo.txt";
     inline constexpr const char* RegistroTemporal = "Atarraya-registro.txt";
     inline constexpr int64_t TopeRegistro = 512 * 1024;
-    // Un texto de otro programa para el registro: una sola línea, sin caracteres de control y con «maximo» bytes como
-    // mucho (sin cortar una letra por la mitad)
-    std::string LineaDeRegistro(const std::string& texto, size_t maximo);
-    // Sin datos de la persona (como limpiarParaRegistro en la extensión), palabra por palabra: una con «@» se quita
-    // entera; de una dirección queda solo su sitio; de lo demás se quitan los parámetros, los valores («nombre=…») y las
-    // cadenas largas con letras y números
-    std::string SinDatosPrivados(const std::string& texto);
+    // Otro registro de la carpeta de datos (el del puente: registro-puente.txt), con el mismo tope. Si no se puede
+    // escribir ahí, la línea va con el código de error a «Atarraya-<archivo>» en la carpeta temporal.
+    void RegistrarEn(const std::wstring& archivo, const std::string& texto);
+    // Lo que la extensión puede anotar en el registro: un código de una lista cerrada (la misma que en medios.js: los
+    // fijos, «video:http-NNN» y «extension:Tipo@archivo.js:línea»); cualquier otra cosa es «otro». Ningún texto de la
+    // extensión, de la página ni de la red llega al registro.
+    std::string CodigoDeRegistro(const std::string& codigo);
+    // El sitio que acompaña al código: solo un nombre de sitio (letras minúsculas, números, puntos y guiones); si no, ""
+    std::string SitioDeRegistro(const std::string& sitio);
     std::string SoloSitio(const std::string& url);
 }

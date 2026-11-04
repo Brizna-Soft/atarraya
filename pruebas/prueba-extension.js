@@ -10,7 +10,7 @@ const { PestanasDePedidos: Pestanas, paginaDeOrigen: origen } = enNode
 const M = enNode
   ? require("../extension/comun/medios.js")
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
-      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, TEXTO_SIN_HABLAR,
+      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, textoSinHablar,
       TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA, puedeSerLista, formatoPorContenido,
       puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo, textoSinRespuesta, MAXIMO_MIRADAS };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
@@ -321,41 +321,39 @@ comprobar(M.duracionDash(mpd) === 63.5 && M.duracionDash('<MPD mediaPresentation
     "videos: si no se pudo saber cuánto dura una lista, no se elige ninguna sin comprobar (dice que no sabe cuál es)");
   comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 50), "otros"),
     "videos: si todas dicen otra duración, ninguna (son de otros videos)");
+  comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: x, duracion: -1, orden: 2 }], 16), "cual")
+    && el([{ entrada: x, duracion: -1, maestra: true, referencias: ["v"], orden: 1 }, { entrada: v, duracion: 16, orden: 2 }], 16).entrada === x,
+    "videos: con la duración, una que dura lo mismo y otra que no dice cuánto dura: ninguna (salvo que sea su principal)");
 }
 comprobar(M.TEXTO_CUAL_VIDEO === "No encontré cuál de los videos de la página es este.",
   "videos: el motivo cuando no se sabe cuál de las listas es la del video");
-// Lo que va al registro de Atarraya desde la extensión: solo el sitio y el tipo de error
+// Lo que va al registro de Atarraya desde la extensión: solo códigos de una lista cerrada y un sitio; ningún texto
 {
-  const e = new TypeError("falló https://ana:se(cre)to@x.org/?clave=se(cre)to");
-  e.stack = "TypeError: falló https://ana:se(cre)to@x.org/?clave=se(cre)to\n"
+  const C0 = M.codigoDeRegistro;
+  const ok = (c) => C0(c) === c;
+  comprobar(M.CODIGOS_REGISTRO.every(ok) && ok("video:http-403") && ok("video:http-599") && ok("extension:TypeError")
+    && ok("extension:TypeError@medios.js:239") && ok("extension:Error@background.js:1062"),
+    "registro: los códigos de la lista cerrada pasan tal cual");
+  comprobar(C0('clave= "se(cre)to"') === "otro" && C0("video:http-4033") === "otro" && C0("video:http-603") === "otro"
+    && C0("extension:TypeError@medios.js:0239") === "otro" && C0("extension:Clave123") === "otro"
+    && C0("extension:TypeError@de-la-pagina.js:1") === "otro" && C0("extension:TypeError@medios.js:1 se(cre)to") === "otro"
+    && C0("video:sin-lista ana:clave@sitio.org") === "otro" && C0("") === "otro" && C0(null) === "otro" && C0({}) === "otro",
+    "registro: cualquier otra cosa (un texto, una contraseña como clave= \"se(cre)to\", un código con algo de más) es «otro»");
+  comprobar(M.sitioDeRegistro("www.linkedin.com") === "www.linkedin.com" && M.sitioDeRegistro("ana:x@sitio.org") === ""
+    && M.sitioDeRegistro("sitio.org/clave") === "" && M.sitioDeRegistro("Sitio.org") === "" && M.sitioDeRegistro(7) === "",
+    "registro: el sitio es solo un nombre de sitio (sin usuario, clave ni ruta)");
+  const e = new TypeError('falló https://ana:se(cre)to@x.org/?clave= "se(cre)to"');
+  e.stack = 'TypeError: falló https://ana:se(cre)to@x.org/?clave= "se(cre)to"\n'
+    + "    at otra (https://x.org/de-la-pagina.js:1:2)\n"
     + "    at bajarVideoDeMarco (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57)\n"
-    + "    at chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:1062:7\n"
-    + "    at chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57\n"
-    + "    at otra (https://x.org/de-la-pagina.js:1:2)";
-  const r1 = M.resumenDeFallo("botón «Descargar este video»", e, "www.linkedin.com");
-  comprobar(r1 === "botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)",
-    "registro: de un error de la extensión va solo dónde (su archivo y línea), su tipo y el sitio; nunca su mensaje");
+    + "    at chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/medios.js:239:7";
   const f = new Error("x");
-  f.name = "Nombre con espacios y ana:se(cre)to@x.org";
-  f.stack = "bajar@moz-extension://1234-abcd/medios.js:10:5\nfuera@moz-extension://1234-abcd/no-es-nuestro.js:3:3";
-  comprobar(M.resumenDeFallo("«Bajar» de la ventanita", f, "ana:x@sitio.org") === "«Bajar» de la ventanita: Error en medios.js:10:5"
-    && M.resumenDeFallo("algo", null, "") === "algo: Error" && M.resumenDeFallo("algo", "texto con ana:clave@x.org", "") === "algo: Error",
-    "registro: un tipo de error raro, un sitio que no es un sitio y lo que no es un error no pasan");
-  const L = M.limpiarParaRegistro;
-  const t1 = L("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
-  const t2 = L("visita https://cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123 y (https://otro.org/x?y=1) también");
-  const t3 = L("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org con ftp usuario:secreto@archivos.org/x");
-  const t4 = L("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
-  const t5 = L("con paréntesis usuario:cla(ve)@sitio.org https://u:p(a)ss@sitio.org/x pagina?clave=se(cre)to y a=b(c)d");
-  comprobar(t1 === "Error: falló (…) en algo" && t2 === "visita https://cdn.ejemplo.org y https://otro.org también",
-    "registro: de una dirección queda solo su sitio; si trae usuario o clave, nada");
-  comprobar(t3 === "Cookie: li_at=… JSESSIONID=… de (…) con ftp (…)",
-    "registro: sin valores de cookies ni de parámetros, sin correos y sin nada con «@»");
-  comprobar(t5 === "con paréntesis (…) (…) pagina y a=…" && !/cla|se\(|cre|p\(a/.test(t5),
-    "registro: tampoco pasan claves con paréntesis (en «usuario:clave@», en direcciones o en parámetros)");
-  comprobar(t4 === "clave suelta … y un nombreMuyLargoDeFuncionSinNumeros" && L(null) === "" && L("  a\n\tb ") === "a b"
-    && L(r1) === r1,
-    "registro: sin cadenas largas que parecen claves (los nombres sin números quedan); una sola línea; lo de resumenDeFallo pasa igual");
+  f.name = 'Nombre raro clave= "se(cre)to"';
+  f.stack = "bajar@moz-extension://1234-abcd/medios.js:10:5";
+  comprobar(M.codigoDeFallo(e) === "extension:TypeError@background.js:474" && ok(M.codigoDeFallo(e))
+    && M.codigoDeFallo(f) === "extension:Error@medios.js:10" && M.codigoDeFallo(null) === "extension:Error"
+    && M.codigoDeFallo('clave= "se(cre)to"') === "extension:Error",
+    "registro: de un error de la extensión va solo su tipo y dónde pasó en la extensión; nunca su mensaje");
 }
 comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true) === M.TEXTO_EXTENSION_REINICIADA
   && M.textoSinRespuesta(null, false) === M.TEXTO_EXTENSION_REINICIADA
@@ -364,8 +362,32 @@ comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true)
   "videos: si la extensión no contesta, el botón dice por qué (se reinició: recargar la página), no que falló Atarraya");
 comprobar([M.TEXTO_SIN_ARCHIVO, M.TEXTO_FALLO_EXTENSION, M.TEXTO_EXTENSION_REINICIADA, M.TEXTO_EXTENSION_CALLADA, M.TEXTO_SIN_TRANSMISION]
     .every((t) => typeof t === "string" && t.length > 10 && !/hablar con Atarraya/.test(t))
-  && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video." && /^No se pudo hablar con Atarraya/.test(M.TEXTO_SIN_HABLAR),
+  && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video.",
   "videos: «No se pudo hablar con Atarraya» es solo para cuando falló hablar con el programa");
+// Cuando falla el pedido al puente: lo que dijo el navegador, como código fijo, en la burbuja (y en el registro)
+comprobar(M.codigoDePuente(new Error("Native host has exited.")) === "puente-cerro"
+  && M.codigoDePuente(new Error("Specified native messaging host not found.")) === "sin-puente"
+  && M.codigoDePuente("No such native application com.briznasoft.atarraya") === "sin-puente"
+  && M.codigoDePuente(new Error("Error when communicating with the native messaging host.")) === "puente-respuesta"
+  && M.codigoDePuente(new Error("Access to the specified native messaging host is forbidden.")) === "sin-permiso"
+  && M.codigoDePuente(new Error("algo raro con clave= \"se(cre)to\"")) === "otro" && M.codigoDePuente(null) === "otro",
+  "videos: el error del navegador al hablar con el puente se traduce a un código fijo (nunca su texto)");
+comprobar(M.textoSinHablar("puente-cerro") === "No se pudo hablar con Atarraya (puente-cerro). Vuelve a intentar."
+  && M.textoSinHablar("clave= \"se(cre)to\"") === "No se pudo hablar con Atarraya (otro). Vuelve a intentar."
+  && M.CODIGOS_PUENTE.filter((c) => c !== "otro").every((c) => M.CODIGOS_REGISTRO.includes("video:" + c))
+  && M.CODIGOS_REGISTRO.includes("video:puente-otro"),
+  "videos: la burbuja dice el código del puente y el registro lo anota (de la lista cerrada)");
+// Las cookies de un video: con tope (256 KB), recortadas por líneas enteras
+{
+  const linea = (i) => ".linkedin.com\tTRUE\t/\tTRUE\t0\tc" + i + "\t" + "v".repeat(1000);
+  const muchas = Array.from({ length: 400 }, (_, i) => linea(i)).join("\n");
+  const r = M.recortarCookies(muchas);
+  const pocas = M.recortarCookies("a\tb\nc\td");
+  comprobar(r.recortadas && M.bytesDe(r.cookies) <= M.TOPE_COOKIES && M.bytesDe(r.cookies) > M.TOPE_COOKIES - 2000
+    && r.cookies.split("\n").every((l, i) => l === linea(i)) && !pocas.recortadas && pocas.cookies === "a\tb\nc\td"
+    && M.recortarCookies("").cookies === "" && M.bytesDe("ñ") === 2 && M.TOPE_COOKIES === 256 * 1024,
+    "videos: las cookies que van con un video no pasan de 256 KB (se quitan líneas enteras del final)");
+}
 {
   // Las respuestas dudosas: por marco, sin repetir, con tope, y se olvidan con su marco o su pestaña
   const m = new M.MediosPorPestana(4);
@@ -413,8 +435,8 @@ if (enNode) {
   // «No se pudo hablar con Atarraya» solo cuando falló hablar con el programa: ni en un error de la extensión ni cuando
   // la extensión no contesta
   const popupJs = leer("../extension/comun/popup.js");
-  comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/TEXTO_SIN_HABLAR/g) || []).length === 1
-    && /catch \(e\) \{\s*\/\/[^\n]*\n\s*console\.warn\("Atarraya: no se pudo pasar el video al programa", e\);\s*return \{ ok: false, texto: TEXTO_SIN_HABLAR \};/.test(fondo)
+  comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/textoSinHablar\(/g) || []).length === 1
+    && /const codigo = codigoDePuente\(e\);[\s\S]{0,200}anotarEnRegistro\("video:" \+ \(codigo === "otro" \? "puente-otro" : codigo\), hostDe\(entrada\.url\)\);\s*return \{ ok: false, texto: textoSinHablar\(codigo\) \};/.test(fondo)
     && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, extensionViva\(\)\)/.test(videos),
     "extensión: «No se pudo hablar con Atarraya» es solo para cuando falló el pedido al programa; un error de la extensión lo dice así");
   comprobar(/fetch\(url, \{ credentials: "include", redirect: "error", signal: control\.signal \}\)/.test(fondo)
@@ -422,13 +444,28 @@ if (enNode) {
     && /if \(r\.redirected \|\| hostDe\(r\.url \|\| url\) !== hostDe\(url\) \|\| motivoBloqueo\(\[r\.url\]\)\) return falla/.test(fondo)
     && (fondo.match(/fetch\(/g) || []).length === 1,
     "extensión: al mirar una lista no se sigue ninguna redirección, y nunca se pide nada de YouTube ni de un sitio con DRM");
-  comprobar(/const limpio = limpiarParaRegistro\(texto\)/.test(fondo) && /if \(r\.motivo === "cual"\) return \{ ok: false, texto: TEXTO_CUAL_VIDEO \}/.test(fondo),
-    "extensión: lo que va al registro pasa por limpiarParaRegistro; si no se sabe cuál es la lista, lo dice");
-  comprobar(/anotarEnRegistro\(resumenDeFallo\(donde, e, sitio\)\)/.test(fondo) && !/anotarEnRegistro\([^)]*\.(stack|message)/.test(fondo)
-    && (fondo.match(/anotarEnRegistro\(/g) || []).length === 3,
-    "extensión: de un error al registro va solo su resumen (sin su mensaje ni su pila)");
+  comprobar(/if \(r\.motivo === "cual"\) return \{ ok: false, texto: TEXTO_CUAL_VIDEO \}/.test(fondo)
+    && /if \(r\.motivo === "sin-leer"\) return \{ ok: false, texto: TEXTO_SIN_LEER \}/.test(fondo),
+    "extensión: si no se sabe cuál es la lista, o no se pudieron leer todas, el botón lo dice");
+  // Al registro: solo un código de la lista cerrada y un sitio (nunca un texto: ni el mensaje de un error ni lo de la red)
+  const registros = fondo.match(/tipo: "registro"[^}]*\}/g) || [];
+  comprobar(registros.length === 1 && registros[0] === 'tipo: "registro", codigo: codigoDeRegistro(codigo), sitio: sitioDeRegistro(sitio) }'
+    && /anotarEnRegistro\(codigoDeFallo\(e\), sitio\)/.test(fondo) && !/anotarEnRegistro\([^)]*\.(stack|message)/.test(fondo)
+    && !/limpiarParaRegistro|resumenDeFallo/.test(fondo) && (fondo.match(/anotarEnRegistro\(/g) || []).length === 7
+    && (fondo.match(/anotarEnRegistro\(([^,)]*)/g) || []).every((x) => /anotarEnRegistro\((codigo|"video:[a-z-]+"|"video:" \+ \(codigo === "otro"|codigoDeFallo\(e\)|porQue|f\.codigo)/.test(x)),
+    "extensión: al registro de Atarraya va solo un código de la lista cerrada y el sitio");
+  comprobar(/const \{ cookies, recortadas \} = recortarCookies\(await cookiesDeMarco\(\[entrada\.url, marco\], pagina\), TOPE_COOKIES\);/.test(fondo)
+    && /if \(recortadas\) anotarEnRegistro\("video:cookies-recortadas"/.test(fondo)
+    && /if \(bytesDe\(JSON\.stringify\(pedido\)\) > 1024 \* 1024\) anotarEnRegistro\("video:pedido-grande"/.test(fondo)
+    && !/muestrasDeMarco\(tabId, entrada\.frameId\)/.test(fondo),
+    "extensión: con un video van solo las cookies de su servidor y de su página, con tope; se mide el pedido");
+  comprobar(/b\.whiteSpace = "normal";/.test(videos) && /b\.overflowWrap = "anywhere";/.test(videos)
+    && /b\.maxWidth = "min\(280px, calc\(100vw - 16px\)\)";/.test(videos)
+    && /izquierda = Math\.max\(Math\.min\(izquierda, visible - ancho - 4\), 4\);/.test(videos)
+    && /Math\.min\(Math\.max\(r\.top, 0\) \+ 8, visibleAlto - alto - 4\)/.test(videos),
+    "extensión: la burbuja del botón parte el texto en varias líneas y queda entera dentro de la ventana");
   comprobar(/anotarFallo\("botón «Descargar este video»", e, hostDe\(mensaje\.marco \|\| remitente\.url \|\| ""\)\)/.test(fondo)
-    && /hablar\(\{ tipo: "registro", texto: limpio \}\)/.test(fondo)
+    && /fallas\.push\(\{ codigo, sitio: hostDe\(url\) \}\)/.test(fondo)
     && /duracion: Number\.isFinite\(v\.duration\)/.test(videos) && /puedeSerLista\(d\.url, cab\["content-type"\], tamano, d\.method\)/.test(fondo)
     && /listaDelVideo\(medios, tabId, frameId,/.test(fondo),
     "extensión: un error del botón queda en el registro de Atarraya; el botón manda la duración del video; las listas dudosas se anotan y se miran al pulsar");
@@ -792,12 +829,38 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
     const m = new M.MediosPorPestana();
     m.anotar(4, { url: "https://cdn.ej.org/hls/master.m3u8", formato: "hls", frameId: 0, vista: true }, 10);
     const r = await M.listaDelVideo(m, 4, 0, 30, async () => null);
-    comprobar(r.entrada === null && r.motivo === "cual",
-      "videos: si no se pudo leer la duración de la lista, no se manda (dice que no sabe cuál de los videos es este)");
-    // Sin la duración del video y con listas de dos videos (pedidas con más de 15 s de diferencia): tampoco
+    comprobar(r.entrada === null && r.motivo === "sin-leer",
+      "videos: si no se pudo leer la lista, no se manda (dice que no pudo revisarlas)");
+    // Sin la duración del video y con listas de dos videos que no se pudieron leer: tampoco
     m.anotar(4, { url: "https://cdn.ej.org/hls2/master.m3u8", formato: "hls", frameId: 0, vista: true }, 60000);
     const r2 = await M.listaDelVideo(m, 4, 0, 0, async () => null);
-    comprobar(r2.entrada === null && r2.motivo === "cual", "videos: sin la duración del video y con listas de varios videos, ninguna");
+    comprobar(r2.entrada === null && r2.motivo === "sin-leer", "videos: sin la duración del video y con listas sin leer, ninguna");
+  }
+  {
+    // Una lista que se pudo leer y una segunda que pudo ser otro video y no se pudo leer: no se elige ninguna (antes,
+    // sin la duración, se elegía la primera)
+    const m = new M.MediosPorPestana();
+    const A = "https://cdn.ej.org/a/lista", B = "https://cdn.ej.org/b/lista";
+    m.anotar(4, { url: A, formato: "hls", frameId: 0, vista: true }, 1000);
+    m.dudosa(4, { url: B, frameId: 0, tamano: 1500 }, 2000);
+    const leer = async (u) => (u === A ? listaHls : null);
+    const r = await M.listaDelVideo(m, 4, 0, 0, leer);
+    const r2 = await M.listaDelVideo(m, 4, 0, 11.5, leer);
+    comprobar(r.entrada === null && r.motivo === "sin-leer" && r2.entrada === null && r2.motivo === "sin-leer"
+      && m.dudosasDe(4, 0).length === 1,
+      "videos: si una segunda lista posible quedó sin leer, no se elige ninguna (con o sin la duración) y se vuelve a probar");
+    // Cuando ya se pudo leer (y no es una lista), queda claro: la única
+    const r3 = await M.listaDelVideo(m, 4, 0, 0, async (u) => (u === A ? listaHls : ""));
+    comprobar(r3.entrada && r3.entrada.url === A && m.dudosasDe(4, 0).length === 0,
+      "videos: cuando todas se leyeron y queda una sola posible, esa");
+    // Una lista que el reproductor de este marco no pidió (la dirección directa de otro <video>) no cuenta
+    const s = new M.MediosPorPestana();
+    s.anotar(4, { url: A, formato: "hls", frameId: 0, vista: true }, 1000);
+    s.anotar(4, { url: "https://cdn.ej.org/de-otro-video.m3u8", formato: "hls", frameId: 0 }, 1500);
+    const leidas = [];
+    const rs = await M.listaDelVideo(s, 4, 0, 11.5, async (u) => { leidas.push(u); return u === A ? listaHls : null; });
+    comprobar(rs.entrada && rs.entrada.url === A && JSON.stringify(leidas) === JSON.stringify([A]),
+      "videos: una lista que el reproductor de este marco no pidió no es de este video (ni se pide)");
   }
   {
     // Sin la duración del video: dos videos cuyas listas llegaron con menos de 15 s de diferencia. Se pulsa el segundo:
@@ -872,15 +935,16 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
     n.dudosa(4, { url: LI(1), frameId: 0, tamano: 1382 }, 10);
     n.dudosa(4, { url: LI(2), frameId: 0, tamano: 400000 }, 11);
     const en = await M.listaDelVideo(n, 4, 0, 11.5, async (u) => (u === LI(1) ? null : ""));
-    comprobar(en.entrada === null && n.dudosasDe(4, 0).length === 1 && n.dudosasDe(4, 0)[0].url === LI(1),
+    comprobar(en.entrada === null && en.motivo === "sin-leer" && n.dudosasDe(4, 0).length === 1 && n.dudosasDe(4, 0)[0].url === LI(1),
       "videos: lo que no se pudo leer se vuelve a probar; lo que no es una lista se olvida");
-    // Como mucho MAXIMO_MIRADAS por clic, las más chicas primero
+    // Como mucho MAXIMO_MIRADAS por clic, las más chicas primero; las que quedan sin mirar cuentan como sin leer
     const t = new M.MediosPorPestana(100);
-    for (let i = 0; i < 40; i++) t.dudosa(4, { url: "https://cdn.ej.org/p/" + i, frameId: 0, tamano: i === 33 ? 1000 : 600000 }, i);
+    for (let i = 0; i < 70; i++) t.dudosa(4, { url: "https://cdn.ej.org/p/" + i, frameId: 0, tamano: i === 33 ? 1000 : 600000 }, i);
     const vistas = [];
-    await M.listaDelVideo(t, 4, 0, 11.5, async (u) => { vistas.push(u); return ""; });
-    comprobar(vistas.length === M.MAXIMO_MIRADAS && vistas[0] === "https://cdn.ej.org/p/33",
-      "videos: en cada clic se miran pocas respuestas dudosas, las más chicas primero (una lista es chica)");
+    const rt = await M.listaDelVideo(t, 4, 0, 11.5, async (u) => { vistas.push(u); return ""; });
+    const rt2 = await M.listaDelVideo(t, 4, 0, 11.5, async (u) => { vistas.push(u); return ""; });
+    comprobar(vistas.length === 70 && vistas[0] === "https://cdn.ej.org/p/33" && rt.motivo === "sin-leer" && rt2.motivo === "ninguna",
+      "videos: en cada clic se miran hasta 60 respuestas dudosas, las más chicas primero; si quedan sin mirar, no se elige");
   }
 
   decir(fallas ? `\n${fallas} FALLAS` : "\nTODO BIEN");

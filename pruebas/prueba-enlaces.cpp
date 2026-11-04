@@ -4099,13 +4099,6 @@ namespace
         Comprobar(r3.find("registro: y sigue\r\n") != std::string::npos && r3.find("(faltan") == r3.rfind("(faltan"),
                   "registro: el aviso de las que faltan va una sola vez");
 
-        // Lo que manda la extensión (un error suyo): una sola línea, sin caracteres de control, sin cortar una letra
-        std::string largo = "a\r\nb\tc" + std::string(10, 'x') + "\xC3\xB1";   // termina en «ñ» (2 bytes)
-        Comprobar(LineaDeRegistro(largo, 1000) == "a  b c" + std::string(10, 'x') + "\xC3\xB1"
-                      && LineaDeRegistro(largo, largo.size() - 1) == "a  b c" + std::string(10, 'x')
-                      && LineaDeRegistro("", 10).empty() && LineaDeRegistro(std::string("x\0y", 3), 10) == "x y",
-                  "registro: un texto de la extensión queda en una línea y no corta una letra por la mitad");
-
         // El tope (512 KB): un registro que lo pasa y no se puede renombrar a «.anterior» se corta a la mitad (queda lo
         // más nuevo); si tampoco se puede cortar, no se escribe más en él. Los respaldos, igual.
         auto llenar = [](const std::wstring& ruta, size_t bytes) {
@@ -4161,24 +4154,38 @@ namespace
                       && terminaCon(leer(respaldo), "registro: al respaldo lleno\r\n"),
                   "registro: el respaldo tampoco pasa del tope");
 
-        // Lo que manda la extensión, sin datos de la persona (como limpiarParaRegistro en medios.js): palabra por palabra
-        std::string s1 = SinDatosPrivados("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
-        std::string s2 = SinDatosPrivados("visita https://cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123 y (https://otro.org/x?y=1) también");
-        std::string s3 = SinDatosPrivados("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org "
-                                          "con ftp usuario:secreto@archivos.org/x");
-        std::string s4 = SinDatosPrivados("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
-        std::string s5 = SinDatosPrivados("con paréntesis usuario:cla(ve)@sitio.org https://u:p(a)ss@sitio.org/x pagina?clave=se(cre)to y a=b(c)d");
-        std::string s6 = SinDatosPrivados("botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)");
-        Comprobar(s1 == "Error: falló (…) en algo" && s2 == "visita https://cdn.ejemplo.org y https://otro.org también",
-                  "registro: de una dirección queda solo su sitio; si trae usuario o clave, nada");
-        Comprobar(s3 == "Cookie: li_at=… JSESSIONID=… de (…) con ftp (…)",
-                  "registro: sin valores de cookies ni de parámetros, sin correos y sin nada con «@»");
-        Comprobar(s5 == "con paréntesis (…) (…) pagina y a=…",
-                  "registro: tampoco pasan claves con paréntesis (en «usuario:clave@», en direcciones o en parámetros)");
-        Comprobar(s4 == "clave suelta … y un nombreMuyLargoDeFuncionSinNumeros" && SinDatosPrivados("").empty()
-                      && s6 == "botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)"
+        // Lo que manda la extensión: solo códigos de la lista cerrada (si no está, «otro») y un sitio; ningún texto. Ni
+        // siquiera una contraseña con paréntesis o comillas («clave= "se(cre)to"») puede pasar: no es un código.
+        auto ok = [](const char* c) { return CodigoDeRegistro(c) == c; };
+        Comprobar(ok("video:sin-lista") && ok("video:sin-leer") && ok("video:varias-listas") && ok("video:otros-videos")
+                      && ok("video:http-403") && ok("video:http-599") && ok("video:sin-conexion") && ok("extension:TypeError")
+                      && ok("extension:TypeError@medios.js:239") && ok("extension:Error@background.js:1062")
+                      && ok("video:puente-cerro") && ok("video:sin-puente") && ok("video:puente-respuesta") && ok("video:sin-permiso")
+                      && ok("video:puente-otro") && ok("video:cookies-recortadas") && ok("video:pedido-grande"),
+                  "registro: los códigos de la lista cerrada pasan tal cual");
+        // El registro del puente (registro-puente.txt): su propia línea; si no se puede, a la carpeta temporal con el error
+        RegistrarEn(L"registro-puente.txt", "puente 0.4.0 (chrome.exe): llegó video (54321 bytes)");
+        const std::wstring delPuente = carpeta + L"\\registro-puente.txt";
+        bool puenteBien = leer(delPuente).find("puente 0.4.0 (chrome.exe): llegó video (54321 bytes)\r\n") == 20;
+        HANDLE tomadoPuente = tomar(delPuente);
+        RegistrarEn(L"registro-puente.txt", "puente 0.4.0 (chrome.exe): video: ok");
+        CloseHandle(tomadoPuente);
+        Comprobar(puenteBien && leer(delPuente).find("video: ok") == std::string::npos
+                      && leer(carpeta + L"\\temporal\\Atarraya-registro-puente.txt").find("[registro-puente.txt: error de Windows 32] puente 0.4.0 (chrome.exe): video: ok")
+                             != std::string::npos,
+                  "registro: el puente anota en registro-puente.txt y, si no puede, en la carpeta temporal con el error");
+        Comprobar(CodigoDeRegistro("clave= \"se(cre)to\"") == "otro" && CodigoDeRegistro("video:http-4033") == "otro"
+                      && CodigoDeRegistro("video:http-603") == "otro" && CodigoDeRegistro("video:http-40a") == "otro"
+                      && CodigoDeRegistro("extension:TypeError@medios.js:0239") == "otro" && CodigoDeRegistro("extension:Clave123") == "otro"
+                      && CodigoDeRegistro("extension:TypeError@de-la-pagina.js:1") == "otro"
+                      && CodigoDeRegistro("extension:TypeError@medios.js:1 se(cre)to") == "otro" && CodigoDeRegistro("") == "otro"
+                      && CodigoDeRegistro("video:sin-lista ana:clave@sitio.org") == "otro" && CodigoDeRegistro("VIDEO:SIN-LISTA") == "otro",
+                  "registro: cualquier otra cosa (un texto, una contraseña, un código con algo de más) se anota como «otro»");
+        Comprobar(SitioDeRegistro("www.linkedin.com") == "www.linkedin.com" && SitioDeRegistro("127.0.0.1") == "127.0.0.1"
+                      && SitioDeRegistro("ana:x@sitio.org").empty() && SitioDeRegistro("sitio.org/clave").empty()
+                      && SitioDeRegistro("Sitio.org").empty() && SitioDeRegistro("").empty() && SitioDeRegistro(std::string(254, 'a')).empty()
                       && SoloSitio("https://ana:p@ss@sitio.org/x") == "sitio.org",
-                  "registro: sin cadenas largas que parecen claves; lo que manda la extensión pasa igual; el sitio nunca lleva la contraseña");
+                  "registro: el sitio es solo un nombre de sitio (sin usuario, clave ni ruta)");
 
         SetEnvironmentVariableW(L"ATARRAYA_PRUEBA", nullptr);
         std::filesystem::remove_all(carpeta, ec);

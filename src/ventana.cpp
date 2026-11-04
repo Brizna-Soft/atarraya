@@ -1578,10 +1578,10 @@ void VentanaPrincipal::Pedido(const std::string& texto)
     if (tipo == "mostrar") { Mostrar(); return; }
     if (tipo == "registro")
     {
-        // Un error de la extensión del navegador (por ejemplo, del botón «Descargar este video»): solo va al registro, en
-        // una línea y sin datos de la persona (la extensión ya los quita; aquí otra vez, por si acaso)
-        std::string t = SinDatosPrivados(LineaDeRegistro(campo("texto"), 1500));
-        if (!t.empty()) Registrar("extensión: " + t);
+        // Un aviso de la extensión del navegador (por ejemplo, por qué el botón «Descargar este video» no pudo): solo un
+        // código de la lista cerrada (si no está, «otro») y el sitio. Ningún texto de la extensión llega al registro.
+        std::string sitio = SitioDeRegistro(campo("sitio"));
+        Registrar("extensión: " + CodigoDeRegistro(campo("codigo")) + (sitio.empty() ? std::string() : " (" + sitio + ")"));
         return;
     }
     if (tipo == "torrent")
