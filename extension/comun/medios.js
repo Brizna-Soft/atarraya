@@ -29,7 +29,10 @@ const TEXTO_SIN_ARCHIVO = "No encontré el archivo completo de este video.";
 const TEXTO_CUAL_VIDEO = "No encontré cuál de los videos de la página es este.";
 // No se pudieron leer todas las listas que pueden ser la de este video (el servidor no contestó, por ejemplo)
 const TEXTO_SIN_LEER = "No pude revisar las listas de video de esta página. Vuelve a intentar.";
-const TEXTO_SIN_HABLAR = "No se pudo hablar con Atarraya. Vuelve a intentar.";
+// No se pudo hablar con el programa (falló el puente): con lo que dijo el navegador, como código fijo (ver codigoDePuente)
+function textoSinHablar(codigo) {
+  return "No se pudo hablar con Atarraya (" + (CODIGOS_PUENTE.includes(codigo) ? codigo : "otro") + "). Vuelve a intentar.";
+}
 // Un error de la misma extensión (queda en el registro de Atarraya, si está abierto)
 const TEXTO_FALLO_EXTENSION = "Algo falló en la extensión al buscar este video. Vuelve a intentar.";
 // El botón no recibió respuesta de la extensión
@@ -353,7 +356,8 @@ async function listaDelVideo(medios, tabId, frameId, duracion, leer, enParalelo 
 // Al registro solo van códigos fijos de esta lista cerrada (más el sitio): ningún texto de la página, de un error o de
 // la red. Atarraya revisa lo mismo; lo que no está en la lista lo anota como «otro».
 const CODIGOS_REGISTRO = ["video:sin-lista", "video:sin-leer", "video:varias-listas", "video:otros-videos", "video:no-permitida",
-  "video:sin-respuesta", "video:sin-conexion", "video:redirige", "video:cortada"];
+  "video:sin-respuesta", "video:sin-conexion", "video:redirige", "video:cortada", "video:puente-cerro", "video:sin-puente",
+  "video:puente-respuesta", "video:sin-permiso", "video:puente-otro", "video:cookies-recortadas", "video:pedido-grande"];
 // Además: «video:http-NNN» (lo que contestó el servidor) y «extension:Tipo@archivo.js:línea» (un error de la extensión)
 const TIPOS_DE_ERROR = ["Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "EvalError",
   "AggregateError", "DOMException", "AbortError", "NotAllowedError", "NotFoundError", "NetworkError", "SecurityError",
@@ -383,6 +387,39 @@ function codigoDeFallo(error) {
     if (ARCHIVOS_EXTENSION.includes(m[1])) return "extension:" + tipo + "@" + m[1] + ":" + m[2];
   }
   return "extension:" + tipo;
+}
+
+// Lo que dijo el navegador cuando no pudo hablar con el puente (sendNativeMessage), como código fijo: nunca su texto
+const CODIGOS_PUENTE = ["puente-cerro", "sin-puente", "puente-respuesta", "sin-permiso", "otro"];
+function codigoDePuente(error) {
+  const m = String((error && error.message) || error || "");
+  if (/native host has exited/i.test(m)) return "puente-cerro";
+  if (/specified native messaging host not found|no such native application/i.test(m)) return "sin-puente";
+  if (/error when communicating with the native messaging host/i.test(m)) return "puente-respuesta";
+  if (/access to the specified native messaging host is forbidden/i.test(m)) return "sin-permiso";
+  return "otro";
+}
+
+// Cuántos bytes ocupa un texto en UTF-8 (lo que viaja al puente)
+function bytesDe(texto) {
+  return new TextEncoder().encode(String(texto)).length;
+}
+
+// Las cookies que van con un video tienen un tope (256 KB, el mismo que deja pasar el puente): si se pasan, se quitan
+// líneas enteras del final. { cookies, recortadas }
+const TOPE_COOKIES = 256 * 1024;
+function recortarCookies(texto, tope = TOPE_COOKIES) {
+  const todas = String(texto || "");
+  if (bytesDe(todas) <= tope) return { cookies: todas, recortadas: false };
+  const quedan = [];
+  let bytes = 0;
+  for (const linea of todas.split("\n")) {
+    const b = bytesDe(linea) + (quedan.length ? 1 : 0);
+    if (bytes + b > tope) break;
+    quedan.push(linea);
+    bytes += b;
+  }
+  return { cookies: quedan.join("\n"), recortadas: true };
 }
 
 // El botón no recibió respuesta de la extensión. Si este marco quedó hablando con una extensión que ya no está (se
@@ -733,8 +770,8 @@ if (typeof module !== "undefined")
     SITIOS_YOUTUBE, SITIOS_PROTEGIDOS, TEXTO_YOUTUBE, TEXTO_PROTEGIDO, TEXTO_SITIO_PROTEGIDO, TEXTO_SIN_TRANSMISION, esYouTube,
     esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, calidadDe, textoTamano,
     cabecerasDe, MediosPorPestana, pedidoDeVideo, sitiosDeArriba, hostDe,
-    TEXTO_SIN_ARCHIVO, TEXTO_SIN_HABLAR, TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA,
+    TEXTO_SIN_ARCHIVO, textoSinHablar, TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA,
     puedeSerLista, formatoPorContenido, puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo,
     textoSinRespuesta, MAXIMO_MIRADAS, TEXTO_CUAL_VIDEO, TEXTO_SIN_LEER, CODIGOS_REGISTRO, codigoDeRegistro, sitioDeRegistro,
-    codigoDeFallo,
+    codigoDeFallo, CODIGOS_PUENTE, codigoDePuente, bytesDe, TOPE_COOKIES, recortarCookies,
   };

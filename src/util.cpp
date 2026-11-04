@@ -288,6 +288,7 @@ namespace
         if (hnd::TamanoArchivo(ruta) <= hnd::TopeRegistro) return true;
         if (MoveFileExW(ruta.c_str(), (ruta + L".anterior").c_str(), MOVEFILE_REPLACE_EXISTING)) return true;
         DWORD alRenombrar = GetLastError();
+        if (alRenombrar == ERROR_FILE_NOT_FOUND) return true;   // otro programa (otro puente) lo acaba de renombrar
         if (CortarALaMitad(ruta)) return true;
         error = alRenombrar != ERROR_SUCCESS ? alRenombrar : ERROR_FILE_TOO_LARGE;
         return false;
@@ -380,7 +381,9 @@ namespace
     // de error y los archivos de la extensión
     const char* const CodigosFijos[] = { "video:sin-lista", "video:sin-leer", "video:varias-listas", "video:otros-videos",
                                          "video:no-permitida", "video:sin-respuesta", "video:sin-conexion", "video:redirige",
-                                         "video:cortada" };
+                                         "video:cortada", "video:puente-cerro", "video:sin-puente", "video:puente-respuesta",
+                                         "video:sin-permiso", "video:puente-otro", "video:cookies-recortadas",
+                                         "video:pedido-grande" };
     const char* const TiposDeError[] = { "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError",
                                          "EvalError", "AggregateError", "DOMException", "AbortError", "NotAllowedError",
                                          "NotFoundError", "NetworkError", "SecurityError", "InvalidStateError",
@@ -407,6 +410,18 @@ namespace
         }
         return true;
     }
+}
+
+void hnd::RegistrarEn(const std::wstring& archivo, const std::string& texto)
+{
+    // Varios puentes pueden escribir a la vez: cada línea va entera al final (FILE_APPEND_DATA)
+    DWORD error = 0;
+    if (AgregarAlFinal(CarpetaDatos() + L"\\" + archivo, Hora() + texto + "\r\n", error)) return;
+    std::wstring temporal = CarpetaDelRespaldo();
+    DWORD otro = 0;
+    if (!temporal.empty())
+        AgregarAlFinal(temporal + L"\\Atarraya-" + archivo, Hora() + "[" + Utf8(archivo) + ": error de Windows " + std::to_string(error) + "] "
+                                                              + texto + "\r\n", otro);
 }
 
 std::string hnd::CodigoDeRegistro(const std::string& codigo)

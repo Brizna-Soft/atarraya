@@ -70,12 +70,13 @@ armar_programa(Atarraya)
 
 # --- El puente con los navegadores (native messaging) ---
 function(armar_puente objetivo)
-    add_executable(${objetivo} puente/puente.cpp res/puente.rc)
+    # util.cpp: el registro del puente (registro-puente.txt), con el mismo tope que el de Atarraya
+    add_executable(${objetivo} puente/puente.cpp src/util.cpp res/puente.rc)
     target_include_directories(${objetivo} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generado")
     target_compile_definitions(${objetivo} PRIVATE ${DEFINICIONES})
     target_compile_options(${objetivo} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
     target_link_options(${objetivo} PRIVATE /guard:cf)
-    target_link_libraries(${objetivo} PRIVATE nlohmann_json::nlohmann_json)
+    target_link_libraries(${objetivo} PRIVATE nlohmann_json::nlohmann_json bcrypt)
 endfunction()
 armar_puente(atarraya-puente)
 

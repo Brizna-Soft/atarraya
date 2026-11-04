@@ -10,7 +10,7 @@ const { PestanasDePedidos: Pestanas, paginaDeOrigen: origen } = enNode
 const M = enNode
   ? require("../extension/comun/medios.js")
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
-      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, TEXTO_SIN_HABLAR,
+      MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, textoSinHablar,
       TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA, puedeSerLista, formatoPorContenido,
       puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo, textoSinRespuesta, MAXIMO_MIRADAS };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
@@ -362,8 +362,32 @@ comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true)
   "videos: si la extensión no contesta, el botón dice por qué (se reinició: recargar la página), no que falló Atarraya");
 comprobar([M.TEXTO_SIN_ARCHIVO, M.TEXTO_FALLO_EXTENSION, M.TEXTO_EXTENSION_REINICIADA, M.TEXTO_EXTENSION_CALLADA, M.TEXTO_SIN_TRANSMISION]
     .every((t) => typeof t === "string" && t.length > 10 && !/hablar con Atarraya/.test(t))
-  && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video." && /^No se pudo hablar con Atarraya/.test(M.TEXTO_SIN_HABLAR),
+  && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video.",
   "videos: «No se pudo hablar con Atarraya» es solo para cuando falló hablar con el programa");
+// Cuando falla el pedido al puente: lo que dijo el navegador, como código fijo, en la burbuja (y en el registro)
+comprobar(M.codigoDePuente(new Error("Native host has exited.")) === "puente-cerro"
+  && M.codigoDePuente(new Error("Specified native messaging host not found.")) === "sin-puente"
+  && M.codigoDePuente("No such native application com.briznasoft.atarraya") === "sin-puente"
+  && M.codigoDePuente(new Error("Error when communicating with the native messaging host.")) === "puente-respuesta"
+  && M.codigoDePuente(new Error("Access to the specified native messaging host is forbidden.")) === "sin-permiso"
+  && M.codigoDePuente(new Error("algo raro con clave= \"se(cre)to\"")) === "otro" && M.codigoDePuente(null) === "otro",
+  "videos: el error del navegador al hablar con el puente se traduce a un código fijo (nunca su texto)");
+comprobar(M.textoSinHablar("puente-cerro") === "No se pudo hablar con Atarraya (puente-cerro). Vuelve a intentar."
+  && M.textoSinHablar("clave= \"se(cre)to\"") === "No se pudo hablar con Atarraya (otro). Vuelve a intentar."
+  && M.CODIGOS_PUENTE.filter((c) => c !== "otro").every((c) => M.CODIGOS_REGISTRO.includes("video:" + c))
+  && M.CODIGOS_REGISTRO.includes("video:puente-otro"),
+  "videos: la burbuja dice el código del puente y el registro lo anota (de la lista cerrada)");
+// Las cookies de un video: con tope (256 KB), recortadas por líneas enteras
+{
+  const linea = (i) => ".linkedin.com\tTRUE\t/\tTRUE\t0\tc" + i + "\t" + "v".repeat(1000);
+  const muchas = Array.from({ length: 400 }, (_, i) => linea(i)).join("\n");
+  const r = M.recortarCookies(muchas);
+  const pocas = M.recortarCookies("a\tb\nc\td");
+  comprobar(r.recortadas && M.bytesDe(r.cookies) <= M.TOPE_COOKIES && M.bytesDe(r.cookies) > M.TOPE_COOKIES - 2000
+    && r.cookies.split("\n").every((l, i) => l === linea(i)) && !pocas.recortadas && pocas.cookies === "a\tb\nc\td"
+    && M.recortarCookies("").cookies === "" && M.bytesDe("ñ") === 2 && M.TOPE_COOKIES === 256 * 1024,
+    "videos: las cookies que van con un video no pasan de 256 KB (se quitan líneas enteras del final)");
+}
 {
   // Las respuestas dudosas: por marco, sin repetir, con tope, y se olvidan con su marco o su pestaña
   const m = new M.MediosPorPestana(4);
@@ -411,8 +435,8 @@ if (enNode) {
   // «No se pudo hablar con Atarraya» solo cuando falló hablar con el programa: ni en un error de la extensión ni cuando
   // la extensión no contesta
   const popupJs = leer("../extension/comun/popup.js");
-  comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/TEXTO_SIN_HABLAR/g) || []).length === 1
-    && /catch \(e\) \{\s*\/\/[^\n]*\n\s*console\.warn\("Atarraya: no se pudo pasar el video al programa", e\);\s*return \{ ok: false, texto: TEXTO_SIN_HABLAR \};/.test(fondo)
+  comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/textoSinHablar\(/g) || []).length === 1
+    && /const codigo = codigoDePuente\(e\);[\s\S]{0,200}anotarEnRegistro\("video:" \+ \(codigo === "otro" \? "puente-otro" : codigo\), hostDe\(entrada\.url\)\);\s*return \{ ok: false, texto: textoSinHablar\(codigo\) \};/.test(fondo)
     && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, extensionViva\(\)\)/.test(videos),
     "extensión: «No se pudo hablar con Atarraya» es solo para cuando falló el pedido al programa; un error de la extensión lo dice así");
   comprobar(/fetch\(url, \{ credentials: "include", redirect: "error", signal: control\.signal \}\)/.test(fondo)
@@ -427,8 +451,19 @@ if (enNode) {
   const registros = fondo.match(/tipo: "registro"[^}]*\}/g) || [];
   comprobar(registros.length === 1 && registros[0] === 'tipo: "registro", codigo: codigoDeRegistro(codigo), sitio: sitioDeRegistro(sitio) }'
     && /anotarEnRegistro\(codigoDeFallo\(e\), sitio\)/.test(fondo) && !/anotarEnRegistro\([^)]*\.(stack|message)/.test(fondo)
-    && !/limpiarParaRegistro|resumenDeFallo/.test(fondo) && (fondo.match(/anotarEnRegistro\(/g) || []).length === 4,
+    && !/limpiarParaRegistro|resumenDeFallo/.test(fondo) && (fondo.match(/anotarEnRegistro\(/g) || []).length === 7
+    && (fondo.match(/anotarEnRegistro\(([^,)]*)/g) || []).every((x) => /anotarEnRegistro\((codigo|"video:[a-z-]+"|"video:" \+ \(codigo === "otro"|codigoDeFallo\(e\)|porQue|f\.codigo)/.test(x)),
     "extensión: al registro de Atarraya va solo un código de la lista cerrada y el sitio");
+  comprobar(/const \{ cookies, recortadas \} = recortarCookies\(await cookiesDeMarco\(\[entrada\.url, marco\], pagina\), TOPE_COOKIES\);/.test(fondo)
+    && /if \(recortadas\) anotarEnRegistro\("video:cookies-recortadas"/.test(fondo)
+    && /if \(bytesDe\(JSON\.stringify\(pedido\)\) > 1024 \* 1024\) anotarEnRegistro\("video:pedido-grande"/.test(fondo)
+    && !/muestrasDeMarco\(tabId, entrada\.frameId\)/.test(fondo),
+    "extensión: con un video van solo las cookies de su servidor y de su página, con tope; se mide el pedido");
+  comprobar(/b\.whiteSpace = "normal";/.test(videos) && /b\.overflowWrap = "anywhere";/.test(videos)
+    && /b\.maxWidth = "min\(280px, calc\(100vw - 16px\)\)";/.test(videos)
+    && /izquierda = Math\.max\(Math\.min\(izquierda, visible - ancho - 4\), 4\);/.test(videos)
+    && /Math\.min\(Math\.max\(r\.top, 0\) \+ 8, visibleAlto - alto - 4\)/.test(videos),
+    "extensión: la burbuja del botón parte el texto en varias líneas y queda entera dentro de la ventana");
   comprobar(/anotarFallo\("botón «Descargar este video»", e, hostDe\(mensaje\.marco \|\| remitente\.url \|\| ""\)\)/.test(fondo)
     && /fallas\.push\(\{ codigo, sitio: hostDe\(url\) \}\)/.test(fondo)
     && /duracion: Number\.isFinite\(v\.duration\)/.test(videos) && /puedeSerLista\(d\.url, cab\["content-type"\], tamano, d\.method\)/.test(fondo)

@@ -67,6 +67,9 @@ namespace hnd
     inline constexpr const char* RegistroRespaldo = "registro-respaldo.txt";
     inline constexpr const char* RegistroTemporal = "Atarraya-registro.txt";
     inline constexpr int64_t TopeRegistro = 512 * 1024;
+    // Otro registro de la carpeta de datos (el del puente: registro-puente.txt), con el mismo tope. Si no se puede
+    // escribir ahí, la línea va con el código de error a «Atarraya-<archivo>» en la carpeta temporal.
+    void RegistrarEn(const std::wstring& archivo, const std::string& texto);
     // Lo que la extensión puede anotar en el registro: un código de una lista cerrada (la misma que en medios.js: los
     // fijos, «video:http-NNN» y «extension:Tipo@archivo.js:línea»); cualquier otra cosa es «otro». Ningún texto de la
     // extensión, de la página ni de la red llega al registro.

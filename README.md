@@ -293,8 +293,10 @@ Lo que no baja:
 esperabas. Si puedes, adjunta el archivo `%LOCALAPPDATA%\Atarraya\registro.txt`. Solo anota el nombre de los
 sitios, no las direcciones completas ni los nombres de lo que bajas. Si Atarraya no pudo escribir ahí, lo anota
 (con el motivo) en `registro-respaldo.txt`, en la misma carpeta, o en `Atarraya-registro.txt`, en la carpeta temporal
-(`%TEMP%`). Ninguno pasa de 512 KB. De un error de la extensión solo se anota qué tipo de error fue, en qué parte de
-la extensión pasó y el sitio: nunca direcciones completas, cookies, correos ni contraseñas.
+(`%TEMP%`). Ninguno pasa de 512 KB. De la extensión solo llegan códigos fijos (por ejemplo, `video:sin-leer`) y el
+sitio: nunca direcciones completas, cookies, correos ni contraseñas. Si el problema es con el navegador, adjunta
+también `registro-puente.txt` (en la misma carpeta): el puente anota ahí cada mensaje, su tipo, su tamaño y cómo
+terminó, sin lo que trae.
 
 ## Apoyar
 

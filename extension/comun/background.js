@@ -408,15 +408,22 @@ async function enviarVideo(tabId, entrada) {
   if (entrada.protegido) return { ok: false, texto: TEXTO_PROTEGIDO };
   if (!(await programaListo()))
     return { ok: false, texto: "No encuentro Atarraya. Ábrelo y pulsa «Navegadores» → «Conectar»." };
-  const cookies = await cookiesDeMarco([entrada.url, marco, ...medios.muestrasDeMarco(tabId, entrada.frameId)], pagina);
+  // Solo las cookies del servidor del video y de la página, con un tope (si se pasan, se recortan y se anota)
+  const { cookies, recortadas } = recortarCookies(await cookiesDeMarco([entrada.url, marco], pagina), TOPE_COOKIES);
+  if (recortadas) anotarEnRegistro("video:cookies-recortadas", hostDe(entrada.url));
   const pedido = pedidoDeVideo(entrada, pagina, pestana ? pestana.title : "", marco, cookies, navigator.userAgent);
+  // Su tamaño: con las cookies recortadas, unos cientos de KB como mucho
+  if (bytesDe(JSON.stringify(pedido)) > 1024 * 1024) anotarEnRegistro("video:pedido-grande", hostDe(entrada.url));
   let r = null;
   try {
     r = await hablar(pedido);
   } catch (e) {
-    // Lo único que es «no se pudo hablar»: Atarraya contestó la prueba, pero el pedido no llegó (el puente falló)
+    // Lo único que es «no se pudo hablar»: Atarraya contestó la prueba, pero el pedido no llegó (el puente falló). Lo que
+    // dijo el navegador va como código fijo a la burbuja y al registro.
+    const codigo = codigoDePuente(e);
     console.warn("Atarraya: no se pudo pasar el video al programa", e);
-    return { ok: false, texto: TEXTO_SIN_HABLAR };
+    anotarEnRegistro("video:" + (codigo === "otro" ? "puente-otro" : codigo), hostDe(entrada.url));
+    return { ok: false, texto: textoSinHablar(codigo) };
   }
   if (r && r.ok) return { ok: true, texto: "Enviado a Atarraya" };
   return { ok: false, texto: "Atarraya no lo aceptó." };

@@ -3491,8 +3491,21 @@ namespace
         auto ok = [](const char* c) { return CodigoDeRegistro(c) == c; };
         Comprobar(ok("video:sin-lista") && ok("video:sin-leer") && ok("video:varias-listas") && ok("video:otros-videos")
                       && ok("video:http-403") && ok("video:http-599") && ok("video:sin-conexion") && ok("extension:TypeError")
-                      && ok("extension:TypeError@medios.js:239") && ok("extension:Error@background.js:1062"),
+                      && ok("extension:TypeError@medios.js:239") && ok("extension:Error@background.js:1062")
+                      && ok("video:puente-cerro") && ok("video:sin-puente") && ok("video:puente-respuesta") && ok("video:sin-permiso")
+                      && ok("video:puente-otro") && ok("video:cookies-recortadas") && ok("video:pedido-grande"),
                   "registro: los códigos de la lista cerrada pasan tal cual");
+        // El registro del puente (registro-puente.txt): su propia línea; si no se puede, a la carpeta temporal con el error
+        RegistrarEn(L"registro-puente.txt", "puente 0.4.0 (chrome.exe): llegó video (54321 bytes)");
+        const std::wstring delPuente = carpeta + L"\\registro-puente.txt";
+        bool puenteBien = leer(delPuente).find("puente 0.4.0 (chrome.exe): llegó video (54321 bytes)\r\n") == 20;
+        HANDLE tomadoPuente = tomar(delPuente);
+        RegistrarEn(L"registro-puente.txt", "puente 0.4.0 (chrome.exe): video: ok");
+        CloseHandle(tomadoPuente);
+        Comprobar(puenteBien && leer(delPuente).find("video: ok") == std::string::npos
+                      && leer(carpeta + L"\\temporal\\Atarraya-registro-puente.txt").find("[registro-puente.txt: error de Windows 32] puente 0.4.0 (chrome.exe): video: ok")
+                             != std::string::npos,
+                  "registro: el puente anota en registro-puente.txt y, si no puede, en la carpeta temporal con el error");
         Comprobar(CodigoDeRegistro("clave= \"se(cre)to\"") == "otro" && CodigoDeRegistro("video:http-4033") == "otro"
                       && CodigoDeRegistro("video:http-603") == "otro" && CodigoDeRegistro("video:http-40a") == "otro"
                       && CodigoDeRegistro("extension:TypeError@medios.js:0239") == "otro" && CodigoDeRegistro("extension:Clave123") == "otro"
