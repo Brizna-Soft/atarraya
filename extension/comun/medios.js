@@ -422,6 +422,23 @@ function recortarCookies(texto, tope = TOPE_COOKIES) {
   return { cookies: quedan.join("\n"), recortadas: true };
 }
 
+// Las cookies que van con un video, por prioridad («grupos», de más a menos importante): primero las del servidor del
+// video y de los servidores de sus fragmentos (los que pidió el reproductor de ese marco), después las de la página. Sin
+// repetir, y con el tope: si se pasan, quedan afuera las de menos prioridad (por líneas enteras). { cookies, recortadas }
+function juntarCookies(grupos, tope = TOPE_COOKIES) {
+  const vistas = new Set();
+  const lineas = [];
+  for (const grupo of grupos || []) {
+    for (const linea of String(grupo || "").split("\n")) {
+      if (linea && !vistas.has(linea)) {
+        vistas.add(linea);
+        lineas.push(linea);
+      }
+    }
+  }
+  return recortarCookies(lineas.join("\n"), tope);
+}
+
 // El botón no recibió respuesta de la extensión. Si este marco quedó hablando con una extensión que ya no está (se
 // actualizó, se recargó o se apagó mientras la página seguía abierta), recargar la página lo arregla.
 function textoSinRespuesta(error, extensionViva) {
@@ -773,5 +790,5 @@ if (typeof module !== "undefined")
     TEXTO_SIN_ARCHIVO, textoSinHablar, TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA,
     puedeSerLista, formatoPorContenido, puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo,
     textoSinRespuesta, MAXIMO_MIRADAS, TEXTO_CUAL_VIDEO, TEXTO_SIN_LEER, CODIGOS_REGISTRO, codigoDeRegistro, sitioDeRegistro,
-    codigoDeFallo, CODIGOS_PUENTE, codigoDePuente, bytesDe, TOPE_COOKIES, recortarCookies,
+    codigoDeFallo, CODIGOS_PUENTE, codigoDePuente, bytesDe, TOPE_COOKIES, recortarCookies, juntarCookies,
   };

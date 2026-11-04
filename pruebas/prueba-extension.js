@@ -388,6 +388,23 @@ comprobar(M.textoSinHablar("puente-cerro") === "No se pudo hablar con Atarraya (
     && M.recortarCookies("").cookies === "" && M.bytesDe("ñ") === 2 && M.TOPE_COOKIES === 256 * 1024,
     "videos: las cookies que van con un video no pasan de 256 KB (se quitan líneas enteras del final)");
 }
+// Por prioridad: primero las del servidor del video y de sus fragmentos (LinkedIn: dms.licdn.com puede pedir sesión),
+// después las de la página; sin repetir, y con el tope quedan afuera las de la página primero
+{
+  const del = (host, i, largo) => host + "\tTRUE\t/\tTRUE\t0\tc" + i + "\t" + "v".repeat(largo);
+  const delVideo = Array.from({ length: 150 }, (_, i) => del("dms.licdn.com", i, 1000)).join("\n");
+  const deLaPagina = Array.from({ length: 150 }, (_, i) => del(".linkedin.com", i, 1000)).join("\n");
+  const r = M.juntarCookies([delVideo, deLaPagina + "\n" + del("dms.licdn.com", 0, 1000)]);
+  const lineas = r.cookies.split("\n");
+  const cuantasDelVideo = lineas.filter((l) => l.startsWith("dms.licdn.com")).length;
+  const cuantasDeLaPagina = lineas.filter((l) => l.startsWith(".linkedin.com")).length;
+  comprobar(r.recortadas && M.bytesDe(r.cookies) <= M.TOPE_COOKIES && cuantasDelVideo === 150 && cuantasDeLaPagina > 0
+    && cuantasDeLaPagina < 150 && lineas.slice(0, 150).every((l) => l.startsWith("dms.licdn.com")),
+    "videos: con el tope, primero entran las cookies del servidor del video y de sus fragmentos, y después las de la página");
+  const sin = M.juntarCookies(["a\tb", "a\tb\nc\td", ""]);
+  comprobar(!sin.recortadas && sin.cookies === "a\tb\nc\td" && M.juntarCookies([]).cookies === "" && M.juntarCookies(null).cookies === "",
+    "videos: las cookies repetidas (del video y de la página) van una sola vez");
+}
 {
   // Las respuestas dudosas: por marco, sin repetir, con tope, y se olvidan con su marco o su pestaña
   const m = new M.MediosPorPestana(4);
@@ -454,11 +471,12 @@ if (enNode) {
     && !/limpiarParaRegistro|resumenDeFallo/.test(fondo) && (fondo.match(/anotarEnRegistro\(/g) || []).length === 7
     && (fondo.match(/anotarEnRegistro\(([^,)]*)/g) || []).every((x) => /anotarEnRegistro\((codigo|"video:[a-z-]+"|"video:" \+ \(codigo === "otro"|codigoDeFallo\(e\)|porQue|f\.codigo)/.test(x)),
     "extensión: al registro de Atarraya va solo un código de la lista cerrada y el sitio");
-  comprobar(/const \{ cookies, recortadas \} = recortarCookies\(await cookiesDeMarco\(\[entrada\.url, marco\], pagina\), TOPE_COOKIES\);/.test(fondo)
+  comprobar(/const delVideo = await cookiesDeMarco\(\[entrada\.url, \.\.\.medios\.muestrasDeMarco\(tabId, entrada\.frameId\)\], pagina\);/.test(fondo)
+    && /const deLaPagina = await cookiesDeMarco\(\[marco\], pagina\);/.test(fondo)
+    && /const \{ cookies, recortadas \} = juntarCookies\(\[delVideo, deLaPagina\], TOPE_COOKIES\);/.test(fondo)
     && /if \(recortadas\) anotarEnRegistro\("video:cookies-recortadas"/.test(fondo)
-    && /if \(bytesDe\(JSON\.stringify\(pedido\)\) > 1024 \* 1024\) anotarEnRegistro\("video:pedido-grande"/.test(fondo)
-    && !/muestrasDeMarco\(tabId, entrada\.frameId\)/.test(fondo),
-    "extensión: con un video van solo las cookies de su servidor y de su página, con tope; se mide el pedido");
+    && /if \(bytesDe\(JSON\.stringify\(pedido\)\) > 1024 \* 1024\) anotarEnRegistro\("video:pedido-grande"/.test(fondo),
+    "extensión: con un video van las cookies de su servidor, de sus fragmentos y de su página, en ese orden y con tope; se mide el pedido");
   comprobar(/b\.whiteSpace = "normal";/.test(videos) && /b\.overflowWrap = "anywhere";/.test(videos)
     && /b\.maxWidth = "min\(280px, calc\(100vw - 16px\)\)";/.test(videos)
     && /izquierda = Math\.max\(Math\.min\(izquierda, visible - ancho - 4\), 4\);/.test(videos)
