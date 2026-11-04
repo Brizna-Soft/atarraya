@@ -4,15 +4,11 @@
 #include <bcrypt.h>
 #include <shlobj.h>
 
-#include <algorithm>
 #include <atomic>
-#include <cctype>
 #include <chrono>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <mutex>
-#include <regex>
 #include <vector>
 
 std::wstring hnd::Ancho(const std::string& utf8)
@@ -395,98 +391,74 @@ std::string hnd::LineaDeRegistro(const std::string& texto, size_t maximo)
     return r;
 }
 
-namespace
-{
-    std::string SinDatosPrivadosSinCuidar(const std::string& texto)
-    {
-        // Lo mismo que limpiarParaRegistro en la extensión (medios.js). Las direcciones, ya limpias, se apartan (\x01n\x01)
-        // para que lo demás no las toque.
-        std::string t = texto;
-        for (auto& c : t)
-        {
-            if (c == '\x01') c = ' ';
-        }
-        static const std::regex direccion(R"(\b([A-Za-z][A-Za-z0-9+.\-]*)://([^\s/?#'"<>()]*)([^\s'"<>()]*))");
-        std::vector<std::string> direcciones;
-        std::string r;
-        size_t desde = 0;
-        for (auto it = std::sregex_iterator(t.begin(), t.end(), direccion); it != std::sregex_iterator(); ++it)
-        {
-            const std::smatch& m = *it;
-            r.append(t, desde, (size_t)m.position() - desde);
-            std::string esquema = m[1].str();
-            for (auto& c : esquema) c = (char)tolower((unsigned char)c);
-            std::string autoridad = m[2].str(), resto = m[3].str();
-            std::string limpia;
-            if ((esquema == "chrome-extension" || esquema == "moz-extension") && autoridad.find('@') == std::string::npos)
-                limpia = esquema + "://" + autoridad + resto.substr(0, resto.find_first_of("?#"));
-            else
-            {
-                size_t arroba = autoridad.rfind('@');
-                limpia = esquema + "://" + (arroba == std::string::npos ? autoridad : autoridad.substr(arroba + 1)) + (resto.empty() ? "" : "/…");
-            }
-            direcciones.push_back(limpia);
-            r += "\x01" + std::to_string(direcciones.size() - 1) + "\x01";
-            desde = (size_t)(m.position() + m.length());
-        }
-        r.append(t, desde, std::string::npos);
-        static const std::regex usuarioClave(R"([^\s/:@'"<>()\x01]+:[^\s/@'"<>()\x01]*@)");
-        static const std::regex correo(R"([\w.%+\-]+@[\w\-]+(?:\.[\w\-]+)+)");
-        static const std::regex entreComillas(R"(=\s*"[^"]*")");
-        static const std::regex entreApostrofos(R"(=\s*'[^']*')");
-        static const std::regex valor(R"(=[^\s;&,'"<>()\x01]+)");
-        r = std::regex_replace(r, usuarioClave, "");
-        r = std::regex_replace(r, correo, "(correo)");
-        r = std::regex_replace(r, entreComillas, "=\"…\"");
-        r = std::regex_replace(r, entreApostrofos, "='…'");
-        r = std::regex_replace(r, valor, "=…");
-        // Cadenas largas con letras y números: parecen claves
-        static const std::regex larga(R"([A-Za-z0-9+/_.%\-]{20,})");
-        std::string sinClaves;
-        desde = 0;
-        for (auto it = std::sregex_iterator(r.begin(), r.end(), larga); it != std::sregex_iterator(); ++it)
-        {
-            const std::smatch& m = *it;
-            std::string x = m.str();
-            bool numero = x.find_first_of("0123456789") != std::string::npos;
-            bool letra = std::any_of(x.begin(), x.end(), [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); });
-            sinClaves.append(r, desde, (size_t)m.position() - desde);
-            sinClaves += numero && letra ? std::string("…") : x;
-            desde = (size_t)(m.position() + m.length());
-        }
-        sinClaves.append(r, desde, std::string::npos);
-        // Las direcciones vuelven a su lugar
-        std::string fin;
-        for (size_t i = 0; i < sinClaves.size(); i++)
-        {
-            if (sinClaves[i] == '\x01')
-            {
-                size_t cierre = sinClaves.find('\x01', i + 1);
-                if (cierre != std::string::npos)
-                {
-                    size_t n = (size_t)std::strtoul(sinClaves.substr(i + 1, cierre - i - 1).c_str(), nullptr, 10);
-                    if (n < direcciones.size()) fin += direcciones[n];
-                    i = cierre;
-                    continue;
-                }
-            }
-            fin += sinClaves[i];
-        }
-        return fin;
-    }
-}
-
 std::string hnd::SinDatosPrivados(const std::string& texto)
 {
-    try
+    // Lo mismo que limpiarParaRegistro en la extensión (medios.js). No intenta reconocer contraseñas: se revisa palabra
+    // por palabra (lo que hay entre espacios), y de una palabra con «@» no queda nada; de una dirección queda solo su
+    // sitio (sin usuario, clave, puerto, ruta ni parámetros); de lo demás se quitan los parámetros («?…»), los valores
+    // («nombre=…») y las cadenas largas con letras y números (parecen claves).
+    auto espacio = [](char c) { return c == ' ' || c == '\t' || c == '\r' || c == '\n' || c == '\f' || c == '\v'; };
+    auto letra = [](char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); };
+    auto digito = [](char c) { return c >= '0' && c <= '9'; };
+    auto deSitio = [&](char c) { return letra(c) || digito(c) || c == '.' || c == '-'; };
+    auto deClave = [&](char c) { return letra(c) || digito(c) || c == '+' || c == '/' || c == '_' || c == '.' || c == '%' || c == '-'; };
+    std::string r;
+    size_t i = 0;
+    while (i < texto.size())
     {
-        return SinDatosPrivadosSinCuidar(texto);
+        while (i < texto.size() && espacio(texto[i])) i++;
+        size_t j = i;
+        while (j < texto.size() && !espacio(texto[j])) j++;
+        if (j == i) break;
+        std::string p = texto.substr(i, j - i);
+        i = j;
+        std::string limpia;
+        size_t sep = p.find("://");
+        if (p.find('@') != std::string::npos) limpia = "(…)";
+        else if (sep != std::string::npos)
+        {
+            // El esquema: las letras justo antes de «://» (empieza con una letra); el sitio: lo que sigue, mientras sea
+            // de un nombre de sitio
+            size_t ini = sep;
+            while (ini > 0 && (deSitio(p[ini - 1]) || p[ini - 1] == '+')) ini--;
+            while (ini < sep && !letra(p[ini])) ini++;
+            std::string esquema = p.substr(ini, sep - ini);
+            for (auto& c : esquema) c = (char)((c >= 'A' && c <= 'Z') ? c - 'A' + 'a' : c);
+            size_t fin = sep + 3;
+            while (fin < p.size() && deSitio(p[fin])) fin++;
+            limpia = (esquema.empty() ? std::string() : esquema + "://") + p.substr(sep + 3, fin - sep - 3);
+        }
+        else
+        {
+            std::string q = p.substr(0, p.find('?'));
+            size_t igual = q.find('=');
+            if (igual != std::string::npos) q = q.substr(0, igual + 1) + "…";
+            // Las cadenas largas con letras y números
+            size_t k = 0;
+            while (k < q.size())
+            {
+                if (!deClave(q[k]))
+                {
+                    limpia += q[k++];
+                    continue;
+                }
+                size_t m = k;
+                bool conLetra = false, conNumero = false;
+                while (m < q.size() && deClave(q[m]))
+                {
+                    conLetra = conLetra || letra(q[m]);
+                    conNumero = conNumero || digito(q[m]);
+                    m++;
+                }
+                limpia += m - k >= 20 && conLetra && conNumero ? std::string("…") : q.substr(k, m - k);
+                k = m;
+            }
+        }
+        if (limpia.empty()) continue;
+        if (!r.empty()) r += ' ';
+        r += limpia;
     }
-    catch (...)
-    {
-        // Si las expresiones no pudieran con el texto, no se anota nada de él
-        return "(un texto que no se pudo revisar; no se anota)";
-    }
+    return r;
 }
 
 std::string hnd::SoloSitio(const std::string& url)

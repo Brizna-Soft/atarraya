@@ -423,14 +423,15 @@ async function enviarVideo(tabId, entrada) {
 }
 
 // Un error de la misma extensión (no de Atarraya ni de la conexión): a la consola y, si Atarraya está abierto, a su
-// registro (registro.txt), para saber qué pasó. Sin datos de la persona (ver limpiarParaRegistro); nada sale de esta PC.
-function anotarFallo(donde, e) {
-  anotarEnRegistro(donde + ": " + (e && e.stack ? String(e.stack) : String(e)));
+// registro (registro.txt), para saber qué pasó. Solo el tipo de error, dónde pasó en la extensión y el sitio (ver
+// resumenDeFallo): nunca el mensaje del error. Nada sale de esta PC.
+function anotarFallo(donde, e, sitio = "") {
+  console.warn("Atarraya:", donde, e);
+  anotarEnRegistro(resumenDeFallo(donde, e, sitio));
 }
 
 function anotarEnRegistro(texto) {
   const limpio = limpiarParaRegistro(texto).slice(0, 1000);
-  console.warn("Atarraya:", limpio);
   try {
     Promise.resolve(hablar({ tipo: "registro", texto: limpio })).catch(() => {});
   } catch (x) {}
@@ -1080,7 +1081,7 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
         .then(responder)
         .catch((e) => {
           // Un error de la extensión, no de la conexión con Atarraya: se dice así y queda anotado
-          anotarFallo("botón «Descargar este video»", e);
+          anotarFallo("botón «Descargar este video»", e, hostDe(mensaje.marco || remitente.url || ""));
           responder({ ok: false, texto: TEXTO_FALLO_EXTENSION });
         });
       return true;

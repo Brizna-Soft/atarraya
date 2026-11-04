@@ -298,16 +298,24 @@ comprobar(M.duracionDash(mpd) === 63.5 && M.duracionDash('<MPD mediaPresentation
   const a = { url: "a" }, b = { url: "b" }, v = { url: "v" }, x = { url: "x" };
   const el = (listas, d) => M.elegirLista(listas, d);
   const sin = (r, motivo) => r.entrada === null && r.motivo === motivo;
-  comprobar(el([{ entrada: b, duracion: -1, orden: 1200 }, { entrada: a, duracion: -1, orden: 1000 }], 0).entrada === a
-    && sin(el([], 16), "ninguna") && sin(el(null, 16), "ninguna"),
-    "videos: sin la duración del video, la primera lista que pidió el marco si todas son del mismo video");
-  comprobar(sin(el([{ entrada: a, duracion: -1, orden: 1000 }, { entrada: b, duracion: -1, orden: 60000 }], 0), "cual"),
-    "videos: sin la duración del video y con listas de varios videos, ninguna (no se sabe cuál es)");
+  comprobar(el([{ entrada: a, duracion: -1, orden: 1000 }], 0).entrada === a && sin(el([], 16), "ninguna") && sin(el(null, 16), "ninguna"),
+    "videos: sin la duración del video y con una sola lista posible, esa");
+  comprobar(sin(el([{ entrada: b, duracion: -1, orden: 1200 }, { entrada: a, duracion: -1, orden: 1000 }], 0), "cual")
+    && sin(el([{ entrada: a, duracion: -1, orden: 1000 }, { entrada: b, duracion: -1, orden: 60000 }], 0), "cual"),
+    "videos: sin la duración del video y con listas de dos videos (aunque lleguen juntas), ninguna: no se sabe cuál es");
+  comprobar(el([{ entrada: a, duracion: -1, maestra: true, referencias: ["v", "x"], orden: 1 }, { entrada: v, duracion: -1, orden: 2 },
+    { entrada: x, duracion: -1, orden: 3 }], 0).entrada === a
+    && sin(el([{ entrada: a, duracion: -1, maestra: true, referencias: ["v"], orden: 1 }, { entrada: v, duracion: -1, orden: 2 },
+      { entrada: b, duracion: -1, orden: 3 }], 0), "cual"),
+    "videos: sin la duración, la principal si nombra a todas las demás (son sus calidades); si sobra una, ninguna");
   comprobar(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 24.02).entrada === b
     && el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 24, orden: 2 }], 16.4).entrada === a,
     "videos: con varios videos en la página (como el inicio de LinkedIn), la lista que dura lo mismo que el video pulsado");
-  comprobar(el([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, orden: 1 }], 16).entrada === a,
+  comprobar(el([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, referencias: ["v"], orden: 1 }], 16).entrada === a,
     "videos: entre la principal y una de sus calidades, la principal (Atarraya deja elegir la calidad)");
+  comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: b, duracion: 16, orden: 2 }], 16), "cual")
+    && sin(el([{ entrada: v, duracion: 16, maestra: false, orden: 2 }, { entrada: a, duracion: 16, maestra: true, orden: 1 }], 16), "cual"),
+    "videos: dos listas que duran lo mismo y no son del mismo video (o no se sabe), ninguna");
   comprobar(sin(el([{ entrada: a, duracion: 16, orden: 1 }, { entrada: x, duracion: -1, orden: 3 }], 50), "cual")
     && sin(el([{ entrada: x, duracion: -1, orden: 3 }], 50), "cual"),
     "videos: si no se pudo saber cuánto dura una lista, no se elige ninguna sin comprobar (dice que no sabe cuál es)");
@@ -316,24 +324,38 @@ comprobar(M.duracionDash(mpd) === 63.5 && M.duracionDash('<MPD mediaPresentation
 }
 comprobar(M.TEXTO_CUAL_VIDEO === "No encontré cuál de los videos de la página es este.",
   "videos: el motivo cuando no se sabe cuál de las listas es la del video");
-// Lo que va al registro de Atarraya desde la extensión: sin datos de la persona
+// Lo que va al registro de Atarraya desde la extensión: solo el sitio y el tipo de error
 {
+  const e = new TypeError("falló https://ana:se(cre)to@x.org/?clave=se(cre)to");
+  e.stack = "TypeError: falló https://ana:se(cre)to@x.org/?clave=se(cre)to\n"
+    + "    at bajarVideoDeMarco (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57)\n"
+    + "    at chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:1062:7\n"
+    + "    at chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57\n"
+    + "    at otra (https://x.org/de-la-pagina.js:1:2)";
+  const r1 = M.resumenDeFallo("botón «Descargar este video»", e, "www.linkedin.com");
+  comprobar(r1 === "botón «Descargar este video»: TypeError en background.js:474:57, background.js:1062:7 (sitio: www.linkedin.com)",
+    "registro: de un error de la extensión va solo dónde (su archivo y línea), su tipo y el sitio; nunca su mensaje");
+  const f = new Error("x");
+  f.name = "Nombre con espacios y ana:se(cre)to@x.org";
+  f.stack = "bajar@moz-extension://1234-abcd/medios.js:10:5\nfuera@moz-extension://1234-abcd/no-es-nuestro.js:3:3";
+  comprobar(M.resumenDeFallo("«Bajar» de la ventanita", f, "ana:x@sitio.org") === "«Bajar» de la ventanita: Error en medios.js:10:5"
+    && M.resumenDeFallo("algo", null, "") === "algo: Error" && M.resumenDeFallo("algo", "texto con ana:clave@x.org", "") === "algo: Error",
+    "registro: un tipo de error raro, un sitio que no es un sitio y lo que no es un error no pasan");
   const L = M.limpiarParaRegistro;
   const t1 = L("Error: falló https://ana:clave123@cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123&e=99#x en algo");
-  const t2 = L("TypeError at bajarVideoDeMarco (chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57?x=1) "
-    + "y bajar@moz-extension://1234-abcd/background.js:10:5");
+  const t2 = L("visita https://cdn.ejemplo.org:8443/v/1/lista.m3u8?token=abc123 y (https://otro.org/x?y=1) también");
   const t3 = L("Cookie: li_at=AQEDAR1aBc2dEf3gHi4jKl5; JSESSIONID=\"ajax:5551234\" de persona.real@correo-ejemplo.org con ftp usuario:secreto@archivos.org/x");
   const t4 = L("clave suelta eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0 y un nombreMuyLargoDeFuncionSinNumeros");
-  comprobar(t1 === "Error: falló https://cdn.ejemplo.org:8443/… en algo" && !/clave123|token|abc123|lista|ana/.test(t1),
-    "registro: de una dirección queda solo el sitio (sin usuario ni contraseña, sin ruta ni parámetros)");
-  comprobar(t2.includes("chrome-extension://mnppdeogjpkdgkbmknkaddjcakoofgaf/background.js:474:57") && !t2.includes("?x=1")
-    && t2.includes("bajar@moz-extension://1234-abcd/background.js:10:5"),
-    "registro: las direcciones de la misma extensión quedan con su archivo y su línea (sin parámetros)");
-  comprobar(!/AQEDAR|5551234|persona\.real|correo-ejemplo|secreto|usuario:/.test(t3) && t3.includes("li_at=…") && t3.includes("(correo)")
-    && t3.includes("archivos.org"),
-    "registro: sin valores de cookies ni de parámetros, sin correos y sin «usuario:clave@»");
-  comprobar(!/eyJ/.test(t4) && t4.includes("nombreMuyLargoDeFuncionSinNumeros") && L(null) === "" && L("  a\n\tb ") === "a b",
-    "registro: sin cadenas largas que parecen claves (los nombres sin números quedan); una sola línea");
+  const t5 = L("con paréntesis usuario:cla(ve)@sitio.org https://u:p(a)ss@sitio.org/x pagina?clave=se(cre)to y a=b(c)d");
+  comprobar(t1 === "Error: falló (…) en algo" && t2 === "visita https://cdn.ejemplo.org y https://otro.org también",
+    "registro: de una dirección queda solo su sitio; si trae usuario o clave, nada");
+  comprobar(t3 === "Cookie: li_at=… JSESSIONID=… de (…) con ftp (…)",
+    "registro: sin valores de cookies ni de parámetros, sin correos y sin nada con «@»");
+  comprobar(t5 === "con paréntesis (…) (…) pagina y a=…" && !/cla|se\(|cre|p\(a/.test(t5),
+    "registro: tampoco pasan claves con paréntesis (en «usuario:clave@», en direcciones o en parámetros)");
+  comprobar(t4 === "clave suelta … y un nombreMuyLargoDeFuncionSinNumeros" && L(null) === "" && L("  a\n\tb ") === "a b"
+    && L(r1) === r1,
+    "registro: sin cadenas largas que parecen claves (los nombres sin números quedan); una sola línea; lo de resumenDeFallo pasa igual");
 }
 comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true) === M.TEXTO_EXTENSION_REINICIADA
   && M.textoSinRespuesta(null, false) === M.TEXTO_EXTENSION_REINICIADA
@@ -402,7 +424,11 @@ if (enNode) {
     "extensión: al mirar una lista no se sigue ninguna redirección, y nunca se pide nada de YouTube ni de un sitio con DRM");
   comprobar(/const limpio = limpiarParaRegistro\(texto\)/.test(fondo) && /if \(r\.motivo === "cual"\) return \{ ok: false, texto: TEXTO_CUAL_VIDEO \}/.test(fondo),
     "extensión: lo que va al registro pasa por limpiarParaRegistro; si no se sabe cuál es la lista, lo dice");
-  comprobar(/anotarFallo\("botón «Descargar este video»", e\)/.test(fondo) && /hablar\(\{ tipo: "registro", texto: limpio \}\)/.test(fondo)
+  comprobar(/anotarEnRegistro\(resumenDeFallo\(donde, e, sitio\)\)/.test(fondo) && !/anotarEnRegistro\([^)]*\.(stack|message)/.test(fondo)
+    && (fondo.match(/anotarEnRegistro\(/g) || []).length === 3,
+    "extensión: de un error al registro va solo su resumen (sin su mensaje ni su pila)");
+  comprobar(/anotarFallo\("botón «Descargar este video»", e, hostDe\(mensaje\.marco \|\| remitente\.url \|\| ""\)\)/.test(fondo)
+    && /hablar\(\{ tipo: "registro", texto: limpio \}\)/.test(fondo)
     && /duracion: Number\.isFinite\(v\.duration\)/.test(videos) && /puedeSerLista\(d\.url, cab\["content-type"\], tamano, d\.method\)/.test(fondo)
     && /listaDelVideo\(medios, tabId, frameId,/.test(fondo),
     "extensión: un error del botón queda en el registro de Atarraya; el botón manda la duración del video; las listas dudosas se anotan y se miran al pulsar");
@@ -772,6 +798,32 @@ comprobar(C.seguidasGuardadas([[3, pr]], 1000 + DIA).length === 1 && C.seguidasG
     m.anotar(4, { url: "https://cdn.ej.org/hls2/master.m3u8", formato: "hls", frameId: 0, vista: true }, 60000);
     const r2 = await M.listaDelVideo(m, 4, 0, 0, async () => null);
     comprobar(r2.entrada === null && r2.motivo === "cual", "videos: sin la duración del video y con listas de varios videos, ninguna");
+  }
+  {
+    // Sin la duración del video: dos videos cuyas listas llegaron con menos de 15 s de diferencia. Se pulsa el segundo:
+    // no se puede saber cuál es, así que ninguna (antes se elegía la primera)
+    const m = new M.MediosPorPestana();
+    const A = "https://cdn.ej.org/a/lista", B = "https://cdn.ej.org/b/lista";
+    m.anotar(4, { url: A, formato: "hls", frameId: 0, vista: true }, 1000);
+    m.anotar(4, { url: B, formato: "hls", frameId: 0, vista: true }, 3000);
+    const leer = async (u) => (u === A ? listaHls : u === B ? "#EXTM3U\n#EXTINF:6,\nb\n#EXT-X-ENDLIST\n" : "");
+    const r = await M.listaDelVideo(m, 4, 0, 0, leer);
+    comprobar(r.entrada === null && r.motivo === "cual",
+      "videos: sin la duración y con listas de dos videos que llegaron juntas, ninguna (no se elige la primera)");
+    // Sin la duración, la principal y su calidad (la principal la nombra): es un solo video, la principal
+    const p = new M.MediosPorPestana();
+    const principal = "https://cdn.ej.org/v/principal", calidad = "https://cdn.ej.org/v/hls-720/lista?x=1";
+    p.anotar(4, { url: principal, formato: "hls", frameId: 0, vista: true }, 1000);
+    p.anotar(4, { url: calidad, formato: "hls", frameId: 0, vista: true }, 1200);
+    const leerP = async (u) => (u === principal ? maestra.replace("hls-720/lista?x=1", calidad) : u === calidad ? listaHls : "");
+    const rp = await M.listaDelVideo(p, 4, 0, 0, leerP);
+    comprobar(rp.entrada && rp.entrada.url === principal, "videos: sin la duración, la principal con su calidad es un solo video");
+    // Con la duración: dos videos distintos que duran lo mismo, ninguna
+    const d = new M.MediosPorPestana();
+    d.anotar(4, { url: A, formato: "hls", frameId: 0, vista: true }, 1000);
+    d.anotar(4, { url: B, formato: "hls", frameId: 0, vista: true }, 90000);
+    const rd = await M.listaDelVideo(d, 4, 0, 11.5, async (u) => (u === A || u === B ? listaHls : ""));
+    comprobar(rd.entrada === null && rd.motivo === "cual", "videos: dos videos que duran lo mismo: no se sabe cuál es, ninguna");
   }
   {
     // El inicio de LinkedIn: dos videos en el mismo marco, cada uno con su lista; se pulsa el segundo (24 s)
