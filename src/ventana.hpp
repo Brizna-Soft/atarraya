@@ -182,6 +182,7 @@ private:
     // Cuando ya se descomprimieron todos los juegos del paquete, su contraseña se borra (ver ventana.cpp)
     void OlvidarContrasenaSiTermino(const std::string& clave);
     bool PasarContrasena(const std::string& de, const std::string& a);
+    void CambiarClaveDeJicaro(const std::string& de, const std::string& a);
     void RevisarLosQueEsperanAlRecolector();
     std::set<std::string> m_esperanRecolector;   // grupos que esperan a que salgan sus enlaces del recolector
     uint64_t m_versionRecolectorVista = 0;

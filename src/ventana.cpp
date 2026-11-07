@@ -3421,16 +3421,34 @@ bool VentanaPrincipal::PasarContrasena(const std::string& de, const std::string&
     return true;
 }
 
+// Lo que ya espera a Jícaro (en la cola, el que está abierto, los avisos que esperan una contraseña) y los paquetes que
+// esperan al recolector siguen a su paquete cuando cambia de clave (una suelta que entra a un paquete, o dos que se juntan)
+void VentanaPrincipal::CambiarClaveDeJicaro(const std::string& de, const std::string& a)
+{
+    if (de.empty() || a.empty() || de == a) return;
+    for (auto& t : m_colaJicaro)
+    {
+        if (t.clave == de) t.clave = a;
+    }
+    if (m_jicaroActual.clave == de) m_jicaroActual.clave = a;
+    for (auto& r : m_resultadosJicaro)
+    {
+        if (r.t.clave == de) r.t.clave = a;
+    }
+    if (m_esperanRecolector.erase(de)) m_esperanRecolector.insert(a);
+}
+
 void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
 {
     bool pasaron = false;
     for (const auto& e : tanda.Entran())
     {
-        // Una suelta («descarga:<id>») o de otro grupo que entra al paquete se lleva su contraseña
+        // Una suelta («descarga:<id>») o de otro grupo que entra al paquete se lleva su contraseña y lo que espera a Jícaro
         hnd::Foto f;
         std::string antes = m_motor.Buscar(e.descarga, f) ? ClaveDeContrasena(f.datos) : std::string();
         m_motor.CambiarGrupo(e.descarga, e.paquete, e.grupo);
         pasaron = PasarContrasena(antes, e.grupo) || pasaron;
+        CambiarClaveDeJicaro(antes, e.grupo);
     }
     bool cola = false;
     for (const auto& u : tanda.Uniones())
@@ -3438,6 +3456,7 @@ void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
         m_motor.UnirGrupos(u.viejo, u.nuevo, u.paquete);
         cola = m_sitios.CambiarGrupo(u.viejo, u.nuevo) || cola;
         pasaron = PasarContrasena(u.viejo, u.nuevo) || pasaron;
+        CambiarClaveDeJicaro(u.viejo, u.nuevo);
     }
     if (pasaron)
     {
