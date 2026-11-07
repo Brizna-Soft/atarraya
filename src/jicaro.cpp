@@ -675,10 +675,25 @@ hnd::jicaro::JuegosDelPaquete hnd::jicaro::Juegos(const std::string& grupo, cons
     };
     std::set<uint64_t> enLaLista;
     bool sigue = false;   // algo del paquete todavía baja o espera (en la lista o en la cola)
+    // Las partes que ya bajaron bien (juego y número): un intento anterior de la misma parte que falló (y volvió al
+    // recolector para bajarla otra vez) no la deja como faltante
+    std::set<std::pair<std::wstring, int>> completas;
+    for (const auto& f : descargas)
+    {
+        Pieza p;
+        if (f.datos.grupo == grupo && f.datos.estado == Estado::Completada && !f.datos.nombre.empty()
+            && PiezaDe(f.datos.carpeta + L"\\" + f.datos.nombre, p))
+            completas.insert({ p.clave, p.numero });
+    }
     for (const auto& f : descargas)
     {
         if (f.datos.grupo != grupo) continue;
         enLaLista.insert(f.datos.id);
+        if (f.datos.estado == Estado::Error && !f.datos.nombre.empty())
+        {
+            Pieza p;
+            if (PiezaDe(f.datos.carpeta + L"\\" + f.datos.nombre, p) && completas.count({ p.clave, p.numero })) continue;
+        }
         bool bajada = f.datos.estado == Estado::Completada;
         if (f.datos.estado == Estado::EnCola || f.datos.estado == Estado::Iniciando || f.datos.estado == Estado::Descargando
             || f.datos.estado == Estado::Pausada)

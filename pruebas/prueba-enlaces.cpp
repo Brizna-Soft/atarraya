@@ -1024,6 +1024,22 @@ namespace
         // Aquí cada comprimido en partes dice que su última parte es la última (ver JuegosEnPartesPruebas para cuando no)
         auto siEs = [](const std::vector<std::wstring>&, wchar_t) { return Ultima::Es; };
 
+        // Un intento que falló de una parte que después bajó bien (volvió al recolector y se bajó otra vez) no la deja
+        // faltante; uno que falló sin otro bueno sí
+        {
+            Foto fallo = descarga(L"R.part2.rar", false, "gR");
+            fallo.datos.estado = Estado::Error;
+            std::vector<Foto> otraVez = { descarga(L"R.part1.rar", true, "gR"), fallo, descarga(L"R.part2.rar", true, "gR") };
+            auto jr = Juegos("gR", otraVez, {}, siEs);
+            const Juego* r = juego(jr, L"R");
+            std::vector<Foto> soloFallo = { descarga(L"S.part1.rar", true, "gS"), fallo };
+            soloFallo[1].datos.grupo = "gS";
+            soloFallo[1].datos.nombre = L"S.part2.rar";
+            auto js = Juegos("gS", soloFallo, {}, siEs);
+            const Juego* s = juego(js, L"S");
+            Comprobar(r && r->completo && r->faltan == 0 && s && !s->completo && s->faltan == 1,
+                      "juegos: un intento fallido de una parte que después bajó bien no la deja faltante (uno sin otro bueno sí)");
+        }
         // Juegos de cada tipo en un mismo paquete
         std::vector<Foto> l = { descarga(L"A.part1.rar", true), descarga(L"A.part2.rar", true), descarga(L"B.rar", true),
                                 descarga(L"B.r00", true), descarga(L"B.r01", false), descarga(L"C.7z.001", true), descarga(L"C.7z.002", true),
