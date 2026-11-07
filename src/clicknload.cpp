@@ -10,6 +10,7 @@
 #include <cstring>
 #include <functional>
 #include <map>
+#include <string_view>
 #include <set>
 
 #include "contrasenas.hpp"
@@ -201,7 +202,9 @@ namespace
     }
 
     // Un nombre de campo de los de siempre («urls», «source», «urls[]»): sin «:» ni «/», así no se confunde con un enlace
-    bool NombreSimple(const std::string& s)
+    // (sobre una vista: así revisar una línea que no tiene nombre, por ejemplo la continuación de una contraseña con «=»,
+    // no copia nada)
+    bool NombreSimple(std::string_view s)
     {
         return !s.empty() && s.size() <= 64 && std::all_of(s.begin(), s.end(), [](unsigned char c) {
                    return std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == '[' || c == ']';
@@ -319,7 +322,7 @@ namespace
             p = f + 1;
             size_t igual = linea.find('=');
             std::string motivo;
-            if (igual != std::string::npos && NombreSimple(linea.substr(0, igual)))
+            if (igual != std::string::npos && NombreSimple(std::string_view(linea).substr(0, igual)))
                 motivo = Agregar(campos, linea.substr(0, igual), linea.substr(igual + 1));
             else if (!campos.empty())
             {

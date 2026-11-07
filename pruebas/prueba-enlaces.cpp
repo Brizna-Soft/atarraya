@@ -1497,7 +1497,8 @@ namespace
         // que va dentro del texto, ni al juntar líneas). Los cuerpos se arman en arreglos fijos para no contar los suyos.
         {
             static const char urlenc[] = "urls=https%3A%2F%2Fa.org%2F1.rar&passwords=cnl%2Dsecreto%2Dmem&source=x";
-            static const char plano[] = "urls=https://a.org/1.rar\r\npasswords=cnl-secreto-mem\r\nmas-cnl-secreto-mem\r\n";
+            // (la última línea sigue la contraseña y tiene «=», pero lo de antes no es un nombre de campo)
+            static const char plano[] = "urls=https://a.org/1.rar\r\npasswords=cnl-secreto-mem\r\nmas-cnl-secreto-mem\r\ncnl-secreto-mem@=x\r\n";
             static const char multi[] = "--m\r\nContent-Disposition: form-data; name=\"urls\"\r\n\r\nhttps://a.org/1.rar\r\n"
                                         "--m\r\nContent-Disposition: form-data; name=\"passwords\"\r\n\r\ncnl-secreto-mem\r\n--m--\r\n";
             int sinBorrar = 0;
@@ -1525,7 +1526,7 @@ namespace
                 sinBorrar += secretos::Dejar();
                 hnd::contrasenas::Borrar(c);
             }
-            Comprobar(sinBorrar == 0 && leidas == 4,
+            Comprobar(sinBorrar == 0 && leidas == 5,
                       "contraseñas: al leer el formulario de Click'n'Load no queda ninguna copia de la contraseña sin borrar");
         }
 

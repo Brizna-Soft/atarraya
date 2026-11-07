@@ -686,6 +686,11 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
                 if (!p.grupo.empty()) vivos.insert(p.grupo);
             }
             m_contrasenas.QuedarseCon(vivos);
+            // Y las de paquetes que ya terminaron del todo (por si Atarraya se cerró antes de borrarlas)
+            for (const auto& clave : vivos)
+            {
+                if (clave.rfind("descarga:", 0) != 0) OlvidarContrasenaSiTermino(clave);
+            }
         }
         GuardarContrasenas();
     }
@@ -3308,6 +3313,9 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
                   + std::to_string(juegos.juegos.size()) + " en total); " + std::to_string(trabajos.size())
                   + (trabajos.size() == 1 ? " comprimido" : " comprimidos") + " para descomprimir");
     }
+    // Si con esta descarga ya no queda nada por bajar ni por descomprimir del paquete (por ejemplo, terminó un «leeme.txt»
+    // después de que se descomprimieron todos sus juegos), su contraseña ya no hace falta
+    else if (!d.grupo.empty()) OlvidarContrasenaSiTermino(d.grupo);
     return trabajos;
 }
 
