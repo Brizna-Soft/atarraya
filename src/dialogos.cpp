@@ -1336,6 +1336,7 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
     avisar->SetValue(ajustes.avisarAlTerminar);
     auto* portapapeles = new wxCheckBox(this, wxID_ANY, L"Vigilar el portapapeles: los enlaces de archivos que copies pasan al recolector");
     portapapeles->SetValue(ajustes.vigilarPortapapeles);
+    const bool portapapelesAlAbrir = ajustes.vigilarPortapapeles;
     auto* cnl = new wxCheckBox(this, wxID_ANY, L"Recibir enlaces de Click'n'Load (solo desde esta PC, 127.0.0.1:9666)");
     cnl->SetValue(ajustes.clickNLoad);
     for (auto* c : { preguntar, bandeja, avisar, portapapeles, cnl }) caja->Add(c, 0, wxLEFT | wxRIGHT | wxBOTTOM, borde);
@@ -1414,7 +1415,13 @@ DialogoAjustes::DialogoAjustes(wxWindow* padre, Ajustes& ajustes)
         m_ajustes.preguntarNavegador = preguntar->GetValue();
         m_ajustes.bandejaAlCerrar = bandeja->GetValue();
         m_ajustes.avisarAlTerminar = avisar->GetValue();
-        m_ajustes.vigilarPortapapeles = portapapeles->GetValue();
+        // Solo si la persona movió la casilla: mientras Ajustes estaba abierto, la pregunta de la primera vez pudo
+        // apagarlo, y guardar sin tocarla no debe volver a encenderlo
+        if (portapapeles->GetValue() != portapapelesAlAbrir)
+        {
+            m_ajustes.vigilarPortapapeles = portapapeles->GetValue();
+            m_ajustes.preguntoPortapapeles = true;   // ya sabe que existe: lo eligió aquí
+        }
         m_ajustes.clickNLoad = cnl->GetValue();
         m_ajustes.Guardar();
         e.Skip();

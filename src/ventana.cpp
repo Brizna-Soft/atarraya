@@ -629,7 +629,9 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     if (m_ajustes.maximizada) Maximize();
 
     // Portapapeles y Click'n'Load. Lo que ya está copiado al abrir el programa no se recolecta: solo lo que se copie después.
-    m_ultimoPortapapeles = std::hash<std::wstring>{}(sistema::TodoElPortapapeles(256 * 1024));
+    // Con la vigilancia apagada no se lee nada, y nunca lo que un programa de contraseñas marcó como privado.
+    if (m_ajustes.vigilarPortapapeles && !sistema::PortapapelesPrivado())
+        m_ultimoPortapapeles = std::hash<std::wstring>{}(sistema::TodoElPortapapeles(256 * 1024));
     AplicarAjustes();
 
     // La cola de «de una en una» sigue donde iba (al abrir no se abre ninguna página sola). Si había terminado pero
