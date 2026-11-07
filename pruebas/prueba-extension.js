@@ -527,6 +527,7 @@ if (enNode) {
       && /const copiada = await guardarColaParaRecargar\(\);\s*if \(!copiada && soloConCopia\) return false;\s*if \(recargarExtension\(\)\) return true;\s*try \{\s*await api\.storage\.local\.remove\("colaDeRecarga"\);/.test(popup)
       && /await copiarYRecargar\(true\)/.test(revisar) && /await copiarYRecargar\(false\)/.test(revisar)
       && /const VIDA_COLA_DE_RECARGA = 60 \* 1000;/.test(fondo) && /guardada = await colaQueSigue\(copia\.cola\);/.test(fondo)
+      && /for \(const par of copia && Array\.isArray\(copia\.cola\) \? copia\.cola : \[\]\)/.test(fondo)
       && /await hayDescargasDeSitios\(\)\)\s*\? "Si sigue igual, espera/.test(revisar)
       && revisar.indexOf("await api.storage.local.set({ fondoRecargado: ahora })") < revisar.indexOf("copiarYRecargar(true)")
       && (popup.match(/(?<!function )recargarExtension\(\)/g) || []).length === 1

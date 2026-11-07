@@ -65,7 +65,8 @@ let instancia = "";
 const VIDA_COLA_DE_RECARGA = 60 * 1000;
 async function colaQueSigue(copia) {
   const quedan = [];
-  for (const par of copia && Array.isArray(copia.cola) ? copia.cola.slice(0, 50) : []) {
+  // Todas: la cola no tiene un tope, y la pestaña de la parte de ahora puede ser la última
+  for (const par of copia && Array.isArray(copia.cola) ? copia.cola : []) {
     const [id, c] = Array.isArray(par) ? par : [];
     if (typeof id !== "number" || !c || typeof c.parte !== "string") continue;
     const pestana = await api.tabs.get(id).catch(() => null);
