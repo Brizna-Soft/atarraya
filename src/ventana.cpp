@@ -2210,8 +2210,14 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
         // Jícaro, si con esta terminó todo su paquete. Se abre cuando Windows ya marcó todas sus partes como bajadas de
         // internet: así lo que salga del comprimido queda marcado igual.
         m_marcando.insert(Minusculas(ruta));
-        EncolarJicaro(PrepararJicaro(f.datos));
         uint64_t id = f.datos.id;
+        // Después de terminar esta tanda de avisos (CallAfter): así las otras descargas que terminaron en la misma pasada
+        // ya están en m_marcando, y Jícaro espera su marca de internet antes de abrir cualquiera de ellas
+        CallAfter([this, id]() {
+            if (m_saliendo) return;
+            hnd::Foto ahora;
+            if (m_motor.Buscar(id, ahora)) EncolarJicaro(PrepararJicaro(ahora.datos));
+        });
         sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, vivo, nombre, ruta, id](bool existe) {
             hilos::Enviar([yo, vivo, nombre, ruta, id, existe]() {
                 if (!*vivo) return;
