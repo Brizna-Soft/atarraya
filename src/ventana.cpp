@@ -2232,17 +2232,23 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
         Avisar(L"La descarga se detuvo", nombre + L"\n" + wxString::FromUTF8(f.datos.error), true);
     }
     // Si lo que falló era lo último que faltaba del paquete (por ejemplo, un «leeme.txt»), sus juegos que esperaban al fin
-    // del paquete ya se pueden revisar: con una de sus descargas que sí bajó
+    // del paquete ya se pueden revisar: con una de sus descargas que sí bajó. Después de terminar esta tanda de avisos
+    // (CallAfter): así las que terminaron en la misma pasada ya se están marcando como bajadas de internet
+    // (m_marcando) y Jícaro espera a esa marca antes de abrirlas.
     if (f.datos.estado == Estado::Error && !f.datos.grupo.empty())
     {
-        for (const auto& otra : m_motor.Fotos())
-        {
-            if (!otra.torrent && otra.datos.grupo == f.datos.grupo && otra.datos.estado == Estado::Completada && !otra.datos.nombre.empty())
+        std::string grupo = f.datos.grupo;
+        CallAfter([this, grupo]() {
+            if (m_saliendo) return;
+            for (const auto& otra : m_motor.Fotos())
             {
-                EncolarJicaro(PrepararJicaro(otra.datos));
-                break;
+                if (!otra.torrent && otra.datos.grupo == grupo && otra.datos.estado == Estado::Completada && !otra.datos.nombre.empty())
+                {
+                    EncolarJicaro(PrepararJicaro(otra.datos));
+                    break;
+                }
             }
-        }
+        });
     }
 
     // El sitio respondió con una página en vez del archivo: se ofrece abrirla en el navegador. (Las partes de «de una
