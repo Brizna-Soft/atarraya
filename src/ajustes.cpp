@@ -26,6 +26,7 @@ void hnd::Ajustes::Cargar()
         compartirTorrents = j.value("compartirTorrents", false);
         elegirArchivosMagnet = j.value("elegirArchivosMagnet", true);
         vigilarPortapapeles = j.value("vigilarPortapapeles", true);
+        preguntoPortapapeles = j.value("preguntoPortapapeles", false);
         clickNLoad = j.value("clickNLoad", true);
         carpetaPorPaquete = j.value("carpetaPorPaquete", false);
         preguntarNavegador = j.value("preguntarNavegador", true);
@@ -51,6 +52,7 @@ void hnd::Ajustes::Guardar() const
         { "carpeta", Utf8(carpeta) }, { "conexiones", conexiones }, { "simultaneas", simultaneas },
         { "limiteKB", limiteKB }, { "limiteSubidaKB", limiteSubidaKB }, { "compartirTorrents", compartirTorrents },
         { "elegirArchivosMagnet", elegirArchivosMagnet }, { "vigilarPortapapeles", vigilarPortapapeles },
+        { "preguntoPortapapeles", preguntoPortapapeles },
         { "clickNLoad", clickNLoad }, { "carpetaPorPaquete", carpetaPorPaquete },
         { "preguntarNavegador", preguntarNavegador }, { "bandejaAlCerrar", bandejaAlCerrar },
         { "avisarAlTerminar", avisarAlTerminar }, { "avisoBandejaMostrado", avisoBandejaMostrado },

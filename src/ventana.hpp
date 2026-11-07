@@ -204,6 +204,7 @@ private:
     std::unique_ptr<hnd::ServidorCnL> m_cnl;
     wxString m_estadoCnl;
     bool m_oyendoPortapapeles = false;
+    bool m_preguntandoPortapapeles = false; // la pregunta de la primera vez está abierta
     size_t m_ultimoPortapapeles = 0;        // huella del último texto visto (no se guarda el texto)
     std::wstring m_copiadoPorAtarraya;      // lo que copió el propio programa: no se recolecta
     size_t m_cuentaRecolector = (size_t)-1;

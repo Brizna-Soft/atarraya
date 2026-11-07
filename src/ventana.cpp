@@ -1223,6 +1223,35 @@ void VentanaPrincipal::PortapapelesCambio()
         utiles.push_back(u);
     }
     if (utiles.empty()) return;
+
+    // La primera vez se pregunta antes de tomar nada: así la persona sabe que Atarraya mira lo que copia
+    if (!m_ajustes.preguntoPortapapeles)
+    {
+        if (m_preguntandoPortapapeles) return;   // ya hay una pregunta abierta
+        m_preguntandoPortapapeles = true;
+        wxMessageDialog d(this,
+                          L"Copiaste un enlace de descarga. Atarraya puede ponerlo en el recolector de enlaces para que lo "
+                          L"bajes si quieres: no se baja nada solo.\n\nPara eso Atarraya mira lo que copias, pero solo toma "
+                          L"enlaces de archivos, magnet y de sitios de descargas. No guarda ni manda nada más, y no lee "
+                          L"lo que los programas de contraseñas marcan como privado.\n\n¿Quieres que lo siga haciendo?",
+                          L"Atarraya y lo que copias", wxYES_NO | wxICON_QUESTION);
+        d.SetYesNoLabels(L"Sí, tomar los enlaces", L"No, apagarlo");
+        bool si = d.ShowModal() == wxID_YES;
+        m_preguntandoPortapapeles = false;
+        m_ajustes.preguntoPortapapeles = true;
+        if (!si) m_ajustes.vigilarPortapapeles = false;
+        m_ajustes.Guardar();
+        if (!si)
+        {
+            AplicarAjustes();
+            Registrar("portapapeles: apagado al preguntar la primera vez");
+            Avisar(L"Recolector de enlaces", L"Listo: Atarraya ya no mira lo que copias. Puedes volver a encenderlo en "
+                                             L"Herramientas > Ajustes.");
+            return;
+        }
+        if (m_saliendo || !m_ajustes.vigilarPortapapeles) return;
+    }
+
     size_t n = m_recolector.Agregar(utiles, L"", "", "portapapeles");
     if (n == 0) return;
     Registrar("portapapeles: " + std::to_string(n) + " enlaces al recolector");

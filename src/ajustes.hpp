@@ -14,6 +14,7 @@ namespace hnd
         bool compartirTorrents = false; // la última elección de «Seguir compartiendo cuando termine»
         bool elegirArchivosMagnet = true; // la última elección de «Elegir los archivos cuando lleguen los datos»
         bool vigilarPortapapeles = true; // los enlaces de archivos que se copian pasan al recolector
+        bool preguntoPortapapeles = false; // ya se le preguntó (la primera vez que copió un enlace) si quiere seguir así
         bool clickNLoad = true;         // recibir enlaces de Click'n'Load en 127.0.0.1:9666 (van al recolector)
         bool carpetaPorPaquete = false; // en el recolector: una carpeta por paquete
         bool preguntarNavegador = true; // mostrar la ventana «Nueva descarga» para lo que llega del navegador
