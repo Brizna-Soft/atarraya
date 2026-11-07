@@ -538,6 +538,7 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     abajo->Add(m_resumen, 1, wxALIGN_CENTER_VERTICAL);
     auto* reportar = new wxHyperlinkCtrl(fondo, wxID_ANY, L"Reportar un problema",
                                          L"https://github.com/" APP_REPO "/issues/new/choose");
+    reportar->Bind(wxEVT_HYPERLINK, [](wxHyperlinkEvent&) { ayuda::ReportarProblema(); });   // con la versión ya puesta
     abajo->Add(reportar, 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(14));
     abajo->Add(new wxStaticBitmap(fondo, wxID_ANY, iconos::Crear(iconos::Corazon, L"#D64545", 14)), 0, wxALIGN_CENTER_VERTICAL | wxRIGHT, FromDIP(4));
     auto* donar = new wxHyperlinkCtrl(fondo, wxID_ANY, L"Donar", L"https://paypal.me/BriznaSoft");
@@ -768,11 +769,13 @@ void VentanaPrincipal::CrearMenu()
     herramientas->Append(ID_AJUSTES, L"&Ajustes...");
     barra->Append(herramientas, L"&Herramientas");
 
-    barra->Append(ayuda::CrearMenu(this, L"Descargas, torrents y enlaces magnet en un solo programa: baja archivos en varias partes "
-                                         L"a la vez, listas de enlaces, los archivos de una página y videos de sitios que lo permiten. "
-                                         L"Se puede pausar y reanudar, incluso después de apagar la PC, y recibe las descargas de tu "
-                                         L"navegador."),
-                  L"A&yuda");
+    ayuda::Opciones datosAyuda;
+    datosAyuda.descripcion = L"Descargas, torrents y enlaces magnet en un solo programa: baja archivos en varias partes "
+                           L"a la vez, listas de enlaces, los archivos de una página y videos de sitios que lo permiten. "
+                           L"Se puede pausar y reanudar, incluso después de apagar la PC, y recibe las descargas de tu "
+                           L"navegador.";
+    datosAyuda.carpetaDeRegistros = CarpetaDatos();
+    ayuda::AgregarMenu(barra, this, datosAyuda);
     SetMenuBar(barra);
 }
 
