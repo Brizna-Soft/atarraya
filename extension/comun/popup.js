@@ -148,6 +148,73 @@ async function mostrarVideos() {
   }
 }
 
+// Si el navegador siguió corriendo la parte de fondo vieja después de actualizar la extensión (pasa en Chrome con las
+// extensiones cargadas desde una carpeta), la extensión se recarga sola, una vez. Si ya se recargó hace poco y sigue
+// igual, se dice qué hacer y queda un botón para volver a probar. Recargar no baja nada ni toca las descargas del
+// navegador.
+const ESPERA_RECARGA = 10 * 60 * 1000;
+async function fondoAlDiaAqui() {
+  try {
+    const r = await api.runtime.sendMessage({ tipo: "fondo" });
+    const esperada = api.runtime.getManifest().version;
+    return !!(r && typeof r.version === "string" && r.version === esperada);
+  } catch (e) {
+    return false;
+  }
+}
+
+function recargarExtension() {
+  try {
+    api.runtime.reload();
+  } catch (e) {
+    // Si el navegador no deja, queda el texto con los pasos
+  }
+}
+
+async function revisarFondo() {
+  if (await fondoAlDiaAqui()) return true;
+  const estado = document.getElementById("estado");
+  let antes = 0;
+  let sePuedeAnotar = true;
+  try {
+    const g = await api.storage.local.get("fondoRecargado");
+    antes = Number(g && g.fondoRecargado) || 0;
+  } catch (e) {
+    sePuedeAnotar = false;   // sin poder anotar, no se recarga sola (para no recargar una y otra vez)
+  }
+  const ahora = Date.now();
+  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora)) {
+    try {
+      await api.storage.local.set({ fondoRecargado: ahora });
+      estado.textContent = "La extensión quedó a medias al actualizarse. La estoy recargando...";
+      estado.className = "estado mal";
+      setTimeout(recargarExtension, 1200);
+      return false;
+    } catch (e) {
+      // No se pudo anotar: se sigue como si ya se hubiera probado
+    }
+  }
+  estado.textContent = "La extensión de Atarraya sigue a medias después de actualizarse. Pulsa «Recargar la extensión». " +
+    "Si sigue igual, en chrome://extensions (en Edge, edge://extensions) pulsa «Quitar» en Atarraya y vuelve a " +
+    "cargarla con «Cargar descomprimida».";
+  estado.className = "estado mal";
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "recargar";
+  boton.textContent = "Recargar la extensión";
+  boton.addEventListener("click", async () => {
+    boton.disabled = true;
+    try {
+      await api.storage.local.set({ fondoRecargado: Date.now() });
+    } catch (e) {
+      // igual se recarga: la persona lo pidió
+    }
+    recargarExtension();
+  });
+  estado.after(boton);
+  return false;
+}
+
 async function iniciar() {
   const a = Object.assign({}, AJUSTES, await api.storage.local.get(AJUSTES));
   const capturar = document.getElementById("capturar");
@@ -160,6 +227,11 @@ async function iniciar() {
     minimo.value = v;
     api.storage.local.set({ minimoMB: v });
   });
+
+  if (!(await revisarFondo())) {
+    document.getElementById("videosEstado").textContent = "Primero hay que arreglar la extensión.";
+    return;
+  }
 
   mostrarVideos();
 

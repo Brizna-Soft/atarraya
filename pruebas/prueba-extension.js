@@ -12,7 +12,8 @@ const M = enNode
   : { esYouTube, esSitioProtegido, cadenaBloqueada, motivoBloqueo, clasificar, tamanoDe, nombreDeMedio, cabecerasDe,
       MediosPorPestana, pedidoDeVideo, sitiosDeArriba, TEXTO_YOUTUBE, TEXTO_SIN_TRANSMISION, TEXTO_SIN_ARCHIVO, textoSinHablar,
       TEXTO_FALLO_EXTENSION, TEXTO_EXTENSION_REINICIADA, TEXTO_EXTENSION_CALLADA, puedeSerLista, formatoPorContenido,
-      puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo, textoSinRespuesta, MAXIMO_MIRADAS };
+      puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo, textoSinRespuesta, MAXIMO_MIRADAS,
+      TEXTO_FONDO_VIEJO, fondoAlDia };
 const E = enNode ? require("../extension/comun/esperas.js") : { normalizarTexto, segundosDe, reconocerEspera };
 const C = enNode
   ? require("../extension/comun/cola-navegador.js")
@@ -360,7 +361,20 @@ comprobar(M.textoSinRespuesta(new Error("Extension context invalidated."), true)
   && M.textoSinRespuesta(new Error("Could not establish connection. Receiving end does not exist."), true) === M.TEXTO_EXTENSION_CALLADA
   && M.textoSinRespuesta(null, true) === M.TEXTO_EXTENSION_CALLADA,
   "videos: si la extensión no contesta, el botón dice por qué (se reinició: recargar la página), no que falló Atarraya");
-comprobar([M.TEXTO_SIN_ARCHIVO, M.TEXTO_FALLO_EXTENSION, M.TEXTO_EXTENSION_REINICIADA, M.TEXTO_EXTENSION_CALLADA, M.TEXTO_SIN_TRANSMISION]
+// La parte de fondo vieja (el navegador siguió con la de antes después de actualizar): recargar la extensión, no la página
+comprobar(M.textoSinRespuesta(null, true, true) === M.TEXTO_FONDO_VIEJO
+  && M.textoSinRespuesta(new Error("Could not establish connection. Receiving end does not exist."), true, true) === M.TEXTO_FONDO_VIEJO
+  && M.textoSinRespuesta(new Error("Extension context invalidated."), true, true) === M.TEXTO_EXTENSION_REINICIADA
+  && M.textoSinRespuesta(null, false, true) === M.TEXTO_EXTENSION_REINICIADA
+  && M.textoSinRespuesta(null, true, false) === M.TEXTO_EXTENSION_CALLADA
+  && /Pulsa el ícono de Atarraya/.test(M.TEXTO_FONDO_VIEJO),
+  "videos: si la parte de fondo es vieja, el botón dice que se pulse el ícono de Atarraya para arreglarla");
+comprobar(M.fondoAlDia({ version: "0.4.0" }, "0.4.0") && !M.fondoAlDia({ version: "0.2.1" }, "0.4.0")
+  && !M.fondoAlDia({}, "0.4.0") && !M.fondoAlDia(undefined, "0.4.0") && !M.fondoAlDia(null, "0.4.0")
+  && !M.fondoAlDia({ version: 4 }, "4") && !M.fondoAlDia({ version: "" }, "") && !M.fondoAlDia({ version: "0.4.0" }, undefined)
+  && !M.fondoAlDia({ ok: true, version: "0.4.0 " }, "0.4.0"),
+  "extensión: la parte de fondo está al día solo si contesta exactamente la versión del manifiesto");
+comprobar([M.TEXTO_SIN_ARCHIVO, M.TEXTO_FALLO_EXTENSION, M.TEXTO_EXTENSION_REINICIADA, M.TEXTO_EXTENSION_CALLADA, M.TEXTO_SIN_TRANSMISION, M.TEXTO_FONDO_VIEJO]
     .every((t) => typeof t === "string" && t.length > 10 && !/hablar con Atarraya/.test(t))
   && M.TEXTO_SIN_ARCHIVO === "No encontré el archivo completo de este video.",
   "videos: «No se pudo hablar con Atarraya» es solo para cuando falló hablar con el programa");
@@ -454,7 +468,7 @@ if (enNode) {
   const popupJs = leer("../extension/comun/popup.js");
   comprobar(!/No se pudo hablar con Atarraya/.test(fondo + videos + popupJs) && (fondo.match(/textoSinHablar\(/g) || []).length === 1
     && /const codigo = codigoDePuente\(e\);[\s\S]{0,200}anotarEnRegistro\("video:" \+ \(codigo === "otro" \? "puente-otro" : codigo\), hostDe\(entrada\.url\)\);\s*return \{ ok: false, texto: textoSinHablar\(codigo\) \};/.test(fondo)
-    && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, extensionViva\(\)\)/.test(videos),
+    && (fondo.match(/responder\(\{ ok: false, texto: TEXTO_FALLO_EXTENSION \}\)/g) || []).length === 2 && /textoSinRespuesta\(fallo, viva, viejo\)/.test(videos),
     "extensión: «No se pudo hablar con Atarraya» es solo para cuando falló el pedido al programa; un error de la extensión lo dice así");
   comprobar(/fetch\(url, \{ credentials: "include", redirect: "error", signal: control\.signal \}\)/.test(fondo)
     && /if \(!\/\^https\?:\/i\.test\(url\) \|\| motivoDeUrl\(url\)\) return falla/.test(fondo)
@@ -489,6 +503,33 @@ if (enNode) {
     "extensión: un error del botón queda en el registro de Atarraya; el botón manda la duración del video; las listas dudosas se anotan y se miran al pulsar");
   const popup = leer("../extension/comun/popup.js");
   comprobar(!/innerHTML/.test(popup), "extensión: la ventanita muestra los nombres como texto (sin innerHTML)");
+  // La parte de fondo dice su versión escrita en su código (no la del manifiesto), enseguida y sin hablar con Atarraya
+  {
+    const v = (fondo.match(/^const VERSION_FONDO = "([0-9.]+)";$/m) || [])[1];
+    const caso = fondo.slice(fondo.indexOf('case "fondo":'), fondo.indexOf('case "estado":'));
+    const mans = ["chrome", "firefox"].map((nav) => JSON.parse(leer("../extension/" + nav + "/manifest.json")).version);
+    comprobar(!!v && mans.every((m) => m === v) && (fondo.match(/VERSION_FONDO/g) || []).length === 2
+      && /responder\(\{ version: VERSION_FONDO \}\);\s*return false;/.test(caso) && !/hablar|await|then/.test(caso)
+      && !/getManifest/.test(fondo),
+      "extensión: la parte de fondo contesta su versión (la de su código, igual a la de los manifiestos) sin hablar con Atarraya");
+  }
+  // La ventanita recarga la extensión sola solo si la parte de fondo no está al día, y una vez cada 10 minutos como mucho
+  {
+    const revisar = popup.slice(popup.indexOf("async function revisarFondo"), popup.indexOf("async function iniciar"));
+    comprobar((popup.match(/runtime\.reload\(\)/g) || []).length === 1 && /function recargarExtension\(\) \{\s*try \{\s*api\.runtime\.reload\(\);/.test(popup)
+      && /if \(await fondoAlDiaAqui\(\)\) return true;/.test(revisar)
+      && /const ESPERA_RECARGA = 10 \* 60 \* 1000;/.test(popup)
+      && /sePuedeAnotar && !\(antes > ahora - ESPERA_RECARGA && antes <= ahora\)/.test(revisar)
+      && revisar.indexOf("await api.storage.local.set({ fondoRecargado: ahora })") < revisar.indexOf("setTimeout(recargarExtension")
+      && (popup.match(/(?<!function )recargarExtension\(\)|setTimeout\(recargarExtension/g) || []).length === 2
+      && /r\.version === esperada/.test(popup) && /api\.runtime\.getManifest\(\)\.version/.test(popup)
+      && popup.indexOf("await revisarFondo()") > popup.indexOf("capturar.addEventListener")
+      && popup.indexOf("await revisarFondo()") < popup.indexOf("mostrarVideos();"),
+      "extensión: la ventanita recarga la extensión sola solo si la parte de fondo es vieja (una vez cada 10 minutos; si no, un botón)");
+    comprobar(/const viejo = viva && !\(await fondoContesta\(\)\);/.test(videos) && /tipo: "fondo"/.test(videos)
+      && /fondoAlDia\(r, api\.runtime\.getManifest\(\)\.version\)/.test(videos) && !/runtime\.reload/.test(videos + fondo),
+      "extensión: el botón de los videos pregunta por la parte de fondo solo cuando la extensión no contestó (y nunca recarga nada)");
+  }
   for (const nav of ["chrome", "firefox"]) {
     const man = JSON.parse(leer("../extension/" + nav + "/manifest.json"));
     const cs = (man.content_scripts || [])[0] || {};

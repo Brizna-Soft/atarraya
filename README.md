@@ -179,6 +179,11 @@ Atarraya, pulsa otra vez **Navegadores** → **Conectar**. La 0.4.0 lo necesita:
 de los sitios de descargas y lee sus avisos de espera (la 0.3.0 trajo el botón **Descargar este video** y la lista
 de videos de cada pestaña).
 
+Si te olvidas, a veces el navegador sigue con la parte de fondo vieja de la extensión. Desde la 0.4.0, al abrir la
+ventanita de Atarraya (su ícono, arriba a la derecha) la extensión lo nota y se recarga sola. Si sigue igual, la
+ventanita muestra el botón **Recargar la extensión** y los pasos para quitarla y volver a cargarla. El botón
+**Descargar este video** también te avisa.
+
 ### Los permisos de la extensión
 
 La extensión pide solo lo que usa, y nada de lo que ve sale de tu PC:

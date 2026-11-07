@@ -9,6 +9,10 @@ if (typeof importScripts === "function") importScripts("origen.js", "medios.js",
 
 const api = globalThis.browser ?? globalThis.chrome;
 const HOST = "com.briznasoft.atarraya";
+// La versión de ESTE código de fondo. Va escrita aquí, no se lee del manifiesto: un navegador puede seguir corriendo
+// un «service worker» viejo con el manifiesto nuevo, y entonces el manifiesto diría la versión nueva. La ventanita y
+// el botón de los videos la comparan con la del manifiesto (ver «fondo»). Tiene que ser igual a la de los manifiestos.
+const VERSION_FONDO = "0.4.0";
 const AJUSTES = { capturar: true, minimoMB: 0 };
 // Pedidos donde pueden venir videos: los del reproductor (media) y los que hacen los reproductores HLS y DASH
 const TIPOS_MEDIOS = ["media", "xmlhttprequest", "other", "object"];
@@ -1008,6 +1012,11 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
   const deLaExtension = !!(remitente && typeof remitente.url === "string" && remitente.url.startsWith(api.runtime.getURL("")));
   const deUnaPagina = !deLaExtension && !!(remitente && remitente.tab && typeof remitente.tab.id === "number");
   switch (mensaje.tipo) {
+    case "fondo":
+      // ¿Qué versión de fondo está corriendo? Contesta enseguida, sin preguntarle nada al programa
+      responder({ version: VERSION_FONDO });
+      return false;
+
     case "estado":
       listoHasta = 0;
       intentoPuerto = 0;   // la persona abrió la ventanita: se prueba conectar ya

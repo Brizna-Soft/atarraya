@@ -211,7 +211,22 @@
     if (r && r.ok) mostrarTexto("Enviado a Atarraya", 3000);
     else if (r && r.texto) mostrarTexto(r.texto, 7000);
     // La extensión no contestó (por ejemplo, se actualizó mientras esta página seguía abierta): eso no es Atarraya
-    else mostrarTexto(textoSinRespuesta(fallo, extensionViva()), 7000);
+    else {
+      const viva = extensionViva();
+      const viejo = viva && !(await fondoContesta());
+      mostrarTexto(textoSinRespuesta(fallo, viva, viejo), 9000);
+    }
+  }
+
+  // ¿La parte de fondo de la extensión es la de esta versión? Si el navegador siguió con una vieja después de
+  // actualizarla, no contesta o contesta otra versión (ver «fondo» en background.js)
+  async function fondoContesta() {
+    try {
+      const r = await api.runtime.sendMessage({ tipo: "fondo" });
+      return fondoAlDia(r, api.runtime.getManifest().version);
+    } catch (e) {
+      return false;
+    }
   }
 
   // ¿Este marco todavía habla con la extensión? Si la extensión se actualizó o se recargó, el de antes se queda sin ella
