@@ -38,6 +38,10 @@ const TEXTO_FALLO_EXTENSION = "Algo falló en la extensión al buscar este video
 // El botón no recibió respuesta de la extensión
 const TEXTO_EXTENSION_REINICIADA = "La extensión de Atarraya se reinició. Recarga esta página y vuelve a intentar.";
 const TEXTO_EXTENSION_CALLADA = "La extensión de Atarraya no respondió. Recarga esta página y vuelve a intentar.";
+// La parte de fondo de la extensión es de otra versión (el navegador siguió con la vieja después de actualizarla) o no
+// contesta: la ventanita de Atarraya la recarga (ver popup.js)
+const TEXTO_FONDO_VIEJO = "La extensión de Atarraya quedó a medias al actualizarse. Pulsa el ícono de Atarraya, " +
+  "arriba a la derecha, para arreglarla. Después recarga esta página.";
 
 // Extensiones de archivos de video y de audio que se bajan enteros
 const EXTENSIONES_MEDIO = {
@@ -441,10 +445,20 @@ function juntarCookies(grupos, tope = TOPE_COOKIES) {
 
 // El botón no recibió respuesta de la extensión. Si este marco quedó hablando con una extensión que ya no está (se
 // actualizó, se recargó o se apagó mientras la página seguía abierta), recargar la página lo arregla.
-function textoSinRespuesta(error, extensionViva) {
+// Si este marco sigue con la extensión pero la parte de fondo es vieja o no contesta («fondoViejo», ver fondoAlDia), se
+// arregla recargando la extensión, no la página.
+function textoSinRespuesta(error, extensionViva, fondoViejo) {
   const mensaje = String((error && error.message) || error || "");
   if (!extensionViva || /context invalidated/i.test(mensaje)) return TEXTO_EXTENSION_REINICIADA;
+  if (fondoViejo) return TEXTO_FONDO_VIEJO;
   return TEXTO_EXTENSION_CALLADA;
+}
+
+// ¿La parte de fondo que contestó a «fondo» es la de esta versión? «respuesta» es lo que contestó (nada si no contestó)
+// y «versionManifiesto», la del manifiesto que el navegador tiene cargado.
+function fondoAlDia(respuesta, versionManifiesto) {
+  return !!(respuesta && typeof respuesta.version === "string" && typeof versionManifiesto === "string"
+    && versionManifiesto !== "" && respuesta.version === versionManifiesto);
 }
 
 // El tamaño entero: el total de «Content-Range» (una respuesta 206 de un video que se reproduce por partes) o
@@ -791,4 +805,5 @@ if (typeof module !== "undefined")
     puedeSerLista, formatoPorContenido, puedeSerTextoDeLista, leerHls, duracionDash, elegirLista, revisarLista, listaDelVideo,
     textoSinRespuesta, MAXIMO_MIRADAS, TEXTO_CUAL_VIDEO, TEXTO_SIN_LEER, CODIGOS_REGISTRO, codigoDeRegistro, sitioDeRegistro,
     codigoDeFallo, CODIGOS_PUENTE, codigoDePuente, bytesDe, TOPE_COOKIES, recortarCookies, juntarCookies,
+    TEXTO_FONDO_VIEJO, fondoAlDia,
   };

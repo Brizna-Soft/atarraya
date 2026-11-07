@@ -68,7 +68,7 @@ a { color: var(--enlace); }
   text-overflow: ellipsis;
 }
 .detalle { color: var(--suave); font-size: 12px; }
-.video button {
+.video button, .recargar {
   flex: none;
   padding: 4px 10px;
   border: none;
@@ -78,7 +78,8 @@ a { color: var(--enlace); }
   font: inherit;
   cursor: pointer;
 }
-.video button:disabled {
+.recargar { margin: 0 0 10px; }
+.video button:disabled, .recargar:disabled {
   background: var(--borde);
   color: var(--suave);
   cursor: default;

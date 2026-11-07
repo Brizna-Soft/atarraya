@@ -9,6 +9,10 @@ if (typeof importScripts === "function") importScripts("origen.js", "medios.js",
 
 const api = globalThis.browser ?? globalThis.chrome;
 const HOST = "com.briznasoft.atarraya";
+// La versión de ESTE código de fondo. Va escrita aquí, no se lee del manifiesto: un navegador puede seguir corriendo
+// un «service worker» viejo con el manifiesto nuevo, y entonces el manifiesto diría la versión nueva. La ventanita y
+// el botón de los videos la comparan con la del manifiesto (ver «fondo»). Tiene que ser igual a la de los manifiestos.
+const VERSION_FONDO = "0.4.0";
 const AJUSTES = { capturar: true, minimoMB: 0 };
 // Pedidos donde pueden venir videos: los del reproductor (media) y los que hacen los reproductores HLS y DASH
 const TIPOS_MEDIOS = ["media", "xmlhttprequest", "other", "object"];
@@ -54,12 +58,46 @@ const entregando = new Set();   // avisos finales que se están mandando ahora
 const decidiendo = new Set();   // descargas cuya toma se está decidiendo ahora
 // Esta extensión en este perfil del navegador (ver nuevaInstancia en cola-navegador.js): va al principio de cada «toma»
 let instancia = "";
+// La copia de las pestañas de la cola que deja la ventanita justo antes de recargar la extensión (ver popup.js): sirve una
+// sola vez, solo si es de hace menos de un minuto y nunca si ya hay una cola guardada. Los números de pestaña valen solo
+// dentro de una misma sesión del navegador: de la copia queda cada pestaña que sigue abierta en el sitio de su parte (o en
+// el sitio al que esa página la mandó), nunca una pestaña ajena con el mismo número.
+const VIDA_COLA_DE_RECARGA = 60 * 1000;
+async function colaQueSigue(copia) {
+  const quedan = [];
+  // Todas: la cola no tiene un tope, y la pestaña de la parte de ahora puede ser la última
+  for (const par of copia && Array.isArray(copia.cola) ? copia.cola : []) {
+    const [id, c] = Array.isArray(par) ? par : [];
+    if (typeof id !== "number" || !c || typeof c.parte !== "string") continue;
+    const pestana = await api.tabs.get(id).catch(() => null);
+    // Como la cola compara los sitios (ver PestanasDeLaCola.paginaVista)
+    const sitio = pestana ? sitioBase(pestana.url || pestana.pendingUrl || "") : "";
+    if (sitio && (sitio === sitioBase(c.parte) || (c.otroSitio && sitio === c.otroSitio))) quedan.push(par);
+  }
+  return { cola: quedan };
+}
 const listoCola = (async () => {
+  let guardada;
   try {
-    if (api.storage.session) cola.cargar((await api.storage.session.get("cola")).cola);
+    guardada = api.storage.session ? (await api.storage.session.get("cola")).cola : undefined;
   } catch (e) {
     // Sin storage.session se recuerda solo mientras el «service worker» está despierto
   }
+  try {
+    const r = await api.storage.local.get("colaDeRecarga");
+    const copia = r && r.colaDeRecarga;
+    if (copia) {
+      await api.storage.local.remove("colaDeRecarga");
+      const edad = Date.now() - Number(copia.cuando);
+      if (guardada === undefined && edad >= 0 && edad < VIDA_COLA_DE_RECARGA) {
+        guardada = await colaQueSigue(copia.cola);
+        if (api.storage.session) await api.storage.session.set({ cola: guardada });
+      }
+    }
+  } catch (e) {
+    // Sin la copia: las pestañas de la cola se olvidan, como antes
+  }
+  cola.cargar(guardada);
   try {
     const g = await api.storage.local.get(["seguidas", "instancia"]);
     for (const [id, s] of seguidasGuardadas(g && g.seguidas, Date.now())) seguidas.set(id, s);
@@ -1008,6 +1046,11 @@ api.runtime.onMessage.addListener((mensaje, remitente, responder) => {
   const deLaExtension = !!(remitente && typeof remitente.url === "string" && remitente.url.startsWith(api.runtime.getURL("")));
   const deUnaPagina = !deLaExtension && !!(remitente && remitente.tab && typeof remitente.tab.id === "number");
   switch (mensaje.tipo) {
+    case "fondo":
+      // ¿Qué versión de fondo está corriendo? Contesta enseguida, sin preguntarle nada al programa
+      responder({ version: VERSION_FONDO });
+      return false;
+
     case "estado":
       listoHasta = 0;
       intentoPuerto = 0;   // la persona abrió la ventanita: se prueba conectar ya

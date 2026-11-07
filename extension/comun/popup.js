@@ -148,6 +148,129 @@ async function mostrarVideos() {
   }
 }
 
+// Si el navegador siguió corriendo la parte de fondo vieja después de actualizar la extensión (pasa en Chrome con las
+// extensiones cargadas desde una carpeta), la extensión se recarga sola, una vez. Si ya se recargó hace poco y sigue
+// igual, se dice qué hacer y queda un botón para volver a probar. Recargar no baja nada ni toca las descargas del
+// navegador.
+const ESPERA_RECARGA = 10 * 60 * 1000;
+// Si no contesta (y no es que contestó otra versión), se prueba 3 veces antes de decidir: una falla pasajera no recarga
+async function fondoAlDiaAqui() {
+  const esperada = api.runtime.getManifest().version;
+  for (let intento = 0; intento < 3; intento++) {
+    let r = null;
+    try {
+      r = await api.runtime.sendMessage({ tipo: "fondo" });
+    } catch (e) {
+      r = null;
+    }
+    if (r && typeof r.version === "string") return r.version === esperada;
+    await new Promise((listo) => setTimeout(listo, 400));
+  }
+  return false;
+}
+
+// Al recargar, el navegador vacía storage.session, donde están las pestañas que la extensión abrió para la cola de
+// «de una en una». Antes de recargar se deja una copia en storage.local; la parte de fondo nueva la toma una sola vez,
+// si es de hace poco (ver «colaDeRecarga» en background.js). true si quedó guardada (o no había nada que guardar).
+async function guardarColaParaRecargar() {
+  try {
+    const g = api.storage.session ? await api.storage.session.get("cola") : {};
+    if (g && g.cola !== undefined) await api.storage.local.set({ colaDeRecarga: { cola: g.cola, cuando: Date.now() } });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// ¿El navegador está bajando partes de un sitio de descargas para Atarraya? Quitar la extensión borraría su
+// seguimiento (storage.local), así que entonces no se aconseja quitarla
+async function hayDescargasDeSitios() {
+  try {
+    const l = await api.storage.local.get("seguidas");
+    if (Array.isArray(l && l.seguidas) && l.seguidas.length) return true;
+    const s = api.storage.session ? await api.storage.session.get("cola") : {};
+    const c = s && s.cola;   // como lo guarda PestanasDeLaCola.exportar(): { cola: [[pestaña, parte], ...] }
+    return !!(c && Array.isArray(c.cola) && c.cola.length);
+  } catch (e) {
+    return true;   // si no se sabe, no se aconseja quitarla
+  }
+}
+
+function recargarExtension() {
+  try {
+    api.runtime.reload();
+    return true;
+  } catch (e) {
+    return false;   // si el navegador no deja, queda el texto con los pasos
+  }
+}
+
+// La copia de la cola se hace justo antes de recargar (nunca antes de esperar), así es la de este momento. Si la
+// recarga no se pudo, la copia se borra: no queda ninguna esperando a una recarga que no pasó.
+// «soloConCopia»: la recarga sola no se hace si la copia no se pudo guardar; la del botón sí (la persona la pidió).
+async function copiarYRecargar(soloConCopia) {
+  const copiada = await guardarColaParaRecargar();
+  if (!copiada && soloConCopia) return false;
+  if (recargarExtension()) return true;
+  try {
+    await api.storage.local.remove("colaDeRecarga");
+  } catch (e) {
+    // la parte de fondo la descarta sola al minuto
+  }
+  return false;
+}
+
+async function revisarFondo() {
+  if (await fondoAlDiaAqui()) return true;
+  const estado = document.getElementById("estado");
+  let antes = 0;
+  let sePuedeAnotar = true;
+  try {
+    const g = await api.storage.local.get("fondoRecargado");
+    antes = Number(g && g.fondoRecargado) || 0;
+  } catch (e) {
+    sePuedeAnotar = false;   // sin poder anotar, no se recarga sola (para no recargar una y otra vez)
+  }
+  const ahora = Date.now();
+  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora)) {
+    let anotado = false;
+    try {
+      await api.storage.local.set({ fondoRecargado: ahora });
+      anotado = true;
+    } catch (e) {
+      // No se pudo anotar: se sigue como si ya se hubiera probado
+    }
+    if (anotado) {
+      estado.textContent = "La extensión quedó a medias al actualizarse. La estoy recargando...";
+      estado.className = "estado mal";
+      await new Promise((listo) => setTimeout(listo, 1200));
+      if (await copiarYRecargar(true)) return false;
+    }
+  }
+  estado.textContent = "La extensión de Atarraya sigue a medias después de actualizarse. Pulsa «Recargar la extensión». " +
+    ((await hayDescargasDeSitios())
+      ? "Si sigue igual, espera a que el navegador termine las partes que baja para Atarraya: no quites la extensión " +
+        "mientras tanto, porque perdería su seguimiento."
+      : "Si sigue igual, en chrome://extensions (en Edge, edge://extensions) pulsa «Quitar» en Atarraya y vuelve a " +
+        "cargarla con «Cargar descomprimida».");
+  estado.className = "estado mal";
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "recargar";
+  boton.textContent = "Recargar la extensión";
+  boton.addEventListener("click", async () => {
+    boton.disabled = true;
+    try {
+      await api.storage.local.set({ fondoRecargado: Date.now() });
+    } catch (e) {
+      // igual se recarga: la persona lo pidió
+    }
+    if (!(await copiarYRecargar(false))) boton.disabled = false;
+  });
+  estado.after(boton);
+  return false;
+}
+
 async function iniciar() {
   const a = Object.assign({}, AJUSTES, await api.storage.local.get(AJUSTES));
   const capturar = document.getElementById("capturar");
@@ -160,6 +283,11 @@ async function iniciar() {
     minimo.value = v;
     api.storage.local.set({ minimoMB: v });
   });
+
+  if (!(await revisarFondo())) {
+    document.getElementById("videosEstado").textContent = "Primero hay que arreglar la extensión.";
+    return;
+  }
 
   mostrarVideos();
 
