@@ -108,3 +108,13 @@ add_executable(jicaro-falso WIN32 pruebas/jicaro-falso.cpp pruebas/jicaro-falso.
 target_compile_definitions(jicaro-falso PRIVATE ${DEFINICIONES})
 target_compile_options(jicaro-falso PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${OPCIONES_CXX}>)
 add_dependencies(prueba-enlaces jicaro-falso)
+
+# --- Pruebas con CTest: «ctest --test-dir build -C Release --output-on-failure» corre todo lo que corre GitHub ---
+enable_testing()
+add_test(NAME enlaces COMMAND prueba-enlaces WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+find_program(NODE_PROGRAMA node)
+if(NODE_PROGRAMA)
+    add_test(NAME extension COMMAND "${NODE_PROGRAMA}" pruebas/prueba-extension.js WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+else()
+    message(STATUS "Sin Node: las pruebas de la extensión no entran en CTest (se corren con «node pruebas/prueba-extension.js»)")
+endif()

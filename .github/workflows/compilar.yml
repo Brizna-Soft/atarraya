@@ -22,6 +22,8 @@ jobs:
     timeout-minutes: 150
     permissions:
       contents: write   # solo se usa para crear la versión cuando hay etiqueta
+      id-token: write   # para la atestación de origen del .zip (solo con etiqueta)
+      attestations: write
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vendor\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vendor\vcpkg-binarios
@@ -60,15 +62,14 @@ jobs:
         shell: pwsh
         run: ./compilar.ps1 -Publicacion
 
-      # Sin internet: enlaces, Click'n'Load y las redes de la PC que las consultas no deben tocar
-      - name: Pruebas sin ventana
+      # Con CTest, igual que en la PC: sin internet (enlaces, Click'n'Load, redes de la PC que las consultas no deben
+      # tocar) y la extensión (de qué página salió una descarga: la pestaña real donde nació, nunca la activa)
+      - name: Pruebas sin ventana (CTest)
         shell: pwsh
-        run: ./build/Release/prueba-enlaces.exe
-
-      # De qué página salió una descarga: la pestaña real donde nació, nunca la activa
-      - name: Pruebas de la extensión
-        shell: pwsh
-        run: node pruebas/prueba-extension.js
+        run: |
+          ctest --test-dir build -C Release --output-on-failure
+          if ($LASTEXITCODE -ne 0) { throw 'Fallaron pruebas' }
+          if (-not (ctest --test-dir build -C Release -N | Select-String 'extension')) { throw 'CTest no encontró Node para las pruebas de la extensión' }
 
       # El modo de prueba solo existe en Atarraya-prueba.exe: el programa que se publica no lo trae
       - name: Comprobar que el programa no trae el modo de prueba
@@ -107,6 +108,14 @@ jobs:
           path: |
             build/Release/Atarraya-prueba.exe
             build/Release/atarraya-puente-prueba.exe
+
+      # Prueba pública de que el .zip lo armó GitHub con este código. Se comprueba con:
+      #   gh attestation verify <archivo.zip> --repo Brizna-Soft/atarraya
+      - name: Atestación de origen del .zip
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: publicar/Atarraya-*.zip
 
       - name: Publicar la versión
         if: startsWith(github.ref, 'refs/tags/v')
