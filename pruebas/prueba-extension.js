@@ -519,13 +519,17 @@ if (enNode) {
     comprobar((popup.match(/runtime\.reload\(\)/g) || []).length === 1 && /function recargarExtension\(\) \{\s*try \{\s*api\.runtime\.reload\(\);/.test(popup)
       && /if \(await fondoAlDiaAqui\(\)\) return true;/.test(revisar)
       && /const ESPERA_RECARGA = 10 \* 60 \* 1000;/.test(popup)
-      && /sePuedeAnotar && !\(antes > ahora - ESPERA_RECARGA && antes <= ahora\) && \(await guardarColaParaRecargar\(\)\)/.test(revisar)
+      && /sePuedeAnotar && !\(antes > ahora - ESPERA_RECARGA && antes <= ahora\)/.test(revisar)
       && /for \(let intento = 0; intento < 3; intento\+\+\)/.test(popup)
       && /if \(r && typeof r\.version === "string"\) return r\.version === esperada;/.test(popup)
-      && (popup.match(/await guardarColaParaRecargar\(\)/g) || []).length === 2
+      // la copia de la cola se hace solo justo antes de recargar, y se borra si la recarga no se pudo
+      && (popup.match(/await guardarColaParaRecargar\(\)/g) || []).length === 1
+      && /const copiada = await guardarColaParaRecargar\(\);\s*if \(!copiada && soloConCopia\) return false;\s*if \(recargarExtension\(\)\) return true;\s*try \{\s*await api\.storage\.local\.remove\("colaDeRecarga"\);/.test(popup)
+      && /await copiarYRecargar\(true\)/.test(revisar) && /await copiarYRecargar\(false\)/.test(revisar)
+      && /const VIDA_COLA_DE_RECARGA = 60 \* 1000;/.test(fondo) && /guardada = await colaQueSigue\(copia\.cola\);/.test(fondo)
       && /await hayDescargasDeSitios\(\)\)\s*\? "Si sigue igual, espera/.test(revisar)
-      && revisar.indexOf("await api.storage.local.set({ fondoRecargado: ahora })") < revisar.indexOf("setTimeout(recargarExtension")
-      && (popup.match(/(?<!function )recargarExtension\(\)|setTimeout\(recargarExtension/g) || []).length === 2
+      && revisar.indexOf("await api.storage.local.set({ fondoRecargado: ahora })") < revisar.indexOf("copiarYRecargar(true)")
+      && (popup.match(/(?<!function )recargarExtension\(\)/g) || []).length === 1
       && /api\.runtime\.getManifest\(\)\.version/.test(popup)
       && popup.indexOf("await revisarFondo()") > popup.indexOf("capturar.addEventListener")
       && popup.indexOf("await revisarFondo()") < popup.indexOf("mostrarVideos();"),

@@ -199,9 +199,25 @@ async function hayDescargasDeSitios() {
 function recargarExtension() {
   try {
     api.runtime.reload();
+    return true;
   } catch (e) {
-    // Si el navegador no deja, queda el texto con los pasos
+    return false;   // si el navegador no deja, queda el texto con los pasos
   }
+}
+
+// La copia de la cola se hace justo antes de recargar (nunca antes de esperar), así es la de este momento. Si la
+// recarga no se pudo, la copia se borra: no queda ninguna esperando a una recarga que no pasó.
+// «soloConCopia»: la recarga sola no se hace si la copia no se pudo guardar; la del botón sí (la persona la pidió).
+async function copiarYRecargar(soloConCopia) {
+  const copiada = await guardarColaParaRecargar();
+  if (!copiada && soloConCopia) return false;
+  if (recargarExtension()) return true;
+  try {
+    await api.storage.local.remove("colaDeRecarga");
+  } catch (e) {
+    // la parte de fondo la descarta sola al minuto
+  }
+  return false;
 }
 
 async function revisarFondo() {
@@ -216,15 +232,19 @@ async function revisarFondo() {
     sePuedeAnotar = false;   // sin poder anotar, no se recarga sola (para no recargar una y otra vez)
   }
   const ahora = Date.now();
-  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora) && (await guardarColaParaRecargar())) {
+  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora)) {
+    let anotado = false;
     try {
       await api.storage.local.set({ fondoRecargado: ahora });
-      estado.textContent = "La extensión quedó a medias al actualizarse. La estoy recargando...";
-      estado.className = "estado mal";
-      setTimeout(recargarExtension, 1200);
-      return false;
+      anotado = true;
     } catch (e) {
       // No se pudo anotar: se sigue como si ya se hubiera probado
+    }
+    if (anotado) {
+      estado.textContent = "La extensión quedó a medias al actualizarse. La estoy recargando...";
+      estado.className = "estado mal";
+      await new Promise((listo) => setTimeout(listo, 1200));
+      if (await copiarYRecargar(true)) return false;
     }
   }
   estado.textContent = "La extensión de Atarraya sigue a medias después de actualizarse. Pulsa «Recargar la extensión». " +
@@ -240,13 +260,12 @@ async function revisarFondo() {
   boton.textContent = "Recargar la extensión";
   boton.addEventListener("click", async () => {
     boton.disabled = true;
-    await guardarColaParaRecargar();   // si no se pudo, igual se recarga: la persona lo pidió
     try {
       await api.storage.local.set({ fondoRecargado: Date.now() });
     } catch (e) {
       // igual se recarga: la persona lo pidió
     }
-    recargarExtension();
+    if (!(await copiarYRecargar(false))) boton.disabled = false;
   });
   estado.after(boton);
   return false;

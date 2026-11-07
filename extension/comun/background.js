@@ -58,9 +58,23 @@ const entregando = new Set();   // avisos finales que se están mandando ahora
 const decidiendo = new Set();   // descargas cuya toma se está decidiendo ahora
 // Esta extensión en este perfil del navegador (ver nuevaInstancia en cola-navegador.js): va al principio de cada «toma»
 let instancia = "";
-// La copia de las pestañas de la cola que deja la ventanita antes de recargar la extensión (ver popup.js): sirve una sola
-// vez y solo si es de hace poco
-const VIDA_COLA_DE_RECARGA = 5 * 60 * 1000;
+// La copia de las pestañas de la cola que deja la ventanita justo antes de recargar la extensión (ver popup.js): sirve una
+// sola vez, solo si es de hace menos de un minuto y nunca si ya hay una cola guardada. Los números de pestaña valen solo
+// dentro de una misma sesión del navegador: de la copia queda cada pestaña que sigue abierta en el sitio de su parte (o en
+// el sitio al que esa página la mandó), nunca una pestaña ajena con el mismo número.
+const VIDA_COLA_DE_RECARGA = 60 * 1000;
+async function colaQueSigue(copia) {
+  const quedan = [];
+  for (const par of copia && Array.isArray(copia.cola) ? copia.cola.slice(0, 50) : []) {
+    const [id, c] = Array.isArray(par) ? par : [];
+    if (typeof id !== "number" || !c || typeof c.parte !== "string") continue;
+    const pestana = await api.tabs.get(id).catch(() => null);
+    // Como la cola compara los sitios (ver PestanasDeLaCola.paginaVista)
+    const sitio = pestana ? sitioBase(pestana.url || pestana.pendingUrl || "") : "";
+    if (sitio && (sitio === sitioBase(c.parte) || (c.otroSitio && sitio === c.otroSitio))) quedan.push(par);
+  }
+  return { cola: quedan };
+}
 const listoCola = (async () => {
   let guardada;
   try {
@@ -75,7 +89,7 @@ const listoCola = (async () => {
       await api.storage.local.remove("colaDeRecarga");
       const edad = Date.now() - Number(copia.cuando);
       if (guardada === undefined && edad >= 0 && edad < VIDA_COLA_DE_RECARGA) {
-        guardada = copia.cola;
+        guardada = await colaQueSigue(copia.cola);
         if (api.storage.session) await api.storage.session.set({ cola: guardada });
       }
     }
