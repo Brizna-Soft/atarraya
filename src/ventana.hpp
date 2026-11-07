@@ -184,6 +184,7 @@ private:
     bool PasarContrasena(const std::string& de, const std::string& a);
     void CambiarClaveDeJicaro(const std::string& de, const std::string& a);
     void RevisarLosQueEsperanAlRecolector();
+    std::set<uint64_t> m_marcadas;   // descargas con la marca de internet ya puesta (Jícaro solo abre esas)
     std::set<std::string> m_esperanRecolector;   // grupos que esperan a que salgan sus enlaces del recolector
     uint64_t m_versionRecolectorVista = 0;
     // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue

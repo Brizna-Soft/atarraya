@@ -663,6 +663,11 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     m_sitiosNavegador.Cargar();
     // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola. Si la
     // cola no se pudo leer, no se quita ninguna (podrían ser de sus partes).
+    // Lo que ya estaba bajado al abrir Atarraya ya tiene su marca de internet (se le puso al terminar, antes)
+    for (const auto& f : m_motor.Fotos())
+    {
+        if (f.datos.estado == Estado::Completada) m_marcadas.insert(f.datos.id);
+    }
     m_contrasenas.Cargar();
     {
         // Las que no se pueden leer (el formato de las versiones de prueba anteriores) se quitan: esos paquetes piden su
@@ -2222,6 +2227,7 @@ void VentanaPrincipal::AlTerminar(const hnd::Foto& f)
             hilos::Enviar([yo, vivo, nombre, ruta, id, existe]() {
                 if (!*vivo) return;
                 yo->m_marcando.erase(Minusculas(ruta));
+                yo->m_marcadas.insert(id);   // Windows ya terminó con ella (aunque la haya bloqueado): Jícaro puede seguir
                 if (existe) yo->GuardarIdentidad(id, ruta);   // ya con la marca: así queda el archivo que bajó Atarraya
                 yo->SiguienteJicaro();
                 if (existe) return;
@@ -3146,6 +3152,7 @@ void VentanaPrincipal::MoverParteDelNavegador(int i)
     d.paquete = p.paquete;
     d.grupo = p.grupo;
     uint64_t id = m_motor.AgregarTerminada(d);
+    m_marcadas.insert(id);   // la bajó el navegador, que ya le puso la marca de internet
     m_motor.FijarIdentidad(id, p.identidadNavegador);   // el mismo archivo (al moverlo no cambia)
     m_sitios.TerminarEnNavegador(i, true, id);
     // La lista (con la terminada) y la cola, juntas. Si Atarraya se cerró de golpe después de mover el archivo y antes
@@ -3576,7 +3583,9 @@ void VentanaPrincipal::SiguienteJicaro()
     {
         // Espera a que Windows termine de marcar sus partes como bajadas de internet (al terminar, se llama otra vez)
         const auto& siguiente = m_colaJicaro.front().partes;
-        if (std::any_of(siguiente.begin(), siguiente.end(), [this](const auto& p) { return m_marcando.count(Minusculas(p.ruta)) > 0; }))
+        // (y a que cada una tenga su marca confirmada: m_marcadas; no basta con que no se esté marcando ahora)
+        if (std::any_of(siguiente.begin(), siguiente.end(), [this](const auto& p) {
+                return m_marcando.count(Minusculas(p.ruta)) > 0 || !m_marcadas.count(p.descarga); }))
             break;
         TrabajoJicaro t = std::move(m_colaJicaro.front());
         m_colaJicaro.pop_front();
