@@ -163,6 +163,7 @@
 
   function mostrarPara(v) {
     if (document.fullscreenElement) return;   // en pantalla completa no se puede mostrar encima
+    if (!conBoton) return;   // la persona lo apagó en la ventanita (también si una revisión llega después de apagarlo)
     crearBoton();
     clearTimeout(ocultando);
     if (actual !== v) {
@@ -295,7 +296,10 @@
   // Solo cambia si se muestra el botón: la lista de videos de la ventanita sigue igual.
   let conBoton = true;
   try {
-    api.storage.local.get({ botonVideos: true }).then((g) => { conBoton = !g || g.botonVideos !== false; }, () => {});
+    api.storage.local.get({ botonVideos: true }).then((g) => {
+      conBoton = !g || g.botonVideos !== false;
+      if (!conBoton && anfitrion) ocultarYa();
+    }, () => {});
     api.storage.onChanged.addListener((cambios, area) => {
       if (area !== "local" || !cambios.botonVideos) return;
       conBoton = cambios.botonVideos.newValue !== false;

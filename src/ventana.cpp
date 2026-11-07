@@ -2430,8 +2430,20 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
     bool oscuro = TemaOscuro();
     m_barraSitios->SetBackgroundColour(oscuro ? wxColour(0x3A, 0x33, 0x1C) : wxColour(0xFF, 0xF4, 0xCE));
     auto* caja = new wxBoxSizer(wxVERTICAL);
-    // En varias líneas, sin cortar con «...»: la instrucción va primero y tiene que verse entera
+    // En varias líneas, sin cortar con «...»: la instrucción va primero y tiene que verse entera. Al cambiar el tamaño de
+    // la ventana se vuelve a partir (el texto entero está en su ayuda)
     m_textoSitios = new wxStaticText(m_barraSitios, wxID_ANY, wxEmptyString);
+    Bind(wxEVT_SIZE, [this](wxSizeEvent& e) {
+        e.Skip();
+        if (!m_textoSitios || !m_barraSitios || !m_barraSitios->IsShown()) return;
+        wxString entero = m_textoSitios->GetToolTipText();
+        if (entero.empty()) return;
+        m_textoSitios->SetLabel(entero);
+        m_textoSitios->Wrap(-1);
+        m_textoSitios->Wrap(std::max(FromDIP(300), GetClientSize().GetWidth() - FromDIP(360)));
+        m_barraSitios->Layout();
+        CallAfter([this]() { Layout(); });
+    });
     m_textoSitios->SetForegroundColour(oscuro ? wxColour(0xF2, 0xE6, 0xC2) : wxColour(0x3D, 0x2E, 0x00));
     caja->Add(m_textoSitios, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     auto* botones = new wxBoxSizer(wxHORIZONTAL);
@@ -2568,8 +2580,8 @@ void VentanaPrincipal::ActualizarBarraSitios()
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar)
         {
-            texto = wxString::Format(L"No pude saber si tu navegador sigue con este archivo. Mira sus descargas: si está bajando, déjalo; "
-                                     L"si no, pulsa «Saltar esta». (%s)",
+            texto = wxString::Format(L"No pude saber si tu navegador sigue con este archivo. Mira sus descargas: si está bajando, déjalo "
+                                     L"terminar. Atarraya pausó la suya y lo sigue comprobando sola. (%s)",
                                      cual);
             saltar = true;
         }

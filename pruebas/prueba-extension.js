@@ -535,7 +535,7 @@ if (enNode) {
       && popup.indexOf("await revisarFondo()") > popup.indexOf("capturar.addEventListener")
       && popup.indexOf("await revisarFondo()") < popup.indexOf("mostrarVideos();"),
       "extensión: la ventanita recarga la extensión sola solo si la parte de fondo es vieja (una vez cada 10 minutos; si no, un botón)");
-    comprobar(/if \(!raton \|\| !conBoton\) return;/.test(videos) && /api\.storage\.local\.get\(\{ botonVideos: true \}\)/.test(videos)
+    comprobar(/if \(!raton \|\| !conBoton\) return;/.test(videos) && /if \(!conBoton\) return;   \/\/ la persona lo apagó/.test(videos) && /if \(!conBoton && anfitrion\) ocultarYa\(\);/.test(videos) && /api\.storage\.local\.get\(\{ botonVideos: true \}\)/.test(videos)
       && /cambios\.botonVideos\.newValue !== false/.test(videos) && /botonVideos: true/.test(popup)
       && /api\.storage\.local\.set\(\{ botonVideos: botonVideos\.checked \}\)/.test(popup)
       && /id="botonVideos"/.test(leer("../extension/comun/popup.html")),
