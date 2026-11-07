@@ -663,11 +663,6 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
     m_sitiosNavegador.Cargar();
     // Las contraseñas de los paquetes (cifradas): solo se quedan las de los que siguen en la lista o en la cola. Si la
     // cola no se pudo leer, no se quita ninguna (podrían ser de sus partes).
-    // Lo que ya estaba bajado al abrir Atarraya ya tiene su marca de internet (se le puso al terminar, antes)
-    for (const auto& f : m_motor.Fotos())
-    {
-        if (f.datos.estado == Estado::Completada) m_marcadas.insert(f.datos.id);
-    }
     m_contrasenas.Cargar();
     {
         // Las que no se pueden leer (el formato de las versiones de prueba anteriores) se quitan: esos paquetes piden su
@@ -3583,10 +3578,53 @@ void VentanaPrincipal::SiguienteJicaro()
     {
         // Espera a que Windows termine de marcar sus partes como bajadas de internet (al terminar, se llama otra vez)
         const auto& siguiente = m_colaJicaro.front().partes;
-        // (y a que cada una tenga su marca confirmada: m_marcadas; no basta con que no se esté marcando ahora)
-        if (std::any_of(siguiente.begin(), siguiente.end(), [this](const auto& p) {
-                return m_marcando.count(Minusculas(p.ruta)) > 0 || !m_marcadas.count(p.descarga); }))
+        if (std::any_of(siguiente.begin(), siguiente.end(), [this](const auto& p) { return m_marcando.count(Minusculas(p.ruta)) > 0; }))
             break;
+        // Cada parte tiene que tener su marca confirmada en esta sesión (m_marcadas). A la que no la tiene (por ejemplo,
+        // al retomar después de cerrar Atarraya) se le pide ahora; al terminar, se sigue. Si una parte ya no está bajada
+        // en la lista (la quitaron), el juego sale de la cola y queda pendiente: nunca se espera para siempre.
+        std::vector<std::pair<uint64_t, std::wstring>> pedir;
+        bool falta = false;
+        for (const auto& p : siguiente)
+        {
+            if (m_marcadas.count(p.descarga)) continue;
+            hnd::Foto f;
+            if (!m_motor.Buscar(p.descarga, f) || f.datos.estado != Estado::Completada)
+            {
+                falta = true;
+                break;
+            }
+            pedir.push_back({ p.descarga, p.ruta });
+        }
+        if (falta)
+        {
+            TrabajoJicaro sinParte = std::move(m_colaJicaro.front());
+            m_colaJicaro.pop_front();
+            for (const auto& p : sinParte.partes) m_motor.MarcarJicaro(p.descarga, EstadoJicaro::Pendiente);
+            AnotarJicaro();
+            Registrar("jícaro: una parte del juego ya no está bajada en la lista; queda pendiente");
+            continue;
+        }
+        if (!pedir.empty())
+        {
+            VentanaPrincipal* yo = this;
+            hilos::Vivo vivo = m_vivo;
+            for (const auto& [id, ruta] : pedir)
+            {
+                hnd::Foto f;
+                m_motor.Buscar(id, f);
+                m_marcando.insert(Minusculas(ruta));
+                sistema::MarcarComoDescargado(ruta, f.datos.url, f.datos.referer, [yo, vivo, id, ruta](bool) {
+                    hilos::Enviar([yo, vivo, id, ruta]() {
+                        if (!*vivo) return;
+                        yo->m_marcando.erase(Minusculas(ruta));
+                        yo->m_marcadas.insert(id);
+                        yo->SiguienteJicaro();
+                    });
+                });
+            }
+            break;
+        }
         TrabajoJicaro t = std::move(m_colaJicaro.front());
         m_colaJicaro.pop_front();
         // El archivo que quedó al terminar cada parte (lo guardó al marcarla): «Borrar las partes» solo toca esos mismos
