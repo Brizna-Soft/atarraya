@@ -535,6 +535,11 @@ if (enNode) {
       && popup.indexOf("await revisarFondo()") > popup.indexOf("capturar.addEventListener")
       && popup.indexOf("await revisarFondo()") < popup.indexOf("mostrarVideos();"),
       "extensión: la ventanita recarga la extensión sola solo si la parte de fondo es vieja (una vez cada 10 minutos; si no, un botón)");
+    comprobar(/if \(!raton \|\| !conBoton\) return;/.test(videos) && /api\.storage\.local\.get\(\{ botonVideos: true \}\)/.test(videos)
+      && /cambios\.botonVideos\.newValue !== false/.test(videos) && /botonVideos: true/.test(popup)
+      && /api\.storage\.local\.set\(\{ botonVideos: botonVideos\.checked \}\)/.test(popup)
+      && /id="botonVideos"/.test(leer("../extension/comun/popup.html")),
+      "extensión: el botón sobre los videos se puede apagar en la ventanita (viene encendido; la lista de videos sigue)");
     comprobar(/const viejo = viva && !\(await fondoContesta\(\)\);/.test(videos) && /tipo: "fondo"/.test(videos)
       && /fondoAlDia\(r, api\.runtime\.getManifest\(\)\.version\)/.test(videos) && !/runtime\.reload/.test(videos + fondo),
       "extensión: el botón de los videos pregunta por la parte de fondo solo cuando la extensión no contestó (y nunca recarga nada)");

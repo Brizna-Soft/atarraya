@@ -839,8 +839,9 @@ namespace
     }
 
     const wchar_t* const NotaSinUnir =
-        L"El video y el audio vienen por separado: Atarraya los guarda en dos archivos, «(video)» y «(audio)», sin unirlos. "
-        L"Para juntarlos hace falta un programa aparte, como FFmpeg (Atarraya no lo trae).";
+        L"Ojo: este video viene en dos partes, la imagen y el sonido. Atarraya las guarda en dos archivos, «(video)» y "
+        L"«(audio)», y no las junta: al abrir el de video no vas a tener sonido. Para verlo con sonido necesitas un programa "
+        L"que las una, como FFmpeg (Atarraya no lo trae).";
 
     // La opción elegida en una lista ordenada de la mejor a la peor (la mejor si no hay ninguna elegida); -1 si está vacía
     int Elegida(const wxChoice* c, const std::vector<int>& orden)
@@ -1043,6 +1044,14 @@ void DialogoVideo::AlLeer(bool ok, const std::string& texto, const std::string& 
     m_nota->SetLabel(nota);
     m_nota->Wrap(-1);   // igual que arriba: si no, se queda en una sola línea muy larga
     m_nota->Wrap(FromDIP(560));
+    // Si quedan dos archivos sin unir, el aviso se ve antes de pulsar «Descargar»: en naranja, no en gris
+    if (nota == NotaSinUnir)
+    {
+        m_nota->SetForegroundColour(wxColour(0xC2, 0x5E, 0x00));
+        m_nota->SetFont(m_nota->GetFont().Bold());
+    }
+    Layout();
+    Fit();
     m_listo = true;
     m_descargar->Enable();
     m_luego->Enable();

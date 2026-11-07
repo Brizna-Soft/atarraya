@@ -183,6 +183,8 @@ private:
     void OlvidarContrasenaSiTermino(const std::string& clave);
     bool PasarContrasena(const std::string& de, const std::string& a);
     void CambiarClaveDeJicaro(const std::string& de, const std::string& a);
+    void AvisarCaptcha(int parte, size_t total);
+    bool m_puntaCaptcha = false;   // la ayuda del ícono dice que toca el captcha
     void RevisarLosQueEsperanAlRecolector();
     std::set<uint64_t> m_marcadas;   // descargas con la marca de internet ya puesta (Jícaro solo abre esas)
     std::set<std::string> m_esperanRecolector;   // grupos que esperan a que salgan sus enlaces del recolector

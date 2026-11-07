@@ -989,7 +989,13 @@ void VentanaPrincipal::Refrescar()
     {
         wxString punta = bajando > 0 ? wxString::Format(L"Atarraya: %d bajando a %s", bajando, TextoVelocidad(total)) : wxString(L"Atarraya");
         static wxString ultima;
-        if (punta != ultima)
+        // Mientras una parte espera el captcha en el navegador, la ayuda del ícono sigue diciéndolo (ver AvisarCaptcha)
+        if (m_puntaCaptcha && !m_sitios.HayAbierta())
+        {
+            m_puntaCaptcha = false;
+            ultima.clear();
+        }
+        if (!m_puntaCaptcha && punta != ultima)
         {
             ultima = punta;
             m_bandeja->SetIcon(wxBitmapBundle::FromIconBundle(GetIcons()), punta);
@@ -2424,7 +2430,8 @@ void VentanaPrincipal::CrearBarraSitios(wxWindow* padre)
     bool oscuro = TemaOscuro();
     m_barraSitios->SetBackgroundColour(oscuro ? wxColour(0x3A, 0x33, 0x1C) : wxColour(0xFF, 0xF4, 0xCE));
     auto* caja = new wxBoxSizer(wxVERTICAL);
-    m_textoSitios = new wxStaticText(m_barraSitios, wxID_ANY, wxEmptyString, wxDefaultPosition, wxDefaultSize, wxST_ELLIPSIZE_END);
+    // En varias líneas, sin cortar con «...»: la instrucción va primero y tiene que verse entera
+    m_textoSitios = new wxStaticText(m_barraSitios, wxID_ANY, wxEmptyString);
     m_textoSitios->SetForegroundColour(oscuro ? wxColour(0xF2, 0xE6, 0xC2) : wxColour(0x3D, 0x2E, 0x00));
     caja->Add(m_textoSitios, 0, wxEXPAND | wxLEFT | wxRIGHT | wxTOP, FromDIP(8));
     auto* botones = new wxBoxSizer(wxHORIZONTAL);
@@ -2511,56 +2518,64 @@ void VentanaPrincipal::ActualizarBarraSitios()
                              : wxString::Format(L"%lld:%02lld", s / 60, s % 60);
         };
         wxString sitio = i >= 0 ? wxString::FromUTF8(enlaces::Sitio(partes[i].url)) : wxString();
+        // «Archivo 3 de 18: peli.part3.rar · rapidgator.net», al final: lo primero es lo que tiene que hacer la persona
+        wxString cual = i >= 0 ? wxString::Format(L"Archivo %d de %zu", i + 1, total) : wxString();
+        if (i >= 0 && !partes[i].nombre.empty()) cual += L": " + wxString(partes[i].nombre);
+        if (!sitio.empty()) cual += L" · " + sitio;
         if (i >= 0 && partes[i].estado == EstadoParte::Abierta && partes[i].hasta > ahora && !partes[i].limite)
         {
-            texto = wxString::Format(L"Parte %d de %zu en tu navegador (%s): la página pide esperar %s. Después resuelve el captcha y "
-                                     L"pulsa descargar; Atarraya te avisa.",
-                                     i + 1, total, sitio, reloj(partes[i].hasta - ahora));
+            texto = wxString::Format(L"Espera %s en tu navegador: la página lo pide. Después resuelve la prueba «No soy un robot» "
+                                     L"(captcha) y pulsa Descargar; Atarraya te avisa. ¿Cerraste la pestaña? Pulsa «Abrir otra vez». (%s)",
+                                     reloj(partes[i].hasta - ahora), cual);
             otraVez = saltar = true;
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Abierta)
         {
-            texto = wxString::Format(L"Parte %d de %zu en tu navegador (%s): resuelve el captcha y pulsa descargar. Atarraya la toma sola.",
-                                     i + 1, total, sitio);
+            texto = wxString::Format(L"Resuelve en tu navegador la prueba «No soy un robot» (captcha) y pulsa Descargar: Atarraya la "
+                                     L"toma sola. ¿Cerraste la pestaña? Pulsa «Abrir otra vez». (%s)",
+                                     cual);
             otraVez = saltar = true;
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Navegador)
         {
             const auto& p = partes[i];
-            texto = wxString::Format(L"Parte %d de %zu bajando en tu navegador", i + 1, total);
+            texto = wxString::Format(L"%s: bajando en tu navegador", cual);
             if (p.total > 0)
                 texto += wxString::Format(L" (%d %%, %s de %s)", (int)(p.bajado * 100 / p.total), wxString(TextoTamano(p.bajado)),
                                           wxString(TextoTamano(p.total)));
             else if (p.bajado > 0) texto += L" (" + wxString(TextoTamano(p.bajado)) + L")";
-            texto += L": el sitio no deja que la baje otro programa. Atarraya la anota cuando termine.";
+            texto += L". El sitio no deja que la baje otro programa: Atarraya la anota cuando termine. Si cerraste el navegador y "
+                     L"la descarga no sigue, pulsa «Saltar esta».";
             saltar = true;   // por ejemplo, si se cerró el navegador y esa descarga ya no sigue
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Espera)
         {
             const auto& p = partes[i];
-            texto = wxString::Format(L"Parte %d de %zu (%s): el sitio pide esperar entre descargas. Atarraya abre la página otra vez en %s",
-                                     i + 1, total, sitio, reloj(p.hasta - ahora));
+            texto = wxString::Format(L"No hace falta que hagas nada: el sitio pide esperar entre descargas y Atarraya abre la página otra "
+                                     L"vez en %s",
+                                     reloj(p.hasta - ahora));
             texto += p.intentos > 0 ? wxString::Format(L" (intento %d de %d) y te avisa.", p.intentos + 1, MaxIntentosEspera)
                                     : wxString(L" y te avisa.");
+            texto += L" (" + cual + L")";
             otraVez = saltar = true;
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar && partes[i].alAbrir)
         {
-            texto = wxString::Format(L"Parte %d de %zu: Atarraya espera a que tu navegador diga si siguió bajándola mientras Atarraya "
-                                     L"estaba cerrado, para no bajarla dos veces. Si en un minuto no dice nada, sigue la de Atarraya.",
-                                     i + 1, total);
+            texto = wxString::Format(L"Atarraya está comprobando si tu navegador ya bajó este archivo, para no bajarlo dos veces. Espera "
+                                     L"un minuto. (%s)",
+                                     cual);
             saltar = true;
         }
         else if (i >= 0 && partes[i].estado == EstadoParte::Tomada && partes[i].sinConfirmar)
         {
-            texto = wxString::Format(L"Parte %d de %zu: no se pudo confirmar si tu navegador la sigue bajando. Atarraya pausó la suya "
-                                     L"hasta saberlo; mira la lista de descargas de tu navegador.",
-                                     i + 1, total);
+            texto = wxString::Format(L"No pude saber si tu navegador sigue con este archivo. Mira sus descargas: si está bajando, déjalo; "
+                                     L"si no, pulsa «Saltar esta». (%s)",
+                                     cual);
             saltar = true;
         }
         else if (i >= 0)
         {
-            texto = wxString::Format(L"Parte %d de %zu bajando en Atarraya. ", i + 1, total);
+            texto = cual + L": bajando en Atarraya. Si tu navegador la muestra como «cancelada», es normal: Atarraya la sigue bajando. ";
             texto += m_sitios.QuedanPorAbrir() ? L"Cuando termine, se abre la siguiente en tu navegador." : L"Ya no quedan páginas por abrir.";
         }
         else if (m_sitios.Terminada())
@@ -2581,6 +2596,8 @@ void VentanaPrincipal::ActualizarBarraSitios()
     {
         m_textoSitios->SetLabel(texto);
         m_textoSitios->SetToolTip(texto);
+        m_textoSitios->Wrap(-1);   // wx no vuelve a partir el texto si se le pide el mismo ancho que la vez anterior
+        m_textoSitios->Wrap(std::max(FromDIP(300), GetClientSize().GetWidth() - FromDIP(360)));
         cambio = true;
     }
     auto ver = [&](wxButton* b, bool si) {
@@ -2620,7 +2637,10 @@ void VentanaPrincipal::AbrirParte(int i, bool avisar)
               + SoloSitio(url)
               + (porLaExtension ? std::string(", por la extensión)") : std::string("; la extensión no está conectada: ahí no se leen los avisos de espera)")));
     if (avisar)
-        Avisar(wxString::Format(L"Parte %d de %zu en tu navegador", i + 1, total), L"Resuelve el captcha y pulsa descargar. Atarraya la toma sola.");
+    {
+        Avisar(wxString::Format(L"Archivo %d de %zu en tu navegador", i + 1, total), L"Resuelve la prueba «No soy un robot» (captcha) y pulsa Descargar: Atarraya la toma sola.");
+        AvisarCaptcha(i + 1, total);
+    }
 }
 
 void VentanaPrincipal::RevisarPausas()
@@ -3214,12 +3234,14 @@ void VentanaPrincipal::RevisarEsperas()
                   + std::to_string(m_sitios.Partes()[i].intentos) + ")");
         sistema::Sonar();
         Avisar(L"Toca resolver un captcha", wxString::Format(L"Parte %d de %zu: Atarraya abrió otra vez la página en tu navegador.", i + 1, cuantas));
+        AvisarCaptcha(i + 1, cuantas);
     }
     for (int i : cuentas)
     {
         Registrar("de una en una: parte " + std::to_string(i + 1) + ": terminó la cuenta regresiva de la página");
         sistema::Sonar();
         Avisar(L"Toca resolver un captcha", wxString::Format(L"Parte %d de %zu: terminó la espera de la página.", i + 1, cuantas));
+        AvisarCaptcha(i + 1, cuantas);
     }
     ActualizarBarraSitios();
 }
@@ -3748,8 +3770,19 @@ void VentanaPrincipal::MostrarResultadoJicaro(TrabajoJicaro t, jicaro::Resultado
     res.t = std::move(t);
     bool bien = r == jicaro::Resultado::Listo || r == jicaro::Resultado::Parcial;
     if (m_ajustes.avisarAlTerminar || !bien) Avisar(jicaro::Titulo(r), res.texto, !bien);
-    m_resultadosJicaro.push_back(std::move(res));
-    while (m_resultadosJicaro.size() > 20) m_resultadosJicaro.pop_front();
+    // El que pide algo a la persona (la contraseña, o un Jícaro nuevo) va primero: la barra muestra el primero, y un «Listo»
+    // viejo no tiene que tapar el botón «Escribir la contraseña...»
+    bool pideAlgo = jicaro::PideContrasena(res.r) || res.r == jicaro::Resultado::JicaroViejo;
+    if (pideAlgo) m_resultadosJicaro.push_front(std::move(res));
+    else m_resultadosJicaro.push_back(std::move(res));
+    while (m_resultadosJicaro.size() > 20)
+    {
+        // Se van los más viejos que no piden nada; si todos piden algo, el último
+        auto viejo = std::find_if(m_resultadosJicaro.begin(), m_resultadosJicaro.end(), [](const ResultadoJicaro& x) {
+            return !jicaro::PideContrasena(x.r) && x.r != jicaro::Resultado::JicaroViejo; });
+        if (viejo != m_resultadosJicaro.end()) m_resultadosJicaro.erase(viejo);
+        else m_resultadosJicaro.pop_back();
+    }
     ActualizarBarraJicaro();
 }
 
@@ -3792,6 +3825,20 @@ void VentanaPrincipal::CrearBarraJicaro(wxWindow* padre)
         if (!m_resultadosJicaro.empty()) m_resultadosJicaro.pop_front();
         ActualizarBarraJicaro();
     });
+}
+
+// El globo del captcha dura unos segundos y con «No molestar» puede no verse: además, el botón de Atarraya en la barra de
+// tareas parpadea y la ayuda del ícono junto al reloj dice que toca el captcha (vuelve a la normal cuando ya no hay
+// ninguna parte esperando en el navegador, ver ActualizarBarraSitios)
+void VentanaPrincipal::AvisarCaptcha(int parte, size_t total)
+{
+    if (IsShown()) RequestUserAttention(wxUSER_ATTENTION_ERROR);
+    if (m_bandeja)
+    {
+        m_bandeja->SetIcon(wxBitmapBundle::FromIconBundle(GetIcons()),
+                           wxString::Format(L"Atarraya: te toca el captcha (archivo %d de %zu). Pulsa para abrir Atarraya.", parte, total));
+        m_puntaCaptcha = true;
+    }
 }
 
 void VentanaPrincipal::ActualizarBarraJicaro()

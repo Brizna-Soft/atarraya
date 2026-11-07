@@ -1,5 +1,5 @@
 const api = globalThis.browser ?? globalThis.chrome;
-const AJUSTES = { capturar: true, minimoMB: 0 };
+const AJUSTES = { capturar: true, minimoMB: 0, botonVideos: true };
 
 function textoTamano(bytes) {
   if (!(bytes >= 0)) return "";
@@ -49,7 +49,7 @@ function detalle(e, hostPestana) {
     partes.push("la calidad se elige en Atarraya");
   } else if (e.formato === "dash") {
     partes.push("DASH" + (archivoDe(e.url) ? " (" + archivoDe(e.url) + ")" : ""));
-    partes.push("video y audio en dos archivos");
+    partes.push("imagen y sonido en dos archivos: no se juntan");
   } else {
     const tipo = (e.tipoMime || "").split(";")[0].trim().toLowerCase();
     const base = (e.nombre || e.url || "").split("?")[0];
@@ -278,6 +278,10 @@ async function iniciar() {
   capturar.checked = a.capturar;
   minimo.value = a.minimoMB;
   capturar.addEventListener("change", () => api.storage.local.set({ capturar: capturar.checked }));
+  // El botón sobre los videos (ver videos.js): apagado, la lista de videos de aquí abajo sigue funcionando
+  const botonVideos = document.getElementById("botonVideos");
+  botonVideos.checked = a.botonVideos !== false;
+  botonVideos.addEventListener("change", () => api.storage.local.set({ botonVideos: botonVideos.checked }));
   minimo.addEventListener("change", () => {
     const v = Math.max(0, Math.min(100000, parseInt(minimo.value, 10) || 0));
     minimo.value = v;

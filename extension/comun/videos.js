@@ -291,9 +291,23 @@
 
   let raton = null;
   let pendiente = false;
+  // La persona puede apagar el botón en la ventanita de Atarraya («Mostrar el botón sobre los videos»; viene encendido).
+  // Solo cambia si se muestra el botón: la lista de videos de la ventanita sigue igual.
+  let conBoton = true;
+  try {
+    api.storage.local.get({ botonVideos: true }).then((g) => { conBoton = !g || g.botonVideos !== false; }, () => {});
+    api.storage.onChanged.addListener((cambios, area) => {
+      if (area !== "local" || !cambios.botonVideos) return;
+      conBoton = cambios.botonVideos.newValue !== false;
+      if (!conBoton && anfitrion) ocultarYa();
+    });
+  } catch (e) {
+    // Sin storage, el botón queda como viene
+  }
+
   function revisarRaton() {
     pendiente = false;
-    if (!raton) return;
+    if (!raton || !conBoton) return;
     const v = videoBajo(raton.x, raton.y);
     const r = v ? revisar(v) : null;
     if (r && r.bloqueado === false) mostrarPara(v);
