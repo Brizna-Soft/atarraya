@@ -12,7 +12,7 @@ const HOST = "com.briznasoft.atarraya";
 // La versión de ESTE código de fondo. Va escrita aquí, no se lee del manifiesto: un navegador puede seguir corriendo
 // un «service worker» viejo con el manifiesto nuevo, y entonces el manifiesto diría la versión nueva. La ventanita y
 // el botón de los videos la comparan con la del manifiesto (ver «fondo»). Tiene que ser igual a la de los manifiestos.
-const VERSION_FONDO = "0.4.0";
+const VERSION_FONDO = "0.4.1";
 const AJUSTES = { capturar: true, minimoMB: 0 };
 // Pedidos donde pueden venir videos: los del reproductor (media) y los que hacen los reproductores HLS y DASH
 const TIPOS_MEDIOS = ["media", "xmlhttprequest", "other", "object"];
