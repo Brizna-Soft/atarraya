@@ -8,12 +8,16 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <set>
 
 #include "contrasenas.hpp"
 #include "enlaces.hpp"
 #include "util.hpp"
+
+// Para las funciones de abajo que están fuera de hnd (las del espacio sin nombre)
+namespace contrasenas = hnd::contrasenas;
 
 namespace
 {
@@ -204,10 +208,16 @@ namespace
                });
     }
 
+    // Un campo puede ser la contraseña del paquete: lo que no entra se borra de la memoria antes de soltarlo
     std::string Agregar(Campos& campos, std::string nombre, std::string valor)
     {
-        if (campos.size() >= MaxCampos) return DemasiadosCampos();
-        if (nombre.size() > MaxNombre || valor.size() > MaxCampo) return DemasiadoLargo();
+        if (campos.size() >= MaxCampos || nombre.size() > MaxNombre || valor.size() > MaxCampo)
+        {
+            const bool muchos = campos.size() >= MaxCampos;
+            contrasenas::Borrar(nombre);
+            contrasenas::Borrar(valor);
+            return muchos ? DemasiadosCampos() : DemasiadoLargo();
+        }
         campos.emplace_back(std::move(nombre), std::move(valor));
         return {};
     }
@@ -221,10 +231,19 @@ namespace
             size_t fin = s.find('&', desde);
             if (fin == std::string::npos) fin = s.size();
             size_t igual = std::min(s.find('=', desde), fin);
-            std::string nombre = DecodificarFormulario(s.substr(desde, igual - desde));
+            // Lo de antes de decodificar también se borra (puede ser la contraseña con «%»)
+            std::string crudo = s.substr(desde, igual - desde);
+            std::string nombre = DecodificarFormulario(crudo);
+            contrasenas::Borrar(crudo);
             if (!nombre.empty())
             {
-                std::string valor = igual < fin ? DecodificarFormulario(s.substr(igual + 1, fin - igual - 1)) : std::string();
+                std::string valor;
+                if (igual < fin)
+                {
+                    crudo = s.substr(igual + 1, fin - igual - 1);
+                    valor = DecodificarFormulario(crudo);
+                    contrasenas::Borrar(crudo);
+                }
                 std::string motivo = Agregar(campos, std::move(nombre), std::move(valor));
                 if (!motivo.empty()) return motivo;
             }
@@ -299,18 +318,21 @@ namespace
             std::string linea = cuerpo.substr(p, largo);
             p = f + 1;
             size_t igual = linea.find('=');
+            std::string motivo;
             if (igual != std::string::npos && NombreSimple(linea.substr(0, igual)))
-            {
-                std::string motivo = Agregar(campos, linea.substr(0, igual), linea.substr(igual + 1));
-                if (!motivo.empty()) return motivo;
-            }
+                motivo = Agregar(campos, linea.substr(0, igual), linea.substr(igual + 1));
             else if (!campos.empty())
             {
                 std::string& v = campos.back().second;
-                if (v.size() + 1 + linea.size() > MaxCampo) return DemasiadoLargo();
-                v += '\n';
-                v += linea;
+                if (v.size() + 1 + linea.size() > MaxCampo) motivo = DemasiadoLargo();
+                else
+                {
+                    contrasenas::Agregar(v, "\n", 1);   // si v se muda, el lugar de antes se borra
+                    contrasenas::Agregar(v, linea.data(), linea.size());
+                }
             }
+            contrasenas::Borrar(linea);
+            if (!motivo.empty()) return motivo;
         }
         return {};
     }
@@ -685,6 +707,9 @@ bool hnd::cnl::TipoAdmitido(const std::string& tipo)
 std::string hnd::cnl::LeerFormulario(const std::string& tipo, const std::string& cuerpo, Campos& campos)
 {
     campos.clear();
+    // Todo el lugar de entrada: si la lista se mudara, las contraseñas cortas (que van dentro de cada texto) quedarían
+    // copiadas en el lugar de antes sin borrar
+    campos.reserve(MaxCampos);
     std::string m = Medio(tipo);
     if (m.empty() || m == "application/x-www-form-urlencoded") return LeerUrlencoded(cuerpo, campos);
     if (m == "multipart/form-data") return LeerMultipart(tipo, cuerpo, campos);
@@ -729,12 +754,19 @@ bool hnd::cnl::TextoDeEnlaces(const Campos& campos, std::string& texto)
 std::vector<std::string> hnd::cnl::Contrasenas(const Campos& campos)
 {
     // Todas las veces que venga el campo, en orden; una por línea
+    // Con el lugar justo reservado de entrada: el texto nunca se muda (dejaría una copia sin borrar)
+    size_t total = 0;
+    for (const auto& c : campos)
+    {
+        if (Bajo(c.first) == "passwords") total += c.second.size() + 1;
+    }
     std::string texto;
+    texto.reserve(total);
     for (const auto& c : campos)
     {
         if (Bajo(c.first) != "passwords") continue;
-        texto += c.second;
-        texto += '\n';
+        contrasenas::Agregar(texto, c.second.data(), c.second.size());
+        contrasenas::Agregar(texto, "\n", 1);
     }
     auto r = contrasenas::DeTexto(texto);
     contrasenas::Borrar(texto);
@@ -1014,10 +1046,28 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
     };
     auto incompleto = [&]() { Anotar("Click'n'Load: rechazado: el pedido llegó incompleto. Pedido: " + TextoPedido(p)); };
 
-    // 1. La primera línea (en un GET trae los enlaces, así que puede ser larga) y las cabeceras
-    std::string datos;
-    size_t finLinea = std::string::npos, finCabeceras = std::string::npos;
+    // Todo lo que puede traer la contraseña del paquete (el campo «passwords» llega en el cuerpo o, en un GET, en la
+    // dirección) se borra de la memoria al salir, por cualquier camino. Los textos crecen con contrasenas::Agregar, que
+    // borra el lugar de antes si tiene que mudarlos.
+    std::string datos, linea, cabeceras, cuerpo, destino, consulta;
     std::vector<char> buf(16 * 1024);
+    cnl::Campos campos;
+    struct AlSalir
+    {
+        std::function<void()> f;
+        ~AlSalir() { f(); }
+    } borrarAlSalir{ [&] {
+        for (std::string* t : { &datos, &linea, &cabeceras, &cuerpo, &destino, &consulta }) contrasenas::Borrar(*t);
+        contrasenas::Borrar(buf);
+        for (auto& c : campos)
+        {
+            contrasenas::Borrar(c.first);
+            contrasenas::Borrar(c.second);
+        }
+    } };
+
+    // 1. La primera línea (en un GET trae los enlaces, así que puede ser larga) y las cabeceras
+    size_t finLinea = std::string::npos, finCabeceras = std::string::npos;
     while (finCabeceras == std::string::npos)
     {
         int n = Recibir(conexion, buf.data(), (int)buf.size(), limite);
@@ -1028,7 +1078,7 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
             return;
         }
         size_t antes = datos.size();
-        datos.append(buf.data(), (size_t)n);
+        contrasenas::Agregar(datos, buf.data(), (size_t)n);
         if (finLinea == std::string::npos)
         {
             finLinea = datos.find("\r\n", antes > 0 ? antes - 1 : 0);
@@ -1049,10 +1099,10 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
             return;
         }
     }
-    std::string linea = datos.substr(0, finLinea);
-    std::string cabeceras = finCabeceras > finLinea ? datos.substr(finLinea + 2, finCabeceras - finLinea - 2) : std::string();
-    std::string cuerpo = datos.substr(finCabeceras + 4);
-    datos.clear();
+    linea = datos.substr(0, finLinea);
+    if (finCabeceras > finLinea) cabeceras = datos.substr(finLinea + 2, finCabeceras - finLinea - 2);
+    cuerpo = datos.substr(finCabeceras + 4);
+    contrasenas::Borrar(datos);
 
     size_t e1 = linea.find(' '), e2 = linea.rfind(' ');
     if (e1 == std::string::npos || e2 == e1 || linea.compare(e2 + 1, 5, "HTTP/") != 0)
@@ -1061,17 +1111,16 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
         return;
     }
     p.metodo = linea.substr(0, e1);
-    std::string destino = linea.substr(e1 + 1, e2 - e1 - 1);
-    linea.clear();
+    destino = linea.substr(e1 + 1, e2 - e1 - 1);
+    contrasenas::Borrar(linea);
     size_t q = destino.find_first_of("?#");
     p.ruta = destino.substr(0, q);
-    std::string consulta;
     if (q != std::string::npos && destino[q] == '?')
     {
         size_t almohadilla = destino.find('#', q);
         consulta = destino.substr(q + 1, almohadilla == std::string::npos ? std::string::npos : almohadilla - q - 1);
     }
-    destino.clear();
+    contrasenas::Borrar(destino);
     if (p.ruta.size() > 1 && p.ruta.back() == '/') p.ruta.pop_back();   // «/flash/add/» es «/flash/add»
 
     std::map<std::string, std::string> h;
@@ -1145,7 +1194,8 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
             rechazar(413, "demasiado grande (más de " + Medida(MaxCuerpo) + ")");
             return;
         }
-        cuerpo = std::move(consulta);
+        contrasenas::Borrar(cuerpo);
+        cuerpo.swap(consulta);
         tipo = "application/x-www-form-urlencoded";
     }
     else if (p.metodo == "POST")
@@ -1186,9 +1236,9 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
                 incompleto();
                 return;
             }
-            cuerpo.append(buf.data(), (size_t)n);
+            contrasenas::Agregar(cuerpo, buf.data(), (size_t)n);
         }
-        cuerpo.resize(largo);
+        cuerpo.resize(largo);   // lo que sobra queda en su lugar reservado, que se borra entero al salir
         tipo = h["content-type"];
     }
     else
@@ -1224,9 +1274,8 @@ void hnd::ServidorCnL::Atender(uintptr_t conexion)
         rechazar(415, "tipo de envío no admitido");
         return;
     }
-    cnl::Campos campos;
     std::string motivo = cnl::LeerFormulario(tipo, cuerpo, campos);
-    cuerpo.clear();
+    contrasenas::Borrar(cuerpo);
     if (!motivo.empty())
     {
         rechazar(400, motivo);

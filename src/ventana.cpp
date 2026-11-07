@@ -3264,6 +3264,14 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
     // De un paquete: cada juego apenas está completo (todas sus partes, sin huecos y se sabe cuál es la última; si eso no
     // se sabe, cuando termina todo el paquete), sin esperar al resto, y una sola vez. Con un solo juego y nombre propio,
     // va a una carpeta con el nombre del paquete (como antes); con varios, cada uno a la suya.
+    // Si al paquete le quedan enlaces en el recolector (las partes que se saltaron o fallaron en «de una en una» vuelven
+    // ahí), todavía no está completo aunque ya no baje nada: no se abre ninguno de sus juegos. Cuando esas partes bajen,
+    // salen del recolector y se revisa otra vez.
+    if (!d.paquete.empty() && QuedanEnElRecolector(d.paquete, m_recolector.Lista()))
+    {
+        Registrar("jícaro: el paquete todavía tiene enlaces en el recolector; se espera a que bajen");
+        return trabajos;
+    }
     auto fotos = m_motor.Fotos();
     auto juegos = jicaro::Juegos(d.grupo, fotos, m_sitios.Partes());
     std::vector<std::wstring> delPaquete;
@@ -3346,6 +3354,33 @@ std::string VentanaPrincipal::ClaveDeContrasena(const DatosDescarga& d) const
 {
     // «:» no sale nunca en un grupo (son letras y números): no se confunden
     return d.grupo.empty() ? "descarga:" + std::to_string(d.id) : d.grupo;
+}
+
+// La contraseña de un paquete se guarda (cifrada) solo mientras hace falta: hasta que se descomprimen todos sus juegos.
+// Entonces se borra de contrasenas.json. Si la persona encendió «recordar», sigue en las recordadas para otros paquetes.
+void VentanaPrincipal::OlvidarContrasenaSiTermino(const std::string& clave)
+{
+    if (clave.empty() || !m_contrasenas.Tiene(clave)) return;
+    if (clave.rfind("descarga:", 0) != 0)
+    {
+        // Un paquete: ya no baja nada, no queda nada suyo en el recolector y todos sus juegos quedaron hechos
+        const auto fotos = m_motor.Fotos();
+        auto juegos = jicaro::Juegos(clave, fotos, m_sitios.Partes());
+        if (!juegos.terminado || juegos.dudosas || juegos.juegos.empty()) return;
+        for (const auto& j : juegos.juegos)
+        {
+            if (j.jicaro != EstadoJicaro::Hecho) return;
+        }
+        std::wstring paquete;
+        for (const auto& f : fotos)
+        {
+            if (f.datos.grupo == clave && !f.datos.paquete.empty()) paquete = f.datos.paquete;
+        }
+        if (!paquete.empty() && QuedanEnElRecolector(paquete, m_recolector.Lista())) return;
+    }
+    m_contrasenas.Fijar(clave, {});
+    GuardarContrasenas();
+    Registrar("contraseñas: se borró la de un paquete que ya se descomprimió");
 }
 
 void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
@@ -3494,6 +3529,7 @@ void VentanaPrincipal::AlTerminarJicaro(unsigned long codigo)
     // «Hecho» solo si Jícaro terminó (bien, a medias o la persona lo canceló); si no, vuelve a pendiente
     for (const auto& p : t.partes) m_motor.MarcarJicaro(p.descarga, jicaro::EstadoDespues(r));
     AnotarJicaro();
+    if (r == jicaro::Resultado::Listo || r == jicaro::Resultado::Parcial) OlvidarContrasenaSiTermino(t.clave);
     MostrarResultadoJicaro(std::move(t), r);
     SiguienteJicaro();
 }

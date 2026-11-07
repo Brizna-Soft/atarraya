@@ -42,6 +42,10 @@ namespace hnd::contrasenas
     // Borra de la memoria (antes de soltarla)
     void Borrar(std::string& s);
     void Borrar(std::vector<std::string>& v);
+    void Borrar(std::vector<char>& v);
+    // Agrega al final de un texto que puede tener una contraseña (un pedido de Click'n'Load): si hay que mudarlo a un
+    // lugar más grande, el de antes se borra primero
+    void Agregar(std::string& s, const char* datos, size_t largo);
 
     // La lista en claro justo antes de cifrarla (y justo después de descifrarla): un «1» y cada contraseña con su largo
     // (4 bytes) y sus bytes. Sin JSON: sus objetos harían copias de cada contraseña que después nadie borra. Se arma en un

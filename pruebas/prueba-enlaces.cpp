@@ -940,6 +940,20 @@ namespace
         EnlaceRecolectado e4;
         e4.nombre = L"programa.7z.003";
         Comprobar(PaqueteDe(e4) == L"programa", "recolector: .7z.003");
+        // Las partes que volvieron al recolector: su paquete no está completo (sin importar mayúsculas)
+        {
+            EnlaceRecolectado v1, v2;
+            v1.paquete = L"Juego Libre";
+            v2.nombre = L"juego.zip.002";
+            std::vector<EnlaceRecolectado> lista = { v1, v2 };
+            Comprobar(QuedanEnElRecolector(L"juego libre", lista) && QuedanEnElRecolector(L"JUEGO", lista)
+                          && !QuedanEnElRecolector(L"otro", lista) && !QuedanEnElRecolector(L"", lista)
+                          && !QuedanEnElRecolector(L"juego libre", {}),
+                      "recolector: un paquete con enlaces que volvieron al recolector no se da por completo");
+            EnlaceRecolectado z;
+            z.nombre = L"peli.z001";
+            Comprobar(PaqueteDe(z) == L"peli", "recolector: .z001 va con su paquete, como .z01");
+        }
         Comprobar(EsDireccionLocal("http://192.168.1.1/x.zip") && EsDireccionLocal("http://localhost:8080/a.mp4")
                   && EsDireccionLocal("http://nas/peli.mkv") && EsDireccionLocal("http://[::1]/a") && EsDireccionLocal("http://0x7f.1/a")
                   && !EsDireccionLocal("https://archive.org/download/x/y.mp4") && !EsDireccionLocal("https://cafe.be/a.zip"),
@@ -1284,6 +1298,17 @@ namespace
             Comprobar(alPrepararlo && ParteAjenaDe(primera, propias) == L"espera.part3.rar" && zipBien && ParteAjenaDe(zip, delZip) == L"zz.z02"
                           && ParteAjenaDe(dir + L"\\leeme.txt", propias).empty(),
                       "juegos en partes: las partes ajenas se revisan otra vez justo antes de abrir Jícaro (pueden aparecer mientras espera)");
+            // Jícaro también toma «.z001» y «.z100»: una ajena con esos nombres se ve igual
+            std::wstring zip3 = escribir(L"tres.zip", "z");
+            escribir(L"tres.z01", "1");
+            std::vector<std::wstring> deTres = { dir + L"\\tres.zip", dir + L"\\tres.z01" };
+            bool tresBien = ParteAjenaDe(zip3, deTres).empty();
+            escribir(L"tres.z001", "ajena");
+            bool z001 = ParteAjenaDe(zip3, deTres) == L"tres.z001";
+            fs::remove(dir + L"\\tres.z001", ec);
+            escribir(L"tres.z100", "ajena");
+            Comprobar(tresBien && z001 && ParteAjenaDe(zip3, deTres) == L"tres.z100",
+                      "juegos en partes: una parte ajena «.z001» o «.z100» junto a un ZIP partido no deja abrirlo (como las ve Jícaro)");
         }
         fs::remove_all(dir, ec);
     }
@@ -1291,6 +1316,28 @@ namespace
     // 0.4.1: las contraseñas de los paquetes (Click'n'Load, cifradas con DPAPI) y Jícaro con «--contrasena-stdin»
     void ContrasenasPruebas()
     {
+        // Borrar limpia todo el lugar reservado (también lo que quedó después de achicar el texto), y Agregar borra el
+        // lugar de antes cuando tiene que mudar el texto
+        {
+            std::string s(200, 's');
+            s.resize(10);
+            secretos::Buscar("ssssssssssssssssssss");   // lo que quedó después de achicarlo (más allá de los 10)
+            hnd::contrasenas::Borrar(s);
+            int restos = secretos::Dejar();
+            std::string a;
+            a.reserve(32);
+            hnd::contrasenas::Agregar(a, "1234567890", 10);
+            size_t antes = a.capacity();
+            std::string grande(5000, 'g');
+            secretos::Buscar("1234567890");   // el lugar de antes de mudarlo
+            hnd::contrasenas::Agregar(a, grande.data(), grande.size());
+            restos += secretos::Dejar();
+            std::vector<char> v(64, 'v');
+            hnd::contrasenas::Borrar(v);
+            Comprobar(restos == 0 && s.empty() && a.size() == 5010 && a.compare(0, 10, "1234567890") == 0 && a.capacity() > antes && v.empty(),
+                      "contraseñas: Borrar y Agregar dejan el texto bien (el lugar de antes se borra al mudarlo)");
+            hnd::contrasenas::Borrar(a);
+        }
         // Sin JSON: en claro van con su largo, en un solo bloque, y se leen directo a cada una
         {
             using Lista = std::vector<std::string>;
@@ -1446,6 +1493,41 @@ namespace
         hnd::cnl::Campos campos = { { "urls", "https://a.org/1.rar" }, { "Passwords", "clave-cnl-1\r\nclave-cnl-2" }, { "passwords", "clave-cnl-3" } };
         Comprobar(hnd::cnl::Contrasenas(campos) == Lista{ "clave-cnl-1", "clave-cnl-2", "clave-cnl-3" } && hnd::cnl::Contrasenas({}).empty(),
                   "contraseñas: del campo «passwords» de Click'n'Load (una o varias, separadas por saltos de línea)");
+        // Al leer el formulario no quedan copias de la contraseña sin borrar (ni la de antes de decodificar, ni una corta
+        // que va dentro del texto, ni al juntar líneas). Los cuerpos se arman en arreglos fijos para no contar los suyos.
+        {
+            static const char urlenc[] = "urls=https%3A%2F%2Fa.org%2F1.rar&passwords=cnl%2Dsecreto%2Dmem&source=x";
+            static const char plano[] = "urls=https://a.org/1.rar\r\npasswords=cnl-secreto-mem\r\nmas-cnl-secreto-mem\r\n";
+            static const char multi[] = "--m\r\nContent-Disposition: form-data; name=\"urls\"\r\n\r\nhttps://a.org/1.rar\r\n"
+                                        "--m\r\nContent-Disposition: form-data; name=\"passwords\"\r\n\r\ncnl-secreto-mem\r\n--m--\r\n";
+            int sinBorrar = 0;
+            size_t leidas = 0;
+            for (auto [tipo, cuerpo] : { std::pair<const char*, const char*>{ "application/x-www-form-urlencoded", urlenc },
+                                         { "text/plain", plano }, { "multipart/form-data; boundary=m", multi } })
+            {
+                std::string c;
+                c.reserve(512);
+                c.assign(cuerpo);
+                secretos::Buscar("cnl-secreto-mem");
+                {
+                    hnd::cnl::Campos leidos;
+                    std::string motivo = hnd::cnl::LeerFormulario(tipo, c, leidos);
+                    if (!motivo.empty()) sinBorrar += 1000;   // tiene que leerse bien
+                    auto lista = hnd::cnl::Contrasenas(leidos);
+                    leidas += lista.size();
+                    hnd::contrasenas::Borrar(lista);
+                    for (auto& x : leidos)
+                    {
+                        hnd::contrasenas::Borrar(x.first);
+                        hnd::contrasenas::Borrar(x.second);
+                    }
+                }
+                sinBorrar += secretos::Dejar();
+                hnd::contrasenas::Borrar(c);
+            }
+            Comprobar(sinBorrar == 0 && leidas == 4,
+                      "contraseñas: al leer el formulario de Click'n'Load no queda ninguna copia de la contraseña sin borrar");
+        }
 
         // El recolector las guarda cifradas con cada enlace
         {

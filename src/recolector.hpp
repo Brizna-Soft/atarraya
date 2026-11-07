@@ -103,6 +103,9 @@ namespace hnd
 
     // El paquete de un enlace: el que trae, o uno sacado del nombre («peli.part1.rar» y «peli.part2.rar» → «peli»)
     std::wstring PaqueteDe(const EnlaceRecolectado& e);
+    // ¿Queda en el recolector algún enlace de ese paquete (sin importar mayúsculas)? Así un paquete al que le faltan
+    // partes que volvieron al recolector no se da por completo.
+    bool QuedanEnElRecolector(const std::wstring& paquete, const std::vector<EnlaceRecolectado>& lista);
     const wchar_t* TextoComprobacion(Comprobacion c);
 
     // Al pasar enlaces a la lista de descargas (o a la de torrents): de «hechos», los que ya pueden salir del recolector.

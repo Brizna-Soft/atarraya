@@ -66,7 +66,9 @@ namespace
         std::wstring bajo = hnd::Minusculas(nombre);
         static const std::wregex nuevo(LR"(^(.+)\.part(\d{1,4})\.rar$)", std::regex::icase);
         static const std::wregex numerado(LR"(^(.+\.(7z|zip|rar))\.(\d{3})$)", std::regex::icase);
-        static const std::wregex zipPartido(LR"(^(.+)\.z(\d\d)$)", std::regex::icase);
+        // .z01 y también .z001 o .z100, como los reconoce Jícaro (ver su volumenes.cpp): una «peli.z001» ajena junto a la
+        // «peli.z01» propia es del mismo juego para Jícaro, así que tiene que serlo también aquí
+        static const std::wregex zipPartido(LR"(^(.+)\.z(\d{2,3})$)", std::regex::icase);
         static const std::wregex viejo(LR"(^(.+)\.([r-y])(\d\d)$)", std::regex::icase);
         std::wsmatch m;
         if (std::regex_match(nombre, m, nuevo))

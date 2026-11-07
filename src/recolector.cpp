@@ -175,6 +175,13 @@ std::vector<uint64_t> hnd::SalenDelRecolector(std::vector<uint64_t> hechos, cons
     return hechos;
 }
 
+bool hnd::QuedanEnElRecolector(const std::wstring& paquete, const std::vector<EnlaceRecolectado>& lista)
+{
+    if (paquete.empty()) return false;
+    const std::wstring buscado = Minusculas(paquete);
+    return std::any_of(lista.begin(), lista.end(), [&](const EnlaceRecolectado& e) { return Minusculas(PaqueteDe(e)) == buscado; });
+}
+
 std::wstring hnd::PaqueteDe(const EnlaceRecolectado& e)
 {
     if (!e.paquete.empty()) return e.paquete;
@@ -186,7 +193,7 @@ std::wstring hnd::PaqueteDe(const EnlaceRecolectado& e)
     // Las partes de un mismo archivo van juntas: «peli.part1.rar», «peli.r00», «peli.7z.001», «peli.zip.002»...
     static const std::wregex partes[] = {
         std::wregex(LR"(^(.+)\.part\d+\.rar$)", std::regex::icase),
-        std::wregex(LR"(^(.+)\.(r\d{2,3}|z\d{2})$)", std::regex::icase),
+        std::wregex(LR"(^(.+)\.(r\d{2,3}|z\d{2,3})$)", std::regex::icase),
         std::wregex(LR"(^(.+)\.(7z|zip|rar|tar)\.\d{3}$)", std::regex::icase),
         std::wregex(LR"(^(.+)\.\d{3}$)", std::regex::icase),
         std::wregex(LR"(^(.+)\.[A-Za-z0-9]{1,6}$)", std::regex::icase),

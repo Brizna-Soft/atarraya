@@ -179,6 +179,8 @@ private:
     void BorrarPartes();   // solo cuando la persona lo pulsa: a la Papelera
     // Contraseñas de los paquetes (cifradas). «clave»: el grupo del paquete, o «descarga:<id>» para una suelta.
     std::string ClaveDeContrasena(const hnd::DatosDescarga& d) const;
+    // Cuando ya se descomprimieron todos los juegos del paquete, su contraseña se borra (ver ventana.cpp)
+    void OlvidarContrasenaSiTermino(const std::string& clave);
     // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue
     // «clave» y «nombre» van por valor: pueden ser los de un aviso que se mueve y se borra al seguir con su juego
     bool EscribirContrasena(const std::string clave, const std::wstring nombre, bool incorrecta);

@@ -215,9 +215,37 @@ bool hnd::contrasenas::Legible(const std::string& cifrado)
 
 void hnd::contrasenas::Borrar(std::string& s)
 {
+    // Todo el lugar que tiene reservado, no solo lo que mide ahora (un texto que se achicó guarda el resto). Agrandarlo
+    // hasta su capacidad no lo muda de lugar.
+    s.resize(s.capacity());
     if (!s.empty()) SecureZeroMemory(s.data(), s.size());
     s.clear();
     s.shrink_to_fit();
+}
+
+void hnd::contrasenas::Borrar(std::vector<char>& v)
+{
+    v.resize(v.capacity());
+    if (!v.empty()) SecureZeroMemory(v.data(), v.size());
+    v.clear();
+    v.shrink_to_fit();
+}
+
+void hnd::contrasenas::Agregar(std::string& s, const char* datos, size_t largo)
+{
+    if (largo == 0) return;
+    if (s.size() + largo <= s.capacity())
+    {
+        s.append(datos, largo);
+        return;
+    }
+    // No cabe: se copia a un lugar nuevo y el de antes se borra antes de soltarlo (append lo soltaría sin borrar)
+    std::string nuevo;
+    nuevo.reserve(std::max(s.capacity() * 2, s.size() + largo));
+    nuevo.append(s);
+    nuevo.append(datos, largo);
+    Borrar(s);
+    s.swap(nuevo);
 }
 
 void hnd::contrasenas::Borrar(std::vector<std::string>& v)
