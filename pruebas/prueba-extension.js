@@ -519,10 +519,14 @@ if (enNode) {
     comprobar((popup.match(/runtime\.reload\(\)/g) || []).length === 1 && /function recargarExtension\(\) \{\s*try \{\s*api\.runtime\.reload\(\);/.test(popup)
       && /if \(await fondoAlDiaAqui\(\)\) return true;/.test(revisar)
       && /const ESPERA_RECARGA = 10 \* 60 \* 1000;/.test(popup)
-      && /sePuedeAnotar && !\(antes > ahora - ESPERA_RECARGA && antes <= ahora\)/.test(revisar)
+      && /sePuedeAnotar && !\(antes > ahora - ESPERA_RECARGA && antes <= ahora\) && \(await guardarColaParaRecargar\(\)\)/.test(revisar)
+      && /for \(let intento = 0; intento < 3; intento\+\+\)/.test(popup)
+      && /if \(r && typeof r\.version === "string"\) return r\.version === esperada;/.test(popup)
+      && (popup.match(/await guardarColaParaRecargar\(\)/g) || []).length === 2
+      && /await hayDescargasDeSitios\(\)\)\s*\? "Si sigue igual, espera/.test(revisar)
       && revisar.indexOf("await api.storage.local.set({ fondoRecargado: ahora })") < revisar.indexOf("setTimeout(recargarExtension")
       && (popup.match(/(?<!function )recargarExtension\(\)|setTimeout\(recargarExtension/g) || []).length === 2
-      && /r\.version === esperada/.test(popup) && /api\.runtime\.getManifest\(\)\.version/.test(popup)
+      && /api\.runtime\.getManifest\(\)\.version/.test(popup)
       && popup.indexOf("await revisarFondo()") > popup.indexOf("capturar.addEventListener")
       && popup.indexOf("await revisarFondo()") < popup.indexOf("mostrarVideos();"),
       "extensión: la ventanita recarga la extensión sola solo si la parte de fondo es vieja (una vez cada 10 minutos; si no, un botón)");

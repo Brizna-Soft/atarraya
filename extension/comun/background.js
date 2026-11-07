@@ -58,12 +58,31 @@ const entregando = new Set();   // avisos finales que se están mandando ahora
 const decidiendo = new Set();   // descargas cuya toma se está decidiendo ahora
 // Esta extensión en este perfil del navegador (ver nuevaInstancia en cola-navegador.js): va al principio de cada «toma»
 let instancia = "";
+// La copia de las pestañas de la cola que deja la ventanita antes de recargar la extensión (ver popup.js): sirve una sola
+// vez y solo si es de hace poco
+const VIDA_COLA_DE_RECARGA = 5 * 60 * 1000;
 const listoCola = (async () => {
+  let guardada;
   try {
-    if (api.storage.session) cola.cargar((await api.storage.session.get("cola")).cola);
+    guardada = api.storage.session ? (await api.storage.session.get("cola")).cola : undefined;
   } catch (e) {
     // Sin storage.session se recuerda solo mientras el «service worker» está despierto
   }
+  try {
+    const r = await api.storage.local.get("colaDeRecarga");
+    const copia = r && r.colaDeRecarga;
+    if (copia) {
+      await api.storage.local.remove("colaDeRecarga");
+      const edad = Date.now() - Number(copia.cuando);
+      if (guardada === undefined && edad >= 0 && edad < VIDA_COLA_DE_RECARGA) {
+        guardada = copia.cola;
+        if (api.storage.session) await api.storage.session.set({ cola: guardada });
+      }
+    }
+  } catch (e) {
+    // Sin la copia: las pestañas de la cola se olvidan, como antes
+  }
+  cola.cargar(guardada);
   try {
     const g = await api.storage.local.get(["seguidas", "instancia"]);
     for (const [id, s] of seguidasGuardadas(g && g.seguidas, Date.now())) seguidas.set(id, s);

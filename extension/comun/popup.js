@@ -153,13 +153,46 @@ async function mostrarVideos() {
 // igual, se dice qué hacer y queda un botón para volver a probar. Recargar no baja nada ni toca las descargas del
 // navegador.
 const ESPERA_RECARGA = 10 * 60 * 1000;
+// Si no contesta (y no es que contestó otra versión), se prueba 3 veces antes de decidir: una falla pasajera no recarga
 async function fondoAlDiaAqui() {
+  const esperada = api.runtime.getManifest().version;
+  for (let intento = 0; intento < 3; intento++) {
+    let r = null;
+    try {
+      r = await api.runtime.sendMessage({ tipo: "fondo" });
+    } catch (e) {
+      r = null;
+    }
+    if (r && typeof r.version === "string") return r.version === esperada;
+    await new Promise((listo) => setTimeout(listo, 400));
+  }
+  return false;
+}
+
+// Al recargar, el navegador vacía storage.session, donde están las pestañas que la extensión abrió para la cola de
+// «de una en una». Antes de recargar se deja una copia en storage.local; la parte de fondo nueva la toma una sola vez,
+// si es de hace poco (ver «colaDeRecarga» en background.js). true si quedó guardada (o no había nada que guardar).
+async function guardarColaParaRecargar() {
   try {
-    const r = await api.runtime.sendMessage({ tipo: "fondo" });
-    const esperada = api.runtime.getManifest().version;
-    return !!(r && typeof r.version === "string" && r.version === esperada);
+    const g = api.storage.session ? await api.storage.session.get("cola") : {};
+    if (g && g.cola !== undefined) await api.storage.local.set({ colaDeRecarga: { cola: g.cola, cuando: Date.now() } });
+    return true;
   } catch (e) {
     return false;
+  }
+}
+
+// ¿El navegador está bajando partes de un sitio de descargas para Atarraya? Quitar la extensión borraría su
+// seguimiento (storage.local), así que entonces no se aconseja quitarla
+async function hayDescargasDeSitios() {
+  try {
+    const l = await api.storage.local.get("seguidas");
+    if (Array.isArray(l && l.seguidas) && l.seguidas.length) return true;
+    const s = api.storage.session ? await api.storage.session.get("cola") : {};
+    const c = s && s.cola;   // como lo guarda PestanasDeLaCola.exportar(): { cola: [[pestaña, parte], ...] }
+    return !!(c && Array.isArray(c.cola) && c.cola.length);
+  } catch (e) {
+    return true;   // si no se sabe, no se aconseja quitarla
   }
 }
 
@@ -183,7 +216,7 @@ async function revisarFondo() {
     sePuedeAnotar = false;   // sin poder anotar, no se recarga sola (para no recargar una y otra vez)
   }
   const ahora = Date.now();
-  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora)) {
+  if (sePuedeAnotar && !(antes > ahora - ESPERA_RECARGA && antes <= ahora) && (await guardarColaParaRecargar())) {
     try {
       await api.storage.local.set({ fondoRecargado: ahora });
       estado.textContent = "La extensión quedó a medias al actualizarse. La estoy recargando...";
@@ -195,8 +228,11 @@ async function revisarFondo() {
     }
   }
   estado.textContent = "La extensión de Atarraya sigue a medias después de actualizarse. Pulsa «Recargar la extensión». " +
-    "Si sigue igual, en chrome://extensions (en Edge, edge://extensions) pulsa «Quitar» en Atarraya y vuelve a " +
-    "cargarla con «Cargar descomprimida».";
+    ((await hayDescargasDeSitios())
+      ? "Si sigue igual, espera a que el navegador termine las partes que baja para Atarraya: no quites la extensión " +
+        "mientras tanto, porque perdería su seguimiento."
+      : "Si sigue igual, en chrome://extensions (en Edge, edge://extensions) pulsa «Quitar» en Atarraya y vuelve a " +
+        "cargarla con «Cargar descomprimida».");
   estado.className = "estado mal";
   const boton = document.createElement("button");
   boton.type = "button";
@@ -204,6 +240,7 @@ async function revisarFondo() {
   boton.textContent = "Recargar la extensión";
   boton.addEventListener("click", async () => {
     boton.disabled = true;
+    await guardarColaParaRecargar();   // si no se pudo, igual se recarga: la persona lo pidió
     try {
       await api.storage.local.set({ fondoRecargado: Date.now() });
     } catch (e) {
