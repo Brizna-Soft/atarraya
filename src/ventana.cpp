@@ -1281,15 +1281,15 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
             std::wstring p = PaqueteDe(e);
             if (!p.empty()) paquetes.emplace(Minusculas(p), p);
         }
-        const std::wstring base = Minusculas(carpeta);
         for (const auto& f : m_motor.Fotos())
         {
             if (f.torrent || f.datos.grupo.empty() || f.datos.paquete.empty() || f.datos.jicaro == EstadoJicaro::Hecho) continue;
             auto it = paquetes.find(Minusculas(f.datos.paquete));
-            std::wstring suya = Minusculas(f.datos.carpeta);
-            if (it == paquetes.end() || base.empty() || suya.compare(0, base.size(), base) != 0
-                || (suya.size() > base.size() && suya[base.size()] != L'\\'))
-                continue;
+            if (it == paquetes.end() || carpeta.empty()) continue;
+            // Exactamente la carpeta a la que va ahora este paquete (como la arma la cola: el destino, o el destino y el
+            // nombre del paquete): uno con el mismo nombre en otra carpeta es otro paquete
+            std::wstring destino = porPaquete ? carpeta + L"\\" + LimpiarNombre(it->second) : carpeta;
+            if (Minusculas(f.datos.carpeta) != Minusculas(destino)) continue;
             tanda.Sumar(it->second, f.datos.id, f.datos.grupo);
         }
     }
