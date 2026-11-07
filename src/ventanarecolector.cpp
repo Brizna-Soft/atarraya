@@ -329,11 +329,13 @@ void VentanaRecolector::MenuContextual(wxTreeListEvent& e)
     if (!d) return;
     if (d->id == 0)
     {
-        // Un paquete: su contraseña (para que Jícaro lo descomprima)
+        // Un paquete: su contraseña (para que Jícaro lo descomprima). El nombre se copia antes de abrir el menú: mientras
+        // está abierto, un refresco puede rehacer la lista y soltar esa fila (y su dato)
+        const std::wstring paquete = d->paquete;
         wxMenu m;
         const int clave = wxWindow::NewControlId();
         m.Append(clave, L"Contraseña del paquete...");
-        if (GetPopupMenuSelectionFromUser(m) == clave) ContrasenaDelPaquete(d->paquete);
+        if (GetPopupMenuSelectionFromUser(m) == clave) ContrasenaDelPaquete(paquete);
         return;
     }
     EnlaceRecolectado enlace;
