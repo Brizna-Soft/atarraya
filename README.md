@@ -23,6 +23,21 @@ Hecho por [Brizna Soft](https://brizna-soft.github.io) en Honduras.
 > Si quieres comprobar que el archivo es el original, compara su huella SHA-256 con el archivo `.sha256` de la
 > misma página. Los .zip los arma GitHub a partir de este mismo código.
 
+## Si Windows no deja abrir el programa
+
+Nuestros programas todavía no tienen firma digital, y por eso Windows puede frenarlos de dos maneras:
+
+- **«Windows protegió su PC» (SmartScreen).** Pulsa **Más información** y después **Ejecutar de todas formas**.
+- **«Control inteligente de aplicaciones».** Si lo tienes activado, puede bloquear el programa *sin* darte la opción
+  de abrirlo igual. Microsoft explica que no se puede permitir un solo programa: la única salida es apagar esa
+  protección en **Seguridad de Windows > Control de aplicaciones y exploradores**. Es tu decisión; con Windows al día
+  se puede volver a encender después.
+  ([Preguntas frecuentes de Microsoft](https://support.microsoft.com/es-es/topic/smart-app-control-frequently-asked-questions-285ea03d-fa88-4d56-882e-6698afdb7003))
+
+Estamos preparando la firma digital para que esto deje de pasar. Mientras tanto, puedes comprobar que el archivo es
+el original con su huella SHA-256 (el archivo `.sha256` de cada versión) y, en las versiones nuevas, con
+`gh attestation verify <archivo.zip> --repo Brizna-Soft/atarraya`.
+
 ## Qué hace
 
 - **Varias conexiones por archivo.** Hasta 16, y 8 de fábrica. Cuando una parte termina, ayuda a la que más le
