@@ -437,6 +437,31 @@ namespace
             bool comoSitio = true;
             for (const auto& e : recDespues.Lista()) comoSitio = comoSitio && e.estado == Comprobacion::Sitio && e.paquete == L"Peli";
             Comprobar(q.Vaciar() && comoSitio, "de una en una: después se vacía la cola; vuelven como páginas de sitios, en su paquete");
+        }
+        // Con contraseña: las partes que vuelven al recolector se llevan la de su paquete (cifrada), también al reabrir
+        {
+            std::wstring colaC = base + L"-cola3.json", recC = base + L"-recolector3.json";
+            DeUnaEnUna q(colaC);
+            Parte pc = parte("https://rapidgator.net/file/x3/c.rar.html");
+            pc.grupo = "grupo-con-clave";
+            q.Agregar({ pc });
+            q.Saltar(q.AbrirSiguiente());
+            Recolector rec(recC);
+            const std::string cifrada = hnd::contrasenas::Cifrar({ "clave-del-paquete" });
+            bool ok = GuardarEnRecolector(q.Sobrantes(), rec, [&](const std::string& g) { return g == "grupo-con-clave" ? cifrada : std::string(); });
+            Recolector despues(recC);
+            despues.Cargar();
+            bool conClave = false;
+            for (const auto& e : despues.Lista())
+            {
+                if (e.url == pc.url)
+                {
+                    auto l = hnd::contrasenas::Descifrar(e.contrasenas);
+                    conClave = l.size() == 1 && l[0] == "clave-del-paquete";
+                    hnd::contrasenas::Borrar(l);
+                }
+            }
+            Comprobar(ok && conClave, "de una en una: las partes que vuelven al recolector se llevan la contraseña de su paquete");
             DeUnaEnUna qFinal(archivoCola);
             qFinal.Cargar();
             Comprobar(qFinal.Partes().empty(), "de una en una: la cola vacía queda guardada");

@@ -2840,7 +2840,13 @@ bool VentanaPrincipal::DevolverYVaciar(size_t& devueltas)
     auto vuelven = m_sitios.Sobrantes();
     devueltas = vuelven.size();
     // 1. Primero el recolector, con las páginas que vuelven (si falla, la cola queda como estaba)
-    if (!GuardarEnRecolector(vuelven, m_recolector))
+    auto cifradasDe = [this](const std::string& grupo) {
+        auto lista = m_contrasenas.Leer(grupo);
+        std::string cifradas = lista.empty() ? std::string() : contrasenas::Cifrar(lista);
+        contrasenas::Borrar(lista);
+        return cifradas;
+    };
+    if (!GuardarEnRecolector(vuelven, m_recolector, cifradasDe))
     {
         Registrar("de una en una: no se pudo guardar el recolector; la cola sigue como estaba");
         return false;

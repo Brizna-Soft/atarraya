@@ -326,7 +326,9 @@ namespace hnd
 
     // Paso 1 de devolver: pone las partes en el recolector (como páginas de sitios de descargas, con su paquete y su
     // página de origen) y lo guarda. false si alguna no entró (por ejemplo, recolector lleno) o no se pudo guardar.
-    bool GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector);
+    // «cifradasDe»: la contraseña guardada (ya cifrada) del grupo de esas partes, para que vuelvan con ella; vacía si no tiene
+    bool GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector,
+                             const std::function<std::string(const std::string& grupo)>& cifradasDe = {});
 
     // Sitios donde la descarga final solo funciona en el navegador (Atarraya no pudo seguirla: el sitio respondió con
     // una página, con 403 o 410, o el enlace era de un solo uso). La próxima vez la deja en el navegador desde el

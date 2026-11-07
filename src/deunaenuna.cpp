@@ -184,13 +184,28 @@ bool hnd::MismaPagina(const std::string& a, const std::string& b)
     return false;
 }
 
-bool hnd::GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector)
+bool hnd::GuardarEnRecolector(const std::vector<Parte>& partes, Recolector& recolector,
+                              const std::function<std::string(const std::string& grupo)>& cifradasDe)
 {
     if (partes.empty()) return true;
     // Por paquete y por página de origen, como llegaron
     std::map<std::pair<std::wstring, std::string>, std::vector<std::string>> grupos;
     for (const auto& p : partes) grupos[{ p.paquete, p.referer }].push_back(p.url);
     for (const auto& [clave, urls] : grupos) recolector.Agregar(urls, clave.first, clave.second, "de-una-en-una", true);
+    // La contraseña del paquete vuelve con sus enlaces (cifrada): al confirmarlos otra vez, Jícaro la tiene
+    if (cifradasDe)
+    {
+        std::map<std::string, std::vector<std::string>> porGrupo;
+        for (const auto& p : partes)
+        {
+            if (!p.grupo.empty()) porGrupo[p.grupo].push_back(p.url);
+        }
+        for (const auto& [grupo, urls] : porGrupo)
+        {
+            std::string cifradas = cifradasDe(grupo);
+            if (!cifradas.empty()) recolector.FijarContrasenasDe(urls, cifradas);
+        }
+    }
     // Tienen que estar todas (las que ya estaban cuentan); si no, no se vacía la cola
     for (const auto& p : partes)
     {
