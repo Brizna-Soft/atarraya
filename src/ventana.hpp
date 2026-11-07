@@ -181,6 +181,10 @@ private:
     std::string ClaveDeContrasena(const hnd::DatosDescarga& d) const;
     // Cuando ya se descomprimieron todos los juegos del paquete, su contraseña se borra (ver ventana.cpp)
     void OlvidarContrasenaSiTermino(const std::string& clave);
+    bool PasarContrasena(const std::string& de, const std::string& a);
+    void RevisarLosQueEsperanAlRecolector();
+    std::set<std::string> m_esperanRecolector;   // grupos que esperan a que salgan sus enlaces del recolector
+    uint64_t m_versionRecolectorVista = 0;
     // La pide (solo cuando la persona pulsa algo) y la guarda para ese paquete; si estaba esperando, Jícaro sigue
     // «clave» y «nombre» van por valor: pueden ser los de un aviso que se mueve y se borra al seguir con su juego
     bool EscribirContrasena(const std::string clave, const std::wstring nombre, bool incorrecta);

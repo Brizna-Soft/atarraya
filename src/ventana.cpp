@@ -693,6 +693,17 @@ VentanaPrincipal::VentanaPrincipal(hnd::Motor& motor, hnd::MotorTorrent& torrent
             }
         }
         GuardarContrasenas();
+        // Los paquetes con algo bajado por descomprimir que todavía tienen enlaces en el recolector: se revisan cuando
+        // esos enlaces salgan (también después de cerrar Atarraya)
+        {
+            const auto lista = m_recolector.Lista();
+            for (const auto& f : m_motor.Fotos())
+            {
+                if (!f.torrent && !f.datos.grupo.empty() && f.datos.estado == Estado::Completada
+                    && f.datos.jicaro == EstadoJicaro::Pendiente && QuedanEnElRecolector(f.datos.paquete, lista))
+                    m_esperanRecolector.insert(f.datos.grupo);
+            }
+        }
     }
     // Antes de que arranque nada: se junta lo que dicen la cola y la lista (ver Conciliar en deunaenuna.hpp). Lo que
     // sabe la extensión llega cuando se conecta (Pedido «seguidas»).
@@ -889,6 +900,7 @@ void VentanaPrincipal::Refrescar()
     m_motor.Tick();
     m_torrents.Tick();
     m_recolector.Tick();
+    RevisarLosQueEsperanAlRecolector();
     RevisarPartes();
     RevisarTomas();
     RevisarEsperas();
@@ -3274,7 +3286,9 @@ std::vector<VentanaPrincipal::TrabajoJicaro> VentanaPrincipal::PrepararJicaro(co
     // salen del recolector y se revisa otra vez.
     if (!d.paquete.empty() && QuedanEnElRecolector(d.paquete, m_recolector.Lista()))
     {
-        Registrar("jícaro: el paquete todavía tiene enlaces en el recolector; se espera a que bajen");
+        // Se revisa otra vez cuando esos enlaces salgan del recolector (ver RevisarLosQueEsperanAlRecolector)
+        if (!d.grupo.empty()) m_esperanRecolector.insert(d.grupo);
+        Registrar("jícaro: el paquete todavía tiene enlaces en el recolector; se espera a que salgan");
         return trabajos;
     }
     auto fotos = m_motor.Fotos();
@@ -3391,19 +3405,84 @@ void VentanaPrincipal::OlvidarContrasenaSiTermino(const std::string& clave)
     Registrar("contraseñas: se borró la de un paquete que ya se descomprimió");
 }
 
+// La contraseña guardada pasa con la descarga (o con el paquete) a su paquete nuevo: se juntan, primero las que ya tenía
+// el paquete. true si pasó alguna (hay que guardar).
+bool VentanaPrincipal::PasarContrasena(const std::string& de, const std::string& a)
+{
+    if (de.empty() || a.empty() || de == a || !m_contrasenas.Tiene(de)) return false;
+    auto viejas = m_contrasenas.Leer(de);
+    auto delPaquete = m_contrasenas.Leer(a);
+    auto juntas = contrasenas::Juntar(delPaquete, viejas);
+    m_contrasenas.Fijar(a, juntas);
+    m_contrasenas.Fijar(de, {});
+    contrasenas::Borrar(viejas);
+    contrasenas::Borrar(delPaquete);
+    contrasenas::Borrar(juntas);
+    return true;
+}
+
 void VentanaPrincipal::AplicarTanda(const jicaro::Tanda& tanda)
 {
-    for (const auto& e : tanda.Entran()) m_motor.CambiarGrupo(e.descarga, e.paquete, e.grupo);
+    bool pasaron = false;
+    for (const auto& e : tanda.Entran())
+    {
+        // Una suelta («descarga:<id>») o de otro grupo que entra al paquete se lleva su contraseña
+        hnd::Foto f;
+        std::string antes = m_motor.Buscar(e.descarga, f) ? ClaveDeContrasena(f.datos) : std::string();
+        m_motor.CambiarGrupo(e.descarga, e.paquete, e.grupo);
+        pasaron = PasarContrasena(antes, e.grupo) || pasaron;
+    }
     bool cola = false;
     for (const auto& u : tanda.Uniones())
     {
         m_motor.UnirGrupos(u.viejo, u.nuevo, u.paquete);
         cola = m_sitios.CambiarGrupo(u.viejo, u.nuevo) || cola;
+        pasaron = PasarContrasena(u.viejo, u.nuevo) || pasaron;
+    }
+    if (pasaron)
+    {
+        GuardarContrasenas();
+        Registrar("contraseñas: pasaron a su paquete (cifradas)");
     }
     if (cola) GuardarCola();
     if (!tanda.Entran().empty() || !tanda.Uniones().empty())
         Registrar("jícaro: " + std::to_string(tanda.Entran().size()) + " descargas que ya estaban entran a su paquete; "
                   + std::to_string(tanda.Uniones().size()) + " paquetes se juntan");
+}
+
+// Los paquetes que no se descomprimieron porque les quedaban enlaces en el recolector: cuando el recolector cambia y ya
+// no les queda ninguno (bajaron, o la persona los confirmó o quitó), se revisan otra vez
+void VentanaPrincipal::RevisarLosQueEsperanAlRecolector()
+{
+    if (m_esperanRecolector.empty() || m_recolector.Version() == m_versionRecolectorVista) return;
+    m_versionRecolectorVista = m_recolector.Version();
+    const auto lista = m_recolector.Lista();
+    const auto fotos = m_motor.Fotos();
+    for (auto it = m_esperanRecolector.begin(); it != m_esperanRecolector.end();)
+    {
+        const hnd::Foto* una = nullptr;
+        for (const auto& f : fotos)
+        {
+            if (!f.torrent && f.datos.grupo == *it && f.datos.estado == Estado::Completada && !f.datos.nombre.empty())
+            {
+                una = &f;
+                break;
+            }
+        }
+        if (!una)
+        {
+            it = m_esperanRecolector.erase(it);   // ese paquete ya no está en la lista
+            continue;
+        }
+        if (QuedanEnElRecolector(una->datos.paquete, lista))
+        {
+            ++it;
+            continue;
+        }
+        hnd::DatosDescarga d = una->datos;
+        it = m_esperanRecolector.erase(it);
+        EncolarJicaro(PrepararJicaro(d));
+    }
 }
 
 void VentanaPrincipal::GuardarIdentidad(uint64_t descarga, const std::wstring& ruta)

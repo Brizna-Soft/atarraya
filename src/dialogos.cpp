@@ -428,9 +428,56 @@ void DialogoVarios::AlAceptar()
     EndModal(wxID_OK);
 }
 
+namespace
+{
+    // Las contraseñas de los campos se leen y se escriben directo en el control de Windows, sin pasar por wxString (sus
+    // copias se sueltan sin borrar). Las copias de trabajo se borran.
+    void BorrarAncho(std::wstring& w)
+    {
+        w.resize(w.capacity());
+        if (!w.empty()) SecureZeroMemory(w.data(), w.size() * sizeof(wchar_t));
+        w.clear();
+    }
+
+    std::wstring TextoDelCampo(wxTextCtrl* c)
+    {
+        std::wstring w;
+        if (!c) return w;
+        HWND h = (HWND)c->GetHWND();
+        int n = GetWindowTextLengthW(h);
+        if (n <= 0) return w;
+        w.assign((size_t)n + 1, L'\0');
+        int leidas = GetWindowTextW(h, w.data(), n + 1);
+        w.resize(leidas > 0 ? (size_t)leidas : 0);   // achicar no muda el texto de lugar
+        return w;
+    }
+
+    std::string ContrasenaDelCampo(wxTextCtrl* c)
+    {
+        std::wstring w = TextoDelCampo(c);
+        std::string r;
+        if (!w.empty())
+        {
+            int b = WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+            if (b > 0)
+            {
+                r.resize((size_t)b);
+                WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), r.data(), b, nullptr, nullptr);
+            }
+        }
+        BorrarAncho(w);
+        return r;
+    }
+
+    void PonerEnElCampo(wxTextCtrl* c, const std::wstring& w)
+    {
+        if (c) SetWindowTextW((HWND)c->GetHWND(), w.c_str());
+    }
+}
+
 std::string DialogoVarios::Contrasena() const
 {
-    return m_contrasena ? std::string(m_contrasena->GetValue().ToUTF8().data()) : std::string();
+    return ContrasenaDelCampo(m_contrasena);
 }
 
 bool PedirContrasena(wxWindow* padre, const wxString& titulo, const wxString& texto, const std::vector<std::string>& recordadas,
@@ -468,8 +515,9 @@ bool PedirContrasena(wxWindow* padre, const wxString& titulo, const wxString& te
     if (auto* cancelar = d.FindWindow(wxID_CANCEL)) cancelar->SetLabel(L"Cancelar");
     mostrar->Bind(wxEVT_CHECKBOX, [oculta, visible, mostrar, &d](wxCommandEvent&) {
         bool si = mostrar->GetValue();
-        if (si) visible->ChangeValue(oculta->GetValue());
-        else oculta->ChangeValue(visible->GetValue());
+        std::wstring w = TextoDelCampo(si ? oculta : visible);
+        PonerEnElCampo(si ? visible : oculta, w);
+        BorrarAncho(w);
         oculta->Show(!si);
         visible->Show(si);
         d.Layout();
@@ -479,19 +527,30 @@ bool PedirContrasena(wxWindow* padre, const wxString& titulo, const wxString& te
     {
         elegir->Bind(wxEVT_CHOICE, [elegir, oculta, visible, &recordadas](wxCommandEvent&) {
             int k = elegir->GetSelection();
-            wxString v = k > 0 && (size_t)k <= recordadas.size() ? wxString::FromUTF8(recordadas[(size_t)k - 1]) : wxString();
-            oculta->ChangeValue(v);
-            visible->ChangeValue(v);
+            std::wstring w;
+            if (k > 0 && (size_t)k <= recordadas.size())
+            {
+                const std::string& u = recordadas[(size_t)k - 1];
+                int n = MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), nullptr, 0);
+                if (n > 0)
+                {
+                    w.assign((size_t)n, L'\0');
+                    MultiByteToWideChar(CP_UTF8, 0, u.data(), (int)u.size(), w.data(), n);
+                }
+            }
+            PonerEnElCampo(oculta, w);
+            PonerEnElCampo(visible, w);
+            BorrarAncho(w);
         });
     }
     d.SetSizerAndFit(caja);
     d.CentreOnParent();
     oculta->SetFocus();
     bool ok = d.ShowModal() == wxID_OK;
-    if (ok) contrasena = (mostrar->GetValue() ? visible : oculta)->GetValue().ToUTF8().data();
+    if (ok) contrasena = ContrasenaDelCampo(mostrar->GetValue() ? visible : oculta);
     // No queda en los campos
-    oculta->ChangeValue(wxEmptyString);
-    visible->ChangeValue(wxEmptyString);
+    PonerEnElCampo(oculta, L"");
+    PonerEnElCampo(visible, L"");
     while (!contrasena.empty() && (contrasena.back() == '\r' || contrasena.back() == '\n')) contrasena.pop_back();
     return ok && !contrasena.empty();
 }
