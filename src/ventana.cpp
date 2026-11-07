@@ -1271,6 +1271,28 @@ std::vector<uint64_t> VentanaPrincipal::ConfirmarRecolector(const std::vector<En
         hnd::Foto f;
         if (uint64_t ya = m_motor.BuscarPorUrl(e.url); ya && m_motor.Buscar(ya, f)) tanda.Sumar(PaqueteDe(e), ya, f.datos.grupo);
     }
+    // Las partes que vuelven del recolector (las que se saltaron o fallaron en «de una en una») son de un paquete que
+    // sigue en la lista sin descomprimir, en esta misma carpeta: entran a ese mismo grupo, así Jícaro las junta con las
+    // que ya bajaron (si no, cada grupo quedaría incompleto)
+    {
+        std::map<std::wstring, std::wstring> paquetes;   // en minúsculas → como lo nombra el recolector
+        for (const auto& e : lista)
+        {
+            std::wstring p = PaqueteDe(e);
+            if (!p.empty()) paquetes.emplace(Minusculas(p), p);
+        }
+        const std::wstring base = Minusculas(carpeta);
+        for (const auto& f : m_motor.Fotos())
+        {
+            if (f.torrent || f.datos.grupo.empty() || f.datos.paquete.empty() || f.datos.jicaro == EstadoJicaro::Hecho) continue;
+            auto it = paquetes.find(Minusculas(f.datos.paquete));
+            std::wstring suya = Minusculas(f.datos.carpeta);
+            if (it == paquetes.end() || base.empty() || suya.compare(0, base.size(), base) != 0
+                || (suya.size() > base.size() && suya[base.size()] != L'\\'))
+                continue;
+            tanda.Sumar(it->second, f.datos.id, f.datos.grupo);
+        }
+    }
     AplicarTanda(tanda);
     int descargas = 0, torrents = 0, yaEstaban = 0, noEstan = 0, fallaron = 0;
     std::vector<uint64_t> aLaLista, aTorrents;   // los enlaces que están (o quedaron) en cada lista
